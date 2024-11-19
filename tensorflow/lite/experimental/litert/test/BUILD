@@ -39,6 +39,10 @@ genrule(
     tools = [CONVERTER],
 )
 
+exports_files(glob([
+    "testdata/*.tflite",
+]))
+
 cc_library(
     name = "common",
     testonly = 1,
