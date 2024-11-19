@@ -324,6 +324,7 @@ inline void registerTensorFlowLitePasses() {
   Register<OptimizeBatchMatmulPass>();
   Register<PushTransposeThroughEwisePass>();
   Register<CanonicalizeBoundaryValuePass>();
+  Register<OptimizeBatchMatmulPass>();
 }
 
 }  // namespace TFL
