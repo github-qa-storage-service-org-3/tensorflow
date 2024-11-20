@@ -358,6 +358,30 @@ inline DenseElementsAttr GetShape(Value output_val, bool truncate = false) {
       llvm::ArrayRef(shape));
 }
 
+// Returns int, float or complex DenseElementsAttr with scalar shape with the
+// given element type and the integer value.
+template <typename T>
+DenseElementsAttr GetScalarOfType(Type ty, T raw_value) {
+  RankedTensorType scalar_ty = RankedTensorType::get({}, ty);
+  if (auto float_ty = mlir::dyn_cast<FloatType>(ty)) {
+    FloatAttr attr = FloatAttr::get(float_ty, raw_value);
+    return DenseElementsAttr::get(scalar_ty, attr);
+  } else if (auto int_ty = mlir::dyn_cast<IntegerType>(ty)) {
+    IntegerAttr attr = IntegerAttr::get(int_ty, raw_value);
+    return DenseElementsAttr::get(scalar_ty, attr);
+  } else if (auto complex_ty = mlir::dyn_cast<ComplexType>(ty)) {
+    Type complex_element_ty = complex_ty.getElementType();
+    if (complex_element_ty.isF32()) {
+      return DenseElementsAttr::get(
+          scalar_ty, static_cast<std::complex<float>>(raw_value));
+    } else if (complex_element_ty.isF64()) {
+      return DenseElementsAttr::get(
+          scalar_ty, static_cast<std::complex<double>>(raw_value));
+    }
+  }
+  llvm_unreachable("unsupported type");
+}
+
 }  // namespace TFL
 }  // namespace mlir
 

@@ -19,6 +19,11 @@ include "mlir/IR/OpBase.td"
 include "mlir/Dialect/Func/IR/FuncOps.td"
 include "mlir/IR/PatternBase.td"
 
+// Here, the element type can be any integer or float type. But, note that only
+// 32 bit integers are supported for the values.
+class GetScalarOfType<int value> : NativeCodeCall<
+  "GetScalarOfType(getElementTypeOrSelf($0)," # value # ")">;
+
 def CreateNoneValue : NativeCodeCall<
   "$_builder.create<TFL::NoValueOp>($0.getLoc(), $_builder.getUnitAttr())">;
 
