@@ -176,7 +176,22 @@ bool MemorySpaceAssignmentUtils::DoesInstructionMatchFilter(
       !RE2::FullMatch(instruction.ToString(), filter.instruction_regex())) {
     return false;
   }
-  return true;
+  return DoesBufferIntervalMatchHloUseFilter(filter, buffer_interval);
+}
+
+bool MemorySpaceAssignmentUtils::DoesBufferIntervalMatchHloUseFilter(
+    const HloPositionMatcher& filter,
+    const MsaBufferInterval& buffer_interval) {
+  if (!filter.has_hlo_use_filter()) {
+    return true;
+  }
+  for (const HloUse& use : buffer_interval.buffer->GetUses()) {
+    if (DoesUseMatchFilter(filter.hlo_use_filter(), use,
+                           buffer_interval.size)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool MemorySpaceAssignmentUtils::DoesBufferIntervalMatchHloUseFilter(
