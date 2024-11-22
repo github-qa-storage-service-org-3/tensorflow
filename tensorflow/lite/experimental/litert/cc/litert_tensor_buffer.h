@@ -16,8 +16,10 @@
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CC_LITERT_TENSOR_BUFFER_H_
 
 #include <cstddef>
+#include <cstring>
 #include <utility>
 
+#include "absl/types/span.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_event.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
@@ -157,6 +159,36 @@ class TensorBufferScopedLock {
       : tensor_buffer_(tensor_buffer) {}
   TensorBuffer& tensor_buffer_;
 };
+
+template <typename T>
+Expected<void> TensorBufferDataWrite(TensorBuffer& tensor_buffer,
+                                     absl::Span<const T> data) {
+  auto lock_and_addr = litert::TensorBufferScopedLock::Create(tensor_buffer);
+  if (!lock_and_addr) {
+    return lock_and_addr.Error();
+  }
+  std::memcpy(lock_and_addr->second, data.data(), data.size() * sizeof(T));
+  return {};
+}
+
+template <typename T>
+Expected<absl::Span<const T>> TensorBufferDataRead(TensorBuffer& tensor_buffer,
+                                                   size_t num_elements) {
+  auto lock_and_addr = litert::TensorBufferScopedLock::Create(tensor_buffer);
+  if (!lock_and_addr) {
+    return lock_and_addr.Error();
+  }
+  auto buffer_size = tensor_buffer.Size();
+  if (!buffer_size) {
+    return buffer_size.Error();
+  }
+  if (num_elements * sizeof(T) > *buffer_size) {
+    return Unexpected(kLiteRtStatusErrorInvalidArgument,
+                      "Requested data size exceeds buffer size");
+  }
+  return absl::MakeConstSpan(static_cast<const T*>(lock_and_addr->second),
+                             num_elements);
+}
 
 }  // namespace litert
 

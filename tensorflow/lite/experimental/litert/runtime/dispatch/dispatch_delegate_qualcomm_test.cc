@@ -17,10 +17,12 @@
 #include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "tensorflow/lite/c/c_api_opaque.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
@@ -35,6 +37,9 @@
 
 namespace litert {
 namespace {
+
+using ::testing::FloatNear;
+using ::testing::Pointwise;
 
 static constexpr absl::string_view kNpuFile = kQualcommModelFileName;
 static constexpr absl::string_view kTfliteFile = "simple_model_npu.tflite";
@@ -97,13 +102,11 @@ TEST(DispatchDelegate, QualcommCpuBuffer) {
   ASSERT_STREQ(runner->output_names()[0], "tfl.custom");
   auto output_tensor = runner->output_tensor("tfl.custom");
   ASSERT_NE(output_tensor, nullptr);
-  auto* output = output_tensor->data.f;
+  auto output = absl::MakeSpan(output_tensor->data.f, kTestOutputSize);
   for (auto i = 0; i < kTestOutputSize; ++i) {
     ABSL_LOG(INFO) << output[i] << "\t" << kTestOutputTensor[i];
   }
-  for (auto i = 0; i < kTestOutputSize; ++i) {
-    EXPECT_NEAR(output[i], kTestOutputTensor[i], 1e-5);
-  }
+  EXPECT_THAT(output, Pointwise(::testing::FloatNear(1e-5), kTestOutputTensor));
 }
 
 TEST(DispatchDelegate, QualcommHwBuffer) {
@@ -190,37 +193,26 @@ TEST(DispatchDelegate, QualcommHwBuffer) {
   // Fill model inputs.
   ASSERT_STREQ(runner->input_names()[0], "arg0");
   auto& input_0_buffer = input_buffers[0];
-  {
-    auto lock_and_addr = litert::TensorBufferScopedLock::Create(input_0_buffer);
-    ASSERT_TRUE(lock_and_addr);
-    std::memcpy(lock_and_addr->second, kTestInput0Tensor,
-                sizeof(kTestInput0Tensor));
-  }
+  TensorBufferDataWrite<float>(
+      input_0_buffer, absl::MakeConstSpan(kTestInput0Tensor, kTestInput0Size));
+
   ASSERT_STREQ(runner->input_names()[1], "arg1");
   auto& input_1_buffer = input_buffers[1];
-  {
-    auto lock_and_addr = litert::TensorBufferScopedLock::Create(input_1_buffer);
-    ASSERT_TRUE(lock_and_addr);
-    std::memcpy(lock_and_addr->second, kTestInput1Tensor,
-                sizeof(kTestInput1Tensor));
-  }
+  TensorBufferDataWrite<float>(
+      input_1_buffer, absl::MakeConstSpan(kTestInput1Tensor, kTestInput1Size));
 
   EXPECT_EQ(runner->Invoke(), kTfLiteOk);
 
   // Check model output.
   ASSERT_STREQ(runner->output_names()[0], "tfl.custom");
   auto& output_buffer = output_buffers[0];
-  {
-    auto lock_and_addr = litert::TensorBufferScopedLock::Create(output_buffer);
-    ASSERT_TRUE(lock_and_addr);
-    const float* output = reinterpret_cast<const float*>(lock_and_addr->second);
-    for (auto i = 0; i < kTestOutputSize; ++i) {
-      ABSL_LOG(INFO) << "Result: " << output[i] << "\t" << kTestOutputTensor[i];
-    }
-    for (auto i = 0; i < kTestOutputSize; ++i) {
-      EXPECT_NEAR(output[i], kTestOutputTensor[i], 1e-5);
-    }
+  auto output = TensorBufferDataRead<float>(output_buffer, kTestOutputSize);
+  ASSERT_TRUE(output);
+  for (auto i = 0; i < kTestOutputSize; ++i) {
+    ABSL_LOG(INFO) << "Result: " << output->at(i) << "\t"
+                   << kTestOutputTensor[i];
   }
+  EXPECT_THAT(*output, Pointwise(FloatNear(1e-5), kTestOutputTensor));
 }
 
 }  // namespace
