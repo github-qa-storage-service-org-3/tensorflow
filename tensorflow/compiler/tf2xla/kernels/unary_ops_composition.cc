@@ -57,7 +57,9 @@ void PopulateXlaOpGeneratorMap(XlaOpGeneratorMap* op_generator_map) {
   ADD_XLA_OP_GENERATOR(Cos);
   ADD_XLA_OP_GENERATOR(Cosh);
   ADD_XLA_OP_GENERATOR(Expm1);
-  ADD_XLA_OP_GENERATOR(Exp);
+  // ADD_XLA_OP_GENERATOR(Exp);
+  add_xla_op_generator(
+      "Exp", [](xla::XlaOp x) { return xla::Exp(x, xla::ResultAccuracy()); });
   ADD_XLA_OP_GENERATOR(Floor);
   add_xla_op_generator(
       "Inv", [](xla::XlaOp x) { return xla::ScalarLike(x, 1.0) / x; });

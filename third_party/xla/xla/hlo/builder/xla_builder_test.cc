@@ -1970,6 +1970,24 @@ TEST(XlaBuilderTest, TopKDimensions) {
   EXPECT_EQ(root->shape().tuple_shapes(1).dimensions(1), k);
 }
 
+TEST(XlaBuilderTest, ExpWithResultAccuracy) {
+  XlaBuilder b(TestName());
+  const Shape shape = ShapeUtil::MakeShape(F32, {1, 1});
+  ResultAccuracy result_accuracy;
+  ResultAccuracy::Tolerance tolerance;
+  tolerance.set_ulps(120.0f);
+  *result_accuracy.mutable_tolerance() = tolerance;
+  Exp(Parameter(&b, 0, shape, "p0"), result_accuracy);
+  TF_ASSERT_OK_AND_ASSIGN(const auto module, BuildHloModule(b));
+  const HloInstruction* root = GetRoot(*module);
+
+  EXPECT_EQ(
+      (Cast<HloUnaryInstruction>(root))->result_accuracy().tolerance().ulps(),
+      120.0f);
+  EXPECT_EQ((Cast<HloUnaryInstruction>(root))->result_accuracy().mode(),
+            ResultAccuracy::DEFAULT);
+}
+
 //============================================================================//
 // Experimental Test
 //============================================================================//
@@ -2143,6 +2161,13 @@ struct UnaryOpTestCase {
   std::function<XlaOp(XlaOp)> unary_op;
 };
 
+struct UnaryOpResultAccuracyTestCase {
+  std::string operand;
+  std::string expected;
+  const ResultAccuracy& result_accuracy;
+  std::function<XlaOp(XlaOp, const ResultAccuracy&)> unary_op;
+};
+
 struct BinaryOpTestCase {
   std::string lhs;
   std::string rhs;
@@ -2161,6 +2186,9 @@ std::array<const int64_t, 1> zero_array = {0};
 class XlaBuilderUnboundedUnaryOpTest
     : public ::testing::TestWithParam<UnaryOpTestCase> {};
 
+class XlaBuilderUnboundedUnaryOpResultAccuracyTest
+    : public ::testing::TestWithParam<UnaryOpResultAccuracyTestCase> {};
+
 class XlaBuilderUnboundedBinaryOpTest
     : public ::testing::TestWithParam<BinaryOpTestCase> {};
 
@@ -2170,6 +2198,20 @@ TEST_P(XlaBuilderUnboundedUnaryOpTest, UnboundedUnaryOpTest) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape expected,
                           ParseShape(GetParam().expected));
   GetParam().unary_op(Parameter(&b, 0, operand, "operand"));
+  TF_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<xla::HloModule> module,
+                          BuildHloModule(b));
+  EXPECT_THAT(GetRoot(*module),
+              GmockMatch(m::Op().WithShapeEqualTo(&expected)));
+}
+
+TEST_P(XlaBuilderUnboundedUnaryOpResultAccuracyTest,
+       UnboundedUnaryOpResultAccuracyTest) {
+  XlaBuilder b(TestName());
+  TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape(GetParam().operand));
+  TF_ASSERT_OK_AND_ASSIGN(const Shape expected,
+                          ParseShape(GetParam().expected));
+  GetParam().unary_op(Parameter(&b, 0, operand, "operand"),
+                      GetParam().result_accuracy);
   TF_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<xla::HloModule> module,
                           BuildHloModule(b));
   EXPECT_THAT(GetRoot(*module),
@@ -3519,7 +3561,6 @@ INSTANTIATE_TEST_SUITE_P(UnboundedDynamism, XlaBuilderUnboundedUnaryOpTest,
                               {"u32[?]", "u32[?]", &Clz},
                               {"f32[?]", "f32[?]", &Cos},
                               {"f32[?]", "f32[?]", &Erf},
-                              {"f32[?]", "f32[?]", &Exp},
                               {"f32[?]", "f32[?]", &Expm1},
                               {"f32[?]", "f32[?]", &Floor},
                               {"f32[?]", "f32[?]", &Imag},
@@ -3538,6 +3579,11 @@ INSTANTIATE_TEST_SUITE_P(UnboundedDynamism, XlaBuilderUnboundedUnaryOpTest,
                               {"f32[?]", "f32[?]", &Sin},
                               {"f32[?]", "f32[?]", &Sqrt},
                               {"f32[?]", "f32[?]", &Tanh}}));
+
+INSTANTIATE_TEST_SUITE_P(UnboundedDynamism,
+                         XlaBuilderUnboundedUnaryOpResultAccuracyTest,
+                         ::testing::ValuesIn<UnaryOpResultAccuracyTestCase>(
+                             {{"f32[?]", "f32[?]", ResultAccuracy(), &Exp}}));
 
 INSTANTIATE_TEST_SUITE_P(
     UnboundedDynamism, XlaBuilderUnboundedBinaryOpTest,

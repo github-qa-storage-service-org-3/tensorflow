@@ -1061,6 +1061,11 @@ class XlaBuilder {
   // Internal helper method that does the building for an arbitrary unary op.
   virtual XlaOp UnaryOp(HloOpcode unop, XlaOp operand);
 
+  // Internal helper method that does the building for an arbitrary unary op
+  // with a result accuracy intended for unary functions.
+  virtual XlaOp UnaryOp(HloOpcode unop, XlaOp operand,
+                        const ResultAccuracy& result_accuracy);
+
   // Internal helper method that does the building for an arbitrary binary op.
   // broadcast_dimensions specifies which dimensions to use for broadcasting
   // when the operation is between tensors of different ranks. The direction is
@@ -1579,7 +1584,7 @@ class XlaBuilder {
   friend XlaOp Atan2(XlaOp y, XlaOp x,
                      absl::Span<const int64_t> broadcast_dimensions);
   friend XlaOp Erf(XlaOp operand);
-  friend XlaOp Exp(XlaOp operand);
+  friend XlaOp Exp(XlaOp operand, const ResultAccuracy& result_accuracy);
   friend XlaOp Expm1(XlaOp operand);
   friend XlaOp Floor(XlaOp operand);
   friend XlaOp Ceil(XlaOp operand);
@@ -1729,6 +1734,11 @@ class XlaBuilder {
   // Creates an op with the given opcode and the output shape.
   virtual absl::StatusOr<XlaOp> AddOpWithShape(
       HloOpcode opcode, const Shape& shape, absl::Span<const XlaOp> operands);
+
+  // Creates an op with the given opcode and the output shape.
+  virtual absl::StatusOr<XlaOp> AddOpWithResultAccuracy(
+      HloOpcode opcode, const Shape& shape, absl::Span<const XlaOp> operands,
+      const ResultAccuracy& result_accuracy);
 
   // Here, InstructionType is either const HloInstructionProto* or non-const
   // HloInstructionProto*.
@@ -2680,7 +2690,8 @@ XlaOp Atan2(XlaOp y, XlaOp x,
 XlaOp Erf(XlaOp operand);
 
 // Enqueues an exp instruction onto the computation.
-XlaOp Exp(XlaOp operand);
+XlaOp Exp(XlaOp operand,
+          const ResultAccuracy& result_accuracy = ResultAccuracy());
 
 // Enqueues an expm1 instruction onto the computation.
 XlaOp Expm1(XlaOp operand);
