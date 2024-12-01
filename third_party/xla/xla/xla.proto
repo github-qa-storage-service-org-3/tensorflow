@@ -692,6 +692,9 @@ message DebugOptions {
   // transformation.
   int64 xla_gpu_collective_permute_decomposer_threshold = 237;
 
+  // Experimental optimizations for SPMD-based pipeline parallelism on GPU.
+  bool xla_gpu_enable_experimental_pipeline_parallelism_opt = 347;
+
   enum PartitioningAlgorithm {
     PARTITIONING_ALGORITHM_NOOP = 0;
     PARTITIONING_ALGORITHM_EXP0 = 1;
