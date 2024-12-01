@@ -240,6 +240,12 @@ class IfrtToVifrtTypeConverter : public VifrtTypeConverterBuiltin {
         memory_kind_attr =
             mlir::StringAttr::get(array.getContext(), kVifrtDefaultString);
       };
+      mlir::StringAttr layout_mode_attr = array.getLayoutModeAttr();
+      if (!layout_mode_attr) {
+        // Use a default string value to indicate that layout_mode was not set.
+        layout_mode_attr =
+            mlir::StringAttr::get(array.getContext(), kVifrtDefaultString);
+      }
       auto sharding_attr = convertGeneric(array.getShardingAttr(), this);
       if (!sharding_attr) {
         LLVM_DEBUG(llvm::dbgs() << "Failed to convert sharding: "
@@ -255,7 +261,7 @@ class IfrtToVifrtTypeConverter : public VifrtTypeConverterBuiltin {
       }
       return VifrtArrayV1Type::get(array.getContext(), array.getShape(),
                                    sharding_attr, devices_attr,
-                                   memory_kind_attr);
+                                   memory_kind_attr, layout_mode_attr);
     });
     addConversion([](IfrtControlType type) -> mlir::Type {
       return VifrtControlV1Type::get(type.getContext());
