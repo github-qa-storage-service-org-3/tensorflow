@@ -307,7 +307,12 @@ void DerivedXLineBuilder::ExpandOrAddLevelEvent(
     const XEventMetadata& event_metadata, tsl::profiler::Timespan event_span,
     std::optional<int64_t> group_id, int level) {
   auto& last_event = last_event_by_level_[level];
-  if (last_event && last_event->ShouldExpand(event_metadata, group_id)) {
+  // Expand only if the gap between the last event and the new event is less
+  // than 2 * duration of the last event.
+  if (last_event &&
+      (last_event->GetTimespan().end_ps() +
+       2 * last_event->GetTimespan().duration_ps()) >= event_span.begin_ps() &&
+      last_event->ShouldExpand(event_metadata, group_id)) {
     // Expand the last event to cover the given event.
     last_event->Expand(event_span);
   } else {
