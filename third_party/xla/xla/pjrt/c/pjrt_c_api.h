@@ -216,7 +216,6 @@ PJRT_DEFINE_STRUCT_TRAITS(PJRT_Plugin_Attributes_Args, attributes);
 
 // Returns an array of plugin attributes which are key-value pairs. One example
 // attribute is the minimum supported StableHLO version.
-// TODO(b/280349977): standardize the list of attributes.
 typedef PJRT_Error* PJRT_Plugin_Attributes(PJRT_Plugin_Attributes_Args* args);
 
 // ---------------------------------- Events -----------------------------------
