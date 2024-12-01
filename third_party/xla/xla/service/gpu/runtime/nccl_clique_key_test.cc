@@ -24,16 +24,16 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/btree_map.h"
-#include "absl/status/status.h"
+#include "xla/backends/gpu/collectives/gpu_collectives.h"
+#include "xla/core/collectives/clique_id.h"
 #include "xla/service/global_device_id.h"
-#include "tsl/platform/status_matchers.h"
 #include "tsl/platform/test.h"
 
 namespace xla::gpu {
-using ::tsl::testing::StatusIs;
+
 static NcclCliqueKey GetBaseCliqueKey() {
-  return NcclCliqueKey({GlobalDeviceId(0), GlobalDeviceId(1)}, NcclStreamId(0),
-                       AsyncStreamKind::kCollective,
+  return NcclCliqueKey({GlobalDeviceId(0), GlobalDeviceId(1)},
+                       CollectiveStreamId(0), AsyncStreamKind::kCollective,
                        std::vector<std::vector<GlobalDeviceId>>{
                            {GlobalDeviceId(0), GlobalDeviceId(1)},
                            {GlobalDeviceId(2), GlobalDeviceId(3)}});
@@ -44,10 +44,10 @@ TEST(NcclCliqueKeyTest, IsSubsetOf) {
   GlobalDeviceId id2 = GlobalDeviceId(2);
   GlobalDeviceId id3 = GlobalDeviceId(3);
 
-  NcclCliqueKey key0({id0, id1}, NcclStreamId(0));
-  NcclCliqueKey key1({id0, id1, id2, id3}, NcclStreamId(0));
-  NcclCliqueKey key2({id0, id1, id2, id3}, NcclStreamId(1));
-  NcclCliqueKey key3({id1, id2, id3}, NcclStreamId(0));
+  NcclCliqueKey key0({id0, id1}, CollectiveStreamId(0));
+  NcclCliqueKey key1({id0, id1, id2, id3}, CollectiveStreamId(0));
+  NcclCliqueKey key2({id0, id1, id2, id3}, CollectiveStreamId(1));
+  NcclCliqueKey key3({id1, id2, id3}, CollectiveStreamId(0));
 
   EXPECT_TRUE(key0.IsSubsetOf(key1));
   EXPECT_FALSE(key0.IsSubsetOf(key2));
@@ -60,9 +60,9 @@ TEST(NcclCliqueKeyTest, Compare) {
   GlobalDeviceId id2 = GlobalDeviceId(2);
   GlobalDeviceId id3 = GlobalDeviceId(3);
 
-  NcclCliqueKey key0({id0, id1}, NcclStreamId(0));
-  NcclCliqueKey key1({id1, id2, id3}, NcclStreamId(0));
-  NcclCliqueKey key2({id1, id2, id3}, NcclStreamId(1));
+  NcclCliqueKey key0({id0, id1}, CollectiveStreamId(0));
+  NcclCliqueKey key1({id1, id2, id3}, CollectiveStreamId(0));
+  NcclCliqueKey key2({id1, id2, id3}, CollectiveStreamId(1));
 
   EXPECT_LT(key0, key1);
   EXPECT_GT(key1, key0);
@@ -76,16 +76,17 @@ TEST(NcclCliqueKeyTest, CompareWithParticipantGroups) {
   GlobalDeviceId id3 = GlobalDeviceId(3);
 
   // The keys are not equal because the replica groups are different.
-  NcclCliqueKey key0({id0, id1}, NcclStreamId(0), AsyncStreamKind::kCollective,
+  NcclCliqueKey key0({id0, id1}, CollectiveStreamId(0),
+                     AsyncStreamKind::kCollective,
                      std::vector<std::vector<GlobalDeviceId>>{{id0, id1}});
   NcclCliqueKey key1(
-      {id0, id1}, NcclStreamId(0), AsyncStreamKind::kCollective,
+      {id0, id1}, CollectiveStreamId(0), AsyncStreamKind::kCollective,
       std::vector<std::vector<GlobalDeviceId>>{{id0, id1}, {id2, id3}});
   EXPECT_FALSE(key0 == key1);
 
   // With no replica groups, the keys are equal
-  NcclCliqueKey key0_nogroups({id0, id1}, NcclStreamId(0));
-  NcclCliqueKey key1_nogroups({id0, id1}, NcclStreamId(0));
+  NcclCliqueKey key0_nogroups({id0, id1}, CollectiveStreamId(0));
+  NcclCliqueKey key1_nogroups({id0, id1}, CollectiveStreamId(0));
   EXPECT_EQ(key0_nogroups, key1_nogroups);
 }
 
@@ -97,15 +98,15 @@ TEST(NcclCliqueKeyTest, CompareWithPermutedParticipantGroups) {
 
   // The keys are equal because the replica groups are same up to permutation.
   NcclCliqueKey key0(
-      {id0, id1}, NcclStreamId(0), AsyncStreamKind::kCollective,
+      {id0, id1}, CollectiveStreamId(0), AsyncStreamKind::kCollective,
       std::vector<std::vector<GlobalDeviceId>>{{id3, id2}, {id0, id1}});
   NcclCliqueKey key1(
-      {id0, id1}, NcclStreamId(0), AsyncStreamKind::kCollective,
+      {id0, id1}, CollectiveStreamId(0), AsyncStreamKind::kCollective,
       std::vector<std::vector<GlobalDeviceId>>{{id0, id1}, {id2, id3}});
   EXPECT_EQ(key0, key1);
 
   NcclCliqueKey key_other(
-      {id0, id1}, NcclStreamId(0), AsyncStreamKind::kCollective,
+      {id0, id1}, CollectiveStreamId(0), AsyncStreamKind::kCollective,
       std::vector<std::vector<GlobalDeviceId>>{{id0, id2}, {id1, id3}});
   EXPECT_FALSE(key0 == key_other);
 }
@@ -116,8 +117,8 @@ TEST(NcclCliqueKeyTest, BtreeIterationOrder) {
   GlobalDeviceId id2 = GlobalDeviceId(2);
   GlobalDeviceId id3 = GlobalDeviceId(3);
 
-  NcclCliqueKey key0({id0, id2}, NcclStreamId(0));
-  NcclCliqueKey key1({id0, id1, id2, id3}, NcclStreamId(0));
+  NcclCliqueKey key0({id0, id2}, CollectiveStreamId(0));
+  NcclCliqueKey key1({id0, id1, id2, id3}, CollectiveStreamId(0));
 
   absl::btree_map<NcclCliqueKey, int64_t, std::greater<NcclCliqueKey>> map;
   map[key0] = 0;
@@ -141,7 +142,7 @@ TEST(NcclCliqueKeyGettersTest, Rank) {
 }
 
 TEST(NcclCliqueKeyGettersTest, StreamId) {
-  EXPECT_EQ(GetBaseCliqueKey().stream_id(), NcclStreamId(0));
+  EXPECT_EQ(GetBaseCliqueKey().stream_id(), CollectiveStreamId(0));
 }
 
 TEST(NcclCliqueKeyGetterTest, ToString) {
@@ -152,22 +153,17 @@ TEST(NcclCliqueKeyGetterTest, ToString) {
 TEST(NcclCliqueIdGettersTest, Data) {
   std::array<char, 128> id;
   std::fill(id.begin(), id.end(), 0x01);
-  NcclCliqueId clique_id(id.data());
+  CliqueId clique_id(id.data());
   EXPECT_EQ(std::memcmp(clique_id.data().data(), id.data(), 128), 0);
 }
 
 TEST(NcclCliqueIdStringTest, ToString) {
   std::array<char, 128> id;
   std::fill(id.begin(), id.end(), 0x01);
-  NcclCliqueId clique_id(id.data());
+  CliqueId clique_id(id.data());
   for (int i = 0; i < 128; ++i) {
     EXPECT_THAT(clique_id.ToString().substr(i, 1), "\x1");
   }
-}
-
-TEST(NcclCliqueIdStringTest, FromInvalidString) {
-  EXPECT_THAT(NcclCliqueId::FromString("123"),
-              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 }  // namespace xla::gpu
