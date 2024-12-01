@@ -13,20 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
-#define XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
+#ifndef XLA_CORE_COLLECTIVES_RANK_ID_H_
+#define XLA_CORE_COLLECTIVES_RANK_ID_H_
 
-#include "xla/backends/gpu/collectives/gpu_clique_key.h"
+#include <cstdint>
 
-namespace xla::gpu {
+#include "xla/tsl/lib/gtl/int_type.h"
 
-//===----------------------------------------------------------------------===//
-// NcclCliqueKey
-//===----------------------------------------------------------------------===//
+namespace xla {
 
-// TODO(b/380457503): Delete this alias.
-using NcclCliqueKey = GpuCliqueKey;
+// Strongly-typed integer type for defining the rank of the process in the
+// collective clique.
+TSL_LIB_GTL_DEFINE_INT_TYPE(RankId, int64_t);
 
-}  // namespace xla::gpu
+}  // namespace xla
 
-#endif  // XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
+#endif  // XLA_CORE_COLLECTIVES_RANK_ID_H_

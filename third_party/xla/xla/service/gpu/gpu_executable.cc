@@ -249,7 +249,7 @@ class ResourceRequests : public Thunk::ResourceRequests {
     NcclClique::AcquiredCliquesMap cliques_map;
 
     for (const CliqueRequest& r : ordered_cliques) {
-      std::optional<int64_t> rank = r.key.rank(params.global_device_id);
+      std::optional<RankId> rank = r.key.rank(params.global_device_id);
 
       if (!rank.has_value()) {
         return absl::InternalError(absl::StrCat(
@@ -259,8 +259,8 @@ class ResourceRequests : public Thunk::ResourceRequests {
 
       bool is_local = r.key.devices().size() == r.num_local_participants;
       TF_ASSIGN_OR_RETURN(
-          const NcclCliqueIdCallback* clique_id_callback,
-          GetNcclCliqueIdCallback(params.nccl_clique_id_callback, is_local));
+          const CliqueIdCallback* clique_id_callback,
+          GetCliqueIdCallback(params.nccl_clique_id_callback, is_local));
 
       int64_t max_channels = r.key.stream_kind() == AsyncStreamKind::kCollective
                                  ? params.collective_max_nchannels
@@ -348,7 +348,7 @@ absl::Status ExecuteThunks(
       run_options->run_options().gpu_executable_run_options()
           ? run_options->run_options()
                 .gpu_executable_run_options()
-                ->enable_mock_nccl_collectives()
+                ->enable_mock_collectives()
           : false;
 
   int64_t collective_max_nchannels =

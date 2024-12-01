@@ -13,20 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
-#define XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
+#ifndef XLA_BACKENDS_GPU_COLLECTIVES_GPU_COLLECTIVES_H_
+#define XLA_BACKENDS_GPU_COLLECTIVES_GPU_COLLECTIVES_H_
 
-#include "xla/backends/gpu/collectives/gpu_clique_key.h"
+#include "xla/core/collectives/collectives.h"
 
 namespace xla::gpu {
 
-//===----------------------------------------------------------------------===//
-// NcclCliqueKey
-//===----------------------------------------------------------------------===//
-
-// TODO(b/380457503): Delete this alias.
-using NcclCliqueKey = GpuCliqueKey;
+// XLA:GPU extension of the Collectives interface with GPU-specific APIs.
+class GpuCollectives : public Collectives {
+ public:
+};
 
 }  // namespace xla::gpu
 
-#endif  // XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
+#endif  // XLA_BACKENDS_GPU_COLLECTIVES_GPU_COLLECTIVES_H_
