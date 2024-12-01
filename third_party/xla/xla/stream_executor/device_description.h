@@ -23,12 +23,14 @@ limitations under the License.
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
@@ -59,9 +61,9 @@ struct CudaComputeCapability {
     this->minor = minor;
   }
   // cuda arch format "major.minor", example: "8.6".
-  explicit CudaComputeCapability(const std::string &cuda_arch_name) {
+  explicit CudaComputeCapability(std::string_view cuda_arch_name) {
     std::vector<std::string> split = absl::StrSplit(cuda_arch_name, '.');
-    assert(split.size() == 2);
+    DCHECK_EQ(split.size(), 2);
     this->major = std::stoi(split[0]);
     this->minor = std::stoi(split[1]);
   }
@@ -274,7 +276,7 @@ class DeviceDescription {
   // Returns the platform being run on; this value is primarily intended for
   // printing, and comes out something like "OpenCL 1.2" or "Compute Capability
   // 3.5".
-  const std::string &platform_version() const { return platform_version_; }
+  std::string_view platform_version() const { return platform_version_; }
 
   // Returns the driver version interfacing with the underlying platform.
   // Note for CUDA this returns the CUDA Toolkit version the driver ships with.
@@ -289,7 +291,7 @@ class DeviceDescription {
   }
 
   // Returns the name that the device reports. Vendor dependent.
-  const std::string &name() const { return name_; }
+  std::string_view name() const { return name_; }
 
   // Gets a human-readable description of the device, e.g. "nvidia GPU
   // supporting sm75 with 32GB RAM, 80 SMs, ...".  This is intended to be the
@@ -299,11 +301,11 @@ class DeviceDescription {
   // This string is not guaranteed to be stable between versions.  Please DO NOT
   // rely on it never changing.  (Within one version of the code, it won't
   // change, don't worry.)
-  const std::string &model_str() const { return model_str_; }
+  std::string_view model_str() const { return model_str_; }
 
   // Returns the PCI bus identifier for this device, of the form
   // [domain]:[bus]:[device].[function]
-  const std::string &pci_bus_id() const { return pci_bus_id_; }
+  std::string_view pci_bus_id() const { return pci_bus_id_; }
 
   // Returns the NUMA node associated with this device, for use in
   // determining socket locality. If the NUMA node could not be determined, -1
@@ -331,34 +333,28 @@ class DeviceDescription {
   // Returns the limit on the total number of threads that can be launched in a
   // single block; i.e. the limit on x * y * z dimensions of a ThreadDim.
   // This limit affects what constitutes a legitimate kernel launch request.
-  const int64_t &threads_per_block_limit() const {
-    return threads_per_block_limit_;
-  }
+  int64_t threads_per_block_limit() const { return threads_per_block_limit_; }
 
   // Returns the limit on the total number of threads that can be simultaneously
   // launched on a given multiprocessor.
-  const int64_t &threads_per_core_limit() const {
-    return threads_per_core_limit_;
-  }
+  int64_t threads_per_core_limit() const { return threads_per_core_limit_; }
 
   // Returns the number of threads per warp/wavefront.
-  constexpr int64_t threads_per_warp() const { return threads_per_warp_; }
+  int64_t threads_per_warp() const { return threads_per_warp_; }
 
   // Returns the limit on the total number of registers per core.
-  const int64_t &registers_per_core_limit() const {
-    return registers_per_core_limit_;
-  }
+  int64_t registers_per_core_limit() const { return registers_per_core_limit_; }
 
   // Returns the limit on the total number of registers that can be
   // simultaneously used by a block.
-  const int64_t &registers_per_block_limit() const {
+  int64_t registers_per_block_limit() const {
     return registers_per_block_limit_;
   }
 
   // Returns the number of address bits available to kernel code running on the
   // platform. This affects things like the maximum allocation size and perhaps
   // types used in kernel code such as size_t.
-  const int64_t &device_address_bits() const { return device_address_bits_; }
+  int64_t device_address_bits() const { return device_address_bits_; }
 
   // Returns the device memory size in bytes.
   int64_t device_memory_size() const { return device_memory_size_; }
@@ -379,7 +375,7 @@ class DeviceDescription {
 
   // Returns the device vendor string, e.g., "NVIDIA Corporation", "Advanced
   // Micro Devices, Inc.", or "GenuineIntel".
-  const std::string &device_vendor() const { return device_vendor_; }
+  std::string_view device_vendor() const { return device_vendor_; }
 
   // Returns the CUDA compute capability if we're running on the CUDA platform.
   // If a CUDA compute capability is not available, the major version will be
