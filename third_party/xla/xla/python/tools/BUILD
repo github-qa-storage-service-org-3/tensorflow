@@ -89,5 +89,6 @@ py_strict_test(
         # copybara:uncomment "//third_party/py/google/protobuf:use_fast_cpp_protos",
         "//third_party/py/numpy",
         "//xla:xla_data_proto_py",
+        "//xla/python:xla_extension",
     ],
 )

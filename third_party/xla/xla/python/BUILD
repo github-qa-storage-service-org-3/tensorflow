@@ -1520,3 +1520,16 @@ py_strict_test(
         "@absl_py//absl/testing:parameterized",
     ] + xla_py_test_deps(),
 )
+
+py_strict_test(
+    name = "xla_compiler_test",
+    srcs = ["xla_compiler_test.py"],
+    main = "xla_compiler_test.py",
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        ":xla_extension",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:absltest",
+    ] + xla_py_test_deps(),
+)

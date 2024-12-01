@@ -15,9 +15,11 @@ limitations under the License.
 
 #include "xla/python/xla_compiler.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -66,6 +68,7 @@ limitations under the License.
 #include "xla/pjrt/exceptions.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/status_casters.h"
+#include "xla/primitive_util.h"
 #include "xla/python/nb_absl_span.h"  // IWYU pragma: keep
 #include "xla/python/nb_helpers.h"
 #include "xla/python/nb_numpy.h"
@@ -232,9 +235,8 @@ absl::StatusOr<Shape> MakeShapeWithDenseLayout(
     *shape.mutable_layout() = LayoutUtil::MakeLayout(*minor_to_major);
     TF_RETURN_IF_ERROR(
         LayoutUtil::ValidateLayoutForShape(shape.layout(), shape));
-  } else {
-    shape.clear_layout();
   }
+
   return shape;
 }
 
@@ -441,6 +443,67 @@ absl::StatusOr<HloSharding> SubgroupWithTileAssignmentHelper(
     nb::ndarray<int64_t, nb::c_contig> tile_assignment,
     absl::Span<const OpSharding::Type> subgroup_types) {
   return HloSharding::Subgroup(NDArrayToArray(tile_assignment), subgroup_types);
+}
+
+nb::dlpack::dtype PrimativeTypeToDlpackDtype(PrimitiveType primitive_type) {
+  nb::dlpack::dtype dtype;
+
+  dtype.lanes = 1;
+  dtype.bits = primitive_util::BitWidth(primitive_type);
+
+  if (primitive_util::IsSignedIntegralType(primitive_type)) {
+    dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Int);
+  } else if (primitive_util::IsUnsignedIntegralType(primitive_type)) {
+    dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::UInt);
+  } else if (primitive_util::IsFloatingPointType(primitive_type)) {
+    if (primitive_type == xla::PrimitiveType::BF16) {
+      dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Bfloat);
+    } else {
+      dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Float);
+    }
+    dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Float);
+  } else if (primitive_util::IsComplexType(primitive_type)) {
+    dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Complex);
+  } else if (primitive_type == xla::PrimitiveType::PRED) {
+    dtype.code = static_cast<uint8_t>(nb::dlpack::dtype_code::Bool);
+  } else {
+    throw XlaRuntimeError(
+        absl::StrCat("Unsupported type: ", PrimitiveType_Name(primitive_type)));
+  }
+
+  return dtype;
+}
+
+nb::ndarray<> LiteralToNdarray(Literal* obj) {
+  const Shape& shape = obj->shape();
+
+  if (!shape.has_layout()) {
+    throw XlaRuntimeError(
+        "Creating an array is only supported for Literals with a layout.");
+  }
+
+  const Layout& layout = shape.layout();
+
+  if (!layout.tiles().empty()) {
+    throw XlaRuntimeError(
+        "Creating an array from a tiled Literal is not supported.");
+  }
+
+  if (!LayoutUtil::IsDenseArray(shape)) {
+    throw XlaRuntimeError(
+        "Creating an array is only supported for dense Literals.");
+  }
+
+  xla::PrimitiveType primitive_type = shape.element_type();
+  nb::dlpack::dtype dtype = PrimativeTypeToDlpackDtype(primitive_type);
+
+  absl::Span<const int64_t> dimensions = shape.dimensions();
+  std::vector<size_t> unsigned_dimensions(dimensions.begin(), dimensions.end());
+  auto strides = StridesForShape(primitive_type, dimensions, layout);
+
+  return nb::ndarray<>(obj->untyped_data(), unsigned_dimensions.size(),
+                       unsigned_dimensions.data(), {}, strides.data(), dtype,
+                       nb::device::cpu::value, 0);
 }
 
 }  // namespace
@@ -666,7 +729,26 @@ void BuildXlaCompilerSubmodule(nb::module_& m) {
            [](const ShapeIndex& shape_ind) { return absl::HashOf(shape_ind); });
 
   // Literals
-  nb::class_<Literal>(m, "Literal").def("__repr__", &Literal::ToString);
+  nb::class_<Literal>(m, "Literal")
+      .def(nb::init<const Shape&>())
+      .def("__repr__", &Literal::ToString)
+      .def(
+          "numpy_view",
+          [](Literal* obj) {
+            // By design __dlpack__ is immutable:
+            // https://data-apis.org/array-api/latest/design_topics/copies_views_and_mutation.html#copyview-mutability
+            // so we can't provide an interface to get a concrete numpy array
+            // which allows for mutating of the underlying literal.
+            return nb::ndarray<nb::numpy>(LiteralToNdarray(obj));
+          },
+          "Get a mutable numpy view into the literal",
+          nb::rv_policy::reference_internal)
+      .def(
+          "__dlpack__",
+          [](Literal* obj, nb::kwargs kwargs) { return LiteralToNdarray(obj); },
+          nb::rv_policy::reference_internal)
+      .def("__dlpack_device__",
+           []() { return std::make_pair(nb::device::cpu::value, 0); });
 
   nb::class_<XlaComputation>(m, "XlaComputation")
       .def("__init__",
