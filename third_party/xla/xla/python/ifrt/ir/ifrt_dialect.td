@@ -168,40 +168,43 @@ def Ifrt_ArrayType : TypeDef<Ifrt_Dialect, "IfrtArray"> {
     "::mlir::RankedTensorType":$shape,
     "::xla::ifrt::IfrtShardingAttrInterface":$sharding_attr,
     Ifrt_DevicesAttr:$devices_attr,
-    OptionalParameter<"::mlir::StringAttr">:$memory_kind_attr);
+    OptionalParameter<"::mlir::StringAttr">:$memory_kind_attr,
+    OptionalParameter<"::mlir::StringAttr">:$layout_mode_attr);
 
   let builders = [
     // Constructs an array with unspecified sharding.
     TypeBuilder<(ins
       "::mlir::RankedTensorType":$shape,
       "::xla::ifrt::IfrtDevicesAttr":$devices_attr,
-      "::mlir::StringAttr":$memory_kind_attr), [{
+      "::mlir::StringAttr":$memory_kind_attr,
+      "::mlir::StringAttr":$layout_mode_attr), [{
         return Base::get(
           $_ctxt, shape, ::xla::ifrt::IfrtUnspecifiedShardingAttr::get($_ctxt),
-          devices_attr, memory_kind_attr);
+          devices_attr, memory_kind_attr, layout_mode_attr);
       }]>,
     TypeBuilder<(ins
       "::mlir::RankedTensorType":$shape,
       "::xla::ifrt::IfrtShardingParamAttr":$sharding_attr,
       "::xla::ifrt::IfrtDevicesAttr":$devices_attr,
-      "::mlir::StringAttr":$memory_kind_attr), [{
+      "::mlir::StringAttr":$memory_kind_attr,
+      "::mlir::StringAttr":$layout_mode_attr), [{
         return Base::get(
-          $_ctxt, shape, sharding_attr, devices_attr, memory_kind_attr);
+          $_ctxt, shape, sharding_attr, devices_attr, memory_kind_attr,
+          layout_mode_attr);
       }]>
   ];
 
-  let assemblyFormat = [{
-    `<` $shape`,` $sharding_attr `,` $devices_attr
-    (`,` `memory_kind` `=` $memory_kind_attr^)? `>`
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let genVerifyDecl = 1;
 
   let extraClassDeclaration = [{
     // Get logical device ids from `devices_attr`.
     ::llvm::ArrayRef<int> getDevices() const;
-    // Get the memory kind from `memory_kind`.
+    // Get the memory kind from `memory_kind_attr`.
     ::xla::ifrt::MemoryKind MemoryKind() const;
+    // Get the layout mode from `layout_mode_attr`.
+    ::xla::LayoutMode LayoutMode() const;
   }];
 }
 
