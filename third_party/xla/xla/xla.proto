@@ -1068,6 +1068,11 @@ message DebugOptions {
   // interpretation of these values is left to the backend.
   map<string, string> xla_backend_extra_options = 500;
 
+  // If true, XLA will annotate instructions in the dumps with emitter code
+  // location (source:line) annotations. That helps to identify the source of
+  // the code that emits a particular instruction.
+  bool xla_dump_emitter_loc = 501;
+
   // Reserved tags were xla_hlo_dump_as_graphdef, xla_dump_to,
   // xla_gpu_use_horizontal_fusion,
   // xla_gpu_unsafe_fallback_to_driver_on_ptxas_error,
