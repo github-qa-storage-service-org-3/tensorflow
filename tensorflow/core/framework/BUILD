@@ -541,7 +541,13 @@ cc_library(
     srcs = ["tensor_testutil.cc"],
     hdrs = ["tensor_testutil.h"],
     copts = tf_copts(),
-    visibility = ["//tensorflow:internal"],
+    # copybara:uncomment_begin(google-only)
+    # visibility = ["//tensorflow:internal"],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -614,7 +620,13 @@ cc_library(
     testonly = 1,
     srcs = ["fake_input.cc"],
     hdrs = ["fake_input.h"],
-    visibility = ["//tensorflow:internal"],
+    # copybara:uncomment_begin(google-only)
+    # visibility = ["//tensorflow:internal"],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         ":attr_value_proto_cc",
         ":op_def_proto_cc",

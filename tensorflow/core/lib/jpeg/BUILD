@@ -37,6 +37,11 @@ cc_library(
         "//tensorflow:windows": [],
         "//conditions:default": ["-ldl"],
     }),
+    # copybara:comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",

@@ -419,9 +419,15 @@ cc_library(
         "stats_calculator.h",
     ],
     copts = tf_copts(),
+    # copybara:uncomment_begin(google-only)
+    # visibility = [
+    # "//tensorflow:internal",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
     visibility = [
-        "//tensorflow:internal",
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         "@local_xla//xla/tsl/util:stats_calculator_portable",
     ],
