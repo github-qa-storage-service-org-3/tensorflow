@@ -16,18 +16,15 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
 #define XLA_SERVICE_GPU_RUNTIME_NCCL_CLIQUE_KEY_H_
 
-#include <array>
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
-#include "absl/crc/crc32c.h"
+#include "absl/hash/hash.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
-#include "absl/types/span.h"
+#include "xla/core/collectives/clique_id.h"
+#include "xla/core/collectives/clique_key.h"
 #include "xla/service/global_device_id.h"
 #include "xla/tsl/lib/gtl/int_type.h"
 
@@ -78,7 +75,7 @@ inline NcclStreamId GetStreamId(
 // within a cluster. The stream_id is used to create different NCCL clique and
 // communicators for collectives executed on different streams within an
 // executable.
-class NcclCliqueKey {
+class NcclCliqueKey : public CliqueKey {
  public:
   explicit NcclCliqueKey(
       std::vector<GlobalDeviceId> devices,
@@ -86,35 +83,29 @@ class NcclCliqueKey {
       AsyncStreamKind stream_kind = AsyncStreamKind::kCollective,
       std::vector<std::vector<GlobalDeviceId>> participant_groups = {});
 
-  absl::Span<const GlobalDeviceId> devices() const;
-
   NcclStreamId stream_id() const;
-
-  // Returns the rank of the global device in the clique.
-  std::optional<int64_t> rank(GlobalDeviceId id) const;
 
   // Returns true if this clique is a subset of `other`: both cliques have the
   // same `stream_id` and all clique devices are part of `other` clique.
-  bool IsSubsetOf(const NcclCliqueKey& other) const;
+  bool IsSubsetOf(const CliqueKey& other) const final;
 
   // Returns the stream kind for this clique key,
   // stream kind will be used to specify what configuration
   // to pass for each type of operation.
   AsyncStreamKind stream_kind() const { return stream_kind_; }
 
-  std::string ToString() const;
-
-  template <typename H>
-  friend H AbslHashValue(H h, const NcclCliqueKey& k);
+  std::string ToString() const final;
 
   friend bool operator==(const NcclCliqueKey& a, const NcclCliqueKey& b);
   friend bool operator<(const NcclCliqueKey& a, const NcclCliqueKey& b);
   friend bool operator>(const NcclCliqueKey& a, const NcclCliqueKey& b);
 
  private:
-  std::vector<GlobalDeviceId> devices_;
+  void HashValue(absl::HashState state) const final;
+
   NcclStreamId stream_id_;
   AsyncStreamKind stream_kind_;
+
   // The full list of groups across all devices which this clique is a part of.
   // When enable_nccl_comm_splitting is enabled, this is used to distinguish
   // which cliques can be reused from the cache or must be split in order to
@@ -128,12 +119,6 @@ class NcclCliqueKey {
   std::vector<std::vector<GlobalDeviceId>> participant_groups_;
 };
 
-template <typename H>
-H AbslHashValue(H h, const NcclCliqueKey& k) {
-  return H::combine(std::move(h), k.devices_, k.stream_id_,
-                    k.participant_groups_);
-}
-
 bool operator==(const NcclCliqueKey& a, const NcclCliqueKey& b);
 bool operator<(const NcclCliqueKey& a, const NcclCliqueKey& b);
 
@@ -141,42 +126,8 @@ bool operator<(const NcclCliqueKey& a, const NcclCliqueKey& b);
 // NcclCliqueId
 //===----------------------------------------------------------------------===//
 
-// All collective cliques have a globally unique ID (128 bytes long for NCCL)
-// that allows multiple hosts and devices to find each other and agree who is a
-// member of a clique. It is a user responsibility to redistribute this id to
-// all participating hosts (i.e. JAX uses shared KV store for that). For single
-// host collective operations XLA automatically generates a unique id for local
-// cliques (cliques consisting of devices visible from a process).
-
-// A globally unique collective clique identifier.
-class NcclCliqueId {
- public:
-  static constexpr int32_t kSize = 128;
-
-  static absl::StatusOr<NcclCliqueId> FromString(std::string_view str);
-
-  NcclCliqueId();
-  explicit NcclCliqueId(char bytes[kSize]);
-
-  absl::Span<const char> data() const;
-  std::string ToString() const;
-
-  uint32_t fingerprint() const {
-    return static_cast<uint32_t>(
-        absl::ComputeCrc32c(absl::string_view(data_.data(), kSize)));
-  }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const NcclCliqueId& id);
-
- private:
-  std::array<char, kSize> data_;
-};
-
-template <typename H>
-H AbslHashValue(H h, const NcclCliqueId& id) {
-  return H::combine(std::move(h), id.data());
-}
+// TODO(b/380457503): Remove this alias once we migrate to CliqueId.
+using NcclCliqueId = CliqueId;
 
 // A callback to get a unique clique id (see `ncclUniqueId` documentation).
 using NcclCliqueIdCallback =  // NOLINT
