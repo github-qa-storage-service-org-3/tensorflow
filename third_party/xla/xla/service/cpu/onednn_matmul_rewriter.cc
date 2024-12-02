@@ -29,6 +29,7 @@ limitations under the License.
 #include "xla/service/cpu/onednn_matmul.h"
 #include "xla/service/cpu/onednn_memory_util.h"
 #include "xla/service/cpu/onednn_util.h"
+#include "xla/service/hlo_cost_analysis.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/status_macros.h"
 #include "tsl/platform/logging.h"  // IWYU pragma: keep
@@ -247,11 +248,6 @@ inline bool CompatibleElementType(const HloInstruction* instr) {
   return element_type == BF16 || element_type == F32 || element_type == F16;
 }
 
-inline bool LowPrecisionType(const HloInstruction* instr) {
-  PrimitiveType element_type = instr->shape().element_type();
-  return element_type == BF16 || element_type == F16;
-}
-
 // Type conversion from and to any of BF16, F16 and FP32.
 // TODO(intel-tf): Support more types when enabled.
 template <typename Pattern>
@@ -359,15 +355,15 @@ bool OneDnnMatMulRewriter::ShouldRewrite(const HloInstruction* dot_instr) {
   }
 
   // OneDNN matmul has scratch allocation and copy overheads. The overheads
-  // can be amortized if there is sufficient MAC (multiply-accumulate)
-  // operations. We don't rewrite for small cases (determined empirically).
+  // can be amortized if there is sufficient number of flops. We don't rewrite
+  // for small cases (determined empirically).
   // TODO(intel-tf): Relax the condition when more optimizations in oneDNN
   // matmul is achieved.
-  auto rank = lhs_shape.rank();
-  auto rhs_dims = rhs_shape.dimensions();
-  int64_t num_mac_ops = ShapeUtil::ElementsIn(lhs_shape) * rhs_dims.back();
-  int mac_ops_threshold = (rank == 2) ? (1 << 23) : (1 << 18);
-  return (num_mac_ops >= mac_ops_threshold);
+  auto num_flops = xla::HloCostAnalysis::GetDotFlops(lhs_shape, output_shape,
+                                                     dot_dim_numbers);
+  auto rank = output_shape.rank();
+  auto flops_threshold = (rank == 2) ? (1 << 24) : (1 << 19);
+  return (num_flops >= flops_threshold);
 }
 
 class OneDnnMatMulRewriteVisitor : public DfsHloRewriteVisitor {
@@ -515,11 +511,12 @@ class OneDnnMatMulRewriteVisitor : public DfsHloRewriteVisitor {
       HloInstruction* new_instr;
       // If matched pattern has custom-call -> bitcast -> add, then we need to
       // insert bitcast after the new fusion to maintain the correct shape
-      // (new-custom-call -> bitcast). Also, this will be followed by -> convert
-      // for bf16 case to avoid datatype mismatch.
+      // (new-custom-call -> bitcast). Also, this will optionally be followed
+      // by -> convert for bf16 case to avoid datatype mismatch.
       if (optional_dot_bitcast != nullptr &&
           optional_dot_bitcast->opcode() == HloOpcode::kBitcast) {
-        if (LowPrecisionType(matmul_call)) {
+        if (optional_dot_convert != nullptr &&
+            optional_dot_convert->opcode() == HloOpcode::kConvert) {
           auto bitcast_call =
               matmul_call->AddInstruction(HloInstruction::CreateBitcast(
                   ShapeUtil::ChangeElementType(
@@ -527,18 +524,21 @@ class OneDnnMatMulRewriteVisitor : public DfsHloRewriteVisitor {
                   matmul_call));
           new_instr =
               bitcast_call->AddInstruction(HloInstruction::CreateConvert(
-                  ShapeUtil::ChangeElementType(bitcast_call->shape(),
-                                               PrimitiveType::F32),
+                  ShapeUtil::ChangeElementType(
+                      bitcast_call->shape(),
+                      optional_dot_convert->shape().element_type()),
                   bitcast_call));
         } else {
           new_instr = matmul_call->AddInstruction(
               HloInstruction::CreateBitcast(instr->shape(), matmul_call));
         }
       } else {
-        if (LowPrecisionType(matmul_call)) {
+        if (optional_dot_convert != nullptr &&
+            optional_dot_convert->opcode() == HloOpcode::kConvert) {
           new_instr = matmul_call->AddInstruction(HloInstruction::CreateConvert(
-              ShapeUtil::ChangeElementType(matmul_call->shape(),
-                                           PrimitiveType::F32),
+              ShapeUtil::ChangeElementType(
+                  matmul_call->shape(),
+                  optional_dot_convert->shape().element_type()),
               matmul_call));
         } else {
           new_instr = matmul_call;
