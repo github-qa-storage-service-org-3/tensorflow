@@ -23,8 +23,12 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -34,10 +38,12 @@ limitations under the License.
 #include "xla/service/all_reduce_key.h"
 #include "xla/service/collective_combiner_utils.h"
 #include "xla/service/hlo_domain_map.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -45,9 +51,9 @@ namespace {
 // Combines the elements of to_combine into a single AllReduce op. All
 // entries in to_combine must be AllReduce ops with exactly one operand
 // and the same reduction operation.
-Status CombineAllReduces(absl::Span<HloInstruction* const> to_combine) {
+absl::Status CombineAllReduces(absl::Span<HloInstruction* const> to_combine) {
   if (to_combine.size() < 2) {
-    return OkStatus();
+    return absl::OkStatus();
   }
   VLOG(1) << "Combined " << to_combine.size() << " CRS ops";
 
@@ -80,7 +86,7 @@ Status CombineAllReduces(absl::Span<HloInstruction* const> to_combine) {
   TF_RET_CHECK(operands.size() >= 2);
   combined = computation.AddInstruction(HloInstruction::CreateAllReduce(
       ShapeUtil::MakeTupleShapeWithPtrs(operand_shapes), operands, reduction,
-      to_combine.front()->replica_groups(),
+      to_combine.front()->device_list(),
       /*constrain_layout=*/false, to_combine.front()->channel_id(),
       Cast<HloAllReduceInstruction>(to_combine.front())
           ->use_global_device_ids()));
@@ -99,7 +105,7 @@ Status CombineAllReduces(absl::Span<HloInstruction* const> to_combine) {
     TF_RETURN_IF_ERROR(computation.ReplaceWithNewInstruction(
         to_combine[i], std::move(replace_with)));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 }  // namespace
 

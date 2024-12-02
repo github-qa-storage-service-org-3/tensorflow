@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <utility>
 
+#include "xla/tsl/protobuf/distributed_runtime_payloads.pb.h"
 #include "tensorflow/core/common_runtime/collective_executor_mgr.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/process_util.h"
@@ -27,9 +28,8 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/tensor_coding.h"
 #include "tensorflow/core/distributed_runtime/worker_session.h"
 #include "tensorflow/core/framework/collective.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/profiler/lib/device_profiler_session.h"
-#include "tsl/protobuf/distributed_runtime_payloads.pb.h"
+#include "tsl/platform/tracing.h"
 
 namespace tensorflow {
 

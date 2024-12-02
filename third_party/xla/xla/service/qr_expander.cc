@@ -18,19 +18,20 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/lib/constants.h"
-#include "xla/client/lib/loops.h"
-#include "xla/client/lib/math.h"
-#include "xla/client/lib/matrix.h"
-#include "xla/client/lib/qr.h"
-#include "xla/client/lib/slicing.h"
-#include "xla/client/xla_builder.h"
+#include "absl/status/statusor.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/loops.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/lib/qr.h"
+#include "xla/hlo/builder/lib/slicing.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
+#include "xla/service/hlo_creation_utils.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 
@@ -106,8 +107,8 @@ XlaOp Norm(std::vector<XlaOp> xs) {
 //   return (v, tau, beta)
 // TODO(phawkins): LAPACK's xLARFG implementation has code for handling
 // overflows in the norm/beta calculations. Perhaps do the same here.
-Status House(XlaOp x, XlaOp k, absl::Span<const int64_t> batch_dims,
-             const int64_t m, XlaOp* v, XlaOp* tau, XlaOp* beta) {
+absl::Status House(XlaOp x, XlaOp k, absl::Span<const int64_t> batch_dims,
+                   const int64_t m, XlaOp* v, XlaOp* tau, XlaOp* beta) {
   XlaBuilder* const builder = x.builder();
   TF_ASSIGN_OR_RETURN(Shape x_shape, builder->GetShape(x));
   const PrimitiveType type = x_shape.element_type();
@@ -169,7 +170,7 @@ Status House(XlaOp x, XlaOp k, absl::Span<const int64_t> batch_dims,
   // Form v as [0, 0, ..., 1] ++ x[k+1:] / divisor
   // If sigma is zero, x[k+1:] is zero, so use any non-zero divisor.
   *v = e_k + Div(x_after_k, divisor, /*broadcast_dimensions=*/batch_dim_ids);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -509,9 +510,12 @@ bool QrExpander::InstructionMatchesPattern(HloInstruction* instruction) {
 
 absl::StatusOr<HloInstruction*> QrExpander::ExpandInstruction(
     HloInstruction* instruction) {
-  const std::string name =
+  std::string name =
       absl::StrFormat("xla.%s_%s", instruction->custom_call_target(),
                       instruction->operand(0)->shape().ToString());
+  if (instruction->custom_call_target() == kHouseholderProductCustomCallName) {
+    name += "_" + instruction->operand(1)->shape().ToString();
+  }
 
   HloModule* module = instruction->GetModule();
 
@@ -548,15 +552,8 @@ absl::StatusOr<HloInstruction*> QrExpander::ExpandInstruction(
     }
 
     TF_ASSIGN_OR_RETURN(XlaComputation xla_computation, builder.Build(result));
-
-    TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
-                        xla_computation.GetProgramShape());
-    HloModuleConfig config(program_shape);
-    TF_ASSIGN_OR_RETURN(auto new_module, HloModule::CreateFromProto(
-                                             xla_computation.proto(), config));
-    HloCloneContext context(module);
-    computation =
-        module->DeepCloneComputation(new_module->entry_computation(), &context);
+    TF_ASSIGN_OR_RETURN(
+        computation, XlaComputationToHloComputation(xla_computation, module));
   }
 
   return instruction->parent()->AddInstruction(HloInstruction::CreateCall(

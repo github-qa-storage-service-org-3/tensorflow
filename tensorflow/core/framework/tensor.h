@@ -51,15 +51,17 @@ class TensorProto;
 class Var;
 
 namespace batch_util {
-Status CopyElementToSlice(Tensor element, Tensor* parent, int64_t index);
-Status CopySliceToElement(const Tensor& parent, Tensor* element, int64_t index);
-Status MaybeMoveSliceToElement(Tensor* parent, Tensor* element, int64_t index);
-Status CopyContiguousSlices(const Tensor& src, int64_t src_offset,
-                            int64_t dst_offset, int64_t num_slices,
-                            Tensor* dst);
-Status MaybeMoveContiguousSlices(Tensor& src, int64_t src_offset,
-                                 int64_t dst_offset, int64_t num_slices,
-                                 Tensor* dst);
+absl::Status CopyElementToSlice(Tensor element, Tensor* parent, int64_t index);
+absl::Status CopySliceToElement(const Tensor& parent, Tensor* element,
+                                int64_t index);
+absl::Status MaybeMoveSliceToElement(Tensor* parent, Tensor* element,
+                                     int64_t index);
+absl::Status CopyContiguousSlices(const Tensor& src, int64_t src_offset,
+                                  int64_t dst_offset, int64_t num_slices,
+                                  Tensor* dst);
+absl::Status MaybeMoveContiguousSlices(Tensor& src, int64_t src_offset,
+                                       int64_t dst_offset, int64_t num_slices,
+                                       Tensor* dst);
 }  // namespace batch_util
 
 /// @ingroup core
@@ -185,8 +187,8 @@ class Tensor {
   /// validate that the `DataType` is valid and supported.
   ///
   /// The underlying buffer is allocated using a `CPUAllocator`.
-  static Status BuildTensor(DataType type, const TensorShape& shape,
-                            Tensor* out_tensor);
+  static absl::Status BuildTensor(DataType type, const TensorShape& shape,
+                                  Tensor* out_tensor);
 
  private:
   // A tag type for selecting the `Tensor` constructor overload that creates a
@@ -510,7 +512,7 @@ class Tensor {
   typename TTypes<T, NDIMS>::Tensor flat_inner_outer_dims(int64_t begin);
 
   template <typename T, size_t NDIMS>
-  typename TTypes<T, NDIMS>::Tensor shaped(gtl::ArraySlice<int64_t> new_sizes);
+  typename TTypes<T, NDIMS>::Tensor shaped(absl::Span<const int64_t> new_sizes);
 
   /// \brief Return the tensor data to an `Eigen::Tensor` with the new
   /// shape specified in `new_sizes` and cast to a new dtype `T`.
@@ -519,11 +521,11 @@ class Tensor {
   /// The allowed bitcast is the only difference from `shaped()`.
   template <typename T, size_t NDIMS>
   typename TTypes<T, NDIMS>::Tensor bit_casted_shaped(
-      gtl::ArraySlice<int64_t> new_sizes);
+      absl::Span<const int64_t> new_sizes);
 
   template <typename T, size_t NDIMS>
   typename TTypes<T, NDIMS>::UnalignedTensor unaligned_shaped(
-      gtl::ArraySlice<int64_t> new_sizes);
+      absl::Span<const int64_t> new_sizes);
 
   /// \brief Return the Tensor data as a `TensorMap` of fixed size 1:
   /// `TensorMap<TensorFixedSize<T, 1>>`.
@@ -575,7 +577,7 @@ class Tensor {
 
   template <typename T, size_t NDIMS>
   typename TTypes<T, NDIMS>::ConstTensor shaped(
-      gtl::ArraySlice<int64_t> new_sizes) const;
+      absl::Span<const int64_t> new_sizes) const;
 
   /// \brief Return the tensor data to an `Eigen::Tensor` with the new
   /// shape specified in `new_sizes` and cast to a new dtype `T`.
@@ -584,11 +586,11 @@ class Tensor {
   /// The allowed bitcast is the only difference from `shaped()`.
   template <typename T, size_t NDIMS>
   typename TTypes<T, NDIMS>::ConstTensor bit_casted_shaped(
-      gtl::ArraySlice<int64_t> new_sizes) const;
+      absl::Span<const int64_t> new_sizes) const;
 
   template <typename T, size_t NDIMS>
   typename TTypes<T, NDIMS>::UnalignedConstTensor unaligned_shaped(
-      gtl::ArraySlice<int64_t> new_sizes) const;
+      absl::Span<const int64_t> new_sizes) const;
 
   template <typename T>
   typename TTypes<T>::ConstScalar scalar() const;
@@ -657,8 +659,8 @@ class Tensor {
   ///
   /// If any of the requirements are not met, errors::InvalidArgument is
   /// returned.
-  Status BitcastFrom(const Tensor& other, DataType dtype,
-                     const TensorShape& shape);
+  absl::Status BitcastFrom(const Tensor& other, DataType dtype,
+                           const TensorShape& shape);
 
   /// Like BitcastFrom, but CHECK fails if any preconditions are not met.
   ///
@@ -686,10 +688,10 @@ class Tensor {
   void set_dtype(DataType t) { shape_.set_data_type(t); }
 
   // TensorShape's InlineVector.
-  static gtl::InlinedVector<int64_t, 4> ComputeFlatInnerDims(
-      gtl::ArraySlice<int64_t> orig, int64_t num_out_dims);
-  static gtl::InlinedVector<int64_t, 4> ComputeFlatOuterDims(
-      gtl::ArraySlice<int64_t> orig, int64_t num_out_dims);
+  static absl::InlinedVector<int64_t, 4UL> ComputeFlatInnerDims(
+      absl::Span<const int64_t> orig, int64_t num_out_dims);
+  static absl::InlinedVector<int64_t, 4UL> ComputeFlatOuterDims(
+      absl::Span<const int64_t> orig, int64_t num_out_dims);
 
   TensorShape shape_;
   TensorBuffer* buf_;
@@ -705,20 +707,20 @@ class Tensor {
   friend class CastOpBase;            // For access to set_dtype.
   friend class ScopedAllocator;       // For access to buf_.
   friend class PjRtTensorBufferUtil;  // For access to buf_.
-  friend Status batch_util::CopyElementToSlice(
+  friend absl::Status batch_util::CopyElementToSlice(
       Tensor element, Tensor* parent,
       int64_t index);  // For access to base<T>().
-  friend Status batch_util::CopySliceToElement(
+  friend absl::Status batch_util::CopySliceToElement(
       const Tensor& parent, Tensor* element,
       int64_t index);  // For access to base<T>().
-  friend Status batch_util::MaybeMoveSliceToElement(
+  friend absl::Status batch_util::MaybeMoveSliceToElement(
       Tensor* parent, Tensor* element,
       int64_t index);  // For access to base<T>().
-  friend Status batch_util::CopyContiguousSlices(
+  friend absl::Status batch_util::CopyContiguousSlices(
       const Tensor& src, int64_t src_offset, int64_t dst_offset,
       int64_t num_slices,
       Tensor* dst);  // For access to base<T>().
-  friend Status batch_util::MaybeMoveContiguousSlices(
+  friend absl::Status batch_util::MaybeMoveContiguousSlices(
       Tensor& src, int64_t src_offset, int64_t dst_offset, int64_t num_slices,
       Tensor* dst);  // For access to base<T>().
 
@@ -753,12 +755,12 @@ class Tensor {
 
   template <size_t NDIMS>
   void FillDimsAndValidateCompatibleShape(
-      gtl::ArraySlice<int64_t> new_sizes,
+      absl::Span<const int64_t> new_sizes,
       Eigen::array<Eigen::DenseIndex, NDIMS>* dims) const;
 
   template <typename T, size_t NDIMS>
   void FillDimsAndValidateCompatibleShape(
-      gtl::ArraySlice<int64_t> new_sizes,
+      absl::Span<const int64_t> new_sizes,
       Eigen::array<Eigen::DenseIndex, NDIMS>* dims) const;
 };
 
@@ -836,7 +838,7 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::reinterpret_last_dimension()
 
 template <size_t NDIMS>
 void Tensor::FillDimsAndValidateCompatibleShape(
-    gtl::ArraySlice<int64_t> new_sizes,
+    absl::Span<const int64_t> new_sizes,
     Eigen::array<Eigen::DenseIndex, NDIMS>* dims) const {
   CHECK_EQ(NDIMS, new_sizes.size());
   int64_t new_num_elements = 1;
@@ -849,7 +851,7 @@ void Tensor::FillDimsAndValidateCompatibleShape(
 
 template <typename T, size_t NDIMS>
 void Tensor::FillDimsAndValidateCompatibleShape(
-    gtl::ArraySlice<int64_t> new_sizes,
+    absl::Span<const int64_t> new_sizes,
     Eigen::array<Eigen::DenseIndex, NDIMS>* dims) const {
   CHECK_EQ(NDIMS, new_sizes.size());
   int64_t new_num_elements = 1;
@@ -892,7 +894,7 @@ typename TTypes<T>::ConstFlat Tensor::flat() const {
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::Tensor Tensor::shaped(
-    gtl::ArraySlice<int64_t> new_sizes) {
+    absl::Span<const int64_t> new_sizes) {
   CheckTypeAndIsAligned(DataTypeToEnum<T>::v());
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
   FillDimsAndValidateCompatibleShape(new_sizes, &dims);
@@ -901,7 +903,7 @@ typename TTypes<T, NDIMS>::Tensor Tensor::shaped(
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::Tensor Tensor::bit_casted_shaped(
-    gtl::ArraySlice<int64_t> new_sizes) {
+    absl::Span<const int64_t> new_sizes) {
   CHECK(IsAligned());
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
   FillDimsAndValidateCompatibleShape<T>(new_sizes, &dims);
@@ -910,7 +912,7 @@ typename TTypes<T, NDIMS>::Tensor Tensor::bit_casted_shaped(
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::UnalignedTensor Tensor::unaligned_shaped(
-    gtl::ArraySlice<int64_t> new_sizes) {
+    absl::Span<const int64_t> new_sizes) {
   CheckType(DataTypeToEnum<T>::v());
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
   FillDimsAndValidateCompatibleShape(new_sizes, &dims);
@@ -919,7 +921,7 @@ typename TTypes<T, NDIMS>::UnalignedTensor Tensor::unaligned_shaped(
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::ConstTensor Tensor::shaped(
-    gtl::ArraySlice<int64_t> new_sizes) const {
+    absl::Span<const int64_t> new_sizes) const {
   CheckType(DataTypeToEnum<T>::v());
   CHECK(IsAligned()) << "ptr = " << base<void>();
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
@@ -929,7 +931,7 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::shaped(
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::ConstTensor Tensor::bit_casted_shaped(
-    gtl::ArraySlice<int64_t> new_sizes) const {
+    absl::Span<const int64_t> new_sizes) const {
   CHECK(IsAligned());
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
   FillDimsAndValidateCompatibleShape<T>(new_sizes, &dims);
@@ -938,7 +940,7 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::bit_casted_shaped(
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::UnalignedConstTensor Tensor::unaligned_shaped(
-    gtl::ArraySlice<int64_t> new_sizes) const {
+    absl::Span<const int64_t> new_sizes) const {
   CheckType(DataTypeToEnum<T>::v());
   Eigen::array<Eigen::DenseIndex, NDIMS> dims;
   FillDimsAndValidateCompatibleShape(new_sizes, &dims);
@@ -975,7 +977,7 @@ typename TTypes<T, NDIMS>::Tensor Tensor::flat_outer_dims() {
 
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::Tensor Tensor::flat_inner_outer_dims(int64_t begin) {
-  gtl::InlinedVector<int64_t, 4> flat_outer =
+  absl::InlinedVector<int64_t, 4UL> flat_outer =
       ComputeFlatOuterDims(shape_.dim_sizes(), begin + NDIMS);
   return shaped<T, NDIMS>(ComputeFlatInnerDims(flat_outer, NDIMS));
 }
@@ -993,7 +995,7 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::flat_outer_dims() const {
 template <typename T, size_t NDIMS>
 typename TTypes<T, NDIMS>::ConstTensor Tensor::flat_inner_outer_dims(
     int64_t begin) const {
-  gtl::InlinedVector<int64_t, 4> flat_outer =
+  absl::InlinedVector<int64_t, 4UL> flat_outer =
       ComputeFlatOuterDims(shape_.dim_sizes(), begin + NDIMS);
   return shaped<T, NDIMS>(ComputeFlatInnerDims(flat_outer, NDIMS));
 }

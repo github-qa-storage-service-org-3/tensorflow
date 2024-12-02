@@ -99,15 +99,14 @@ struct GraphImportConfig {
   // If true, a function attribute, `tf._original_func_name`, will be set in
   // functions which contains the corresponding original TF function name.
   bool set_original_tf_func_name = false;
+
+  // If true, all functions in the graph will be converted to MLIR regardless of
+  // whether the functions are referenced by the nodes. This is needed if
+  // aliases and saved model object graph function matching is needed.
+  bool convert_all_functions_to_mlir = false;
 };
 
 struct GraphExportConfig {
-  // Whether to export shape attribute for the NodeDefs in the GraphDef.
-  bool export_shapes = true;
-  // Whether to export library field in the GraphDef.
-  bool export_library = true;
-  // Whether to export debug original node name in the GraphDef.
-  bool export_debug_info = true;
   // Whether to export the entry function to function library instead of the
   // graph.
   bool export_entry_func_to_flib = false;

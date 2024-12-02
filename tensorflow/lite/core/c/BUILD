@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load(
     "//tensorflow/lite:build_def.bzl",
@@ -10,22 +11,24 @@ load(
     "c_api_visibility_allowlist",
     "common_header_visibility_allowlist",
 )
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
-    default_visibility = ["//tensorflow/lite:__subpackages__"],
+    default_visibility = [
+        "//tensorflow/lite:__subpackages__",
+    ],
     licenses = ["notice"],
 )
 
 exports_files(
     srcs = [
+        "builtin_op_data.h",
         "c_api.h",
         "c_api_experimental.h",
         "c_api_opaque.h",
         "c_api_types.h",
         "common.h",
-        "registration_external.h",
+        "operator.h",
     ],
     visibility = [
         "//tensorflow/lite:__subpackages__",
@@ -44,7 +47,7 @@ filegroup(
         "c_api.h",
         "c_api_types.h",
         "common.h",
-        "registration_external.h",
+        "operator.h",
     ],
 )
 
@@ -73,7 +76,7 @@ tflite_cc_library_with_c_headers_test(
     deps = [
         ":c_api_types",
         ":c_api_without_op_resolver",
-        ":registration_external",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:create_op_resolver_with_builtin_ops",
         "//tensorflow/lite/c:common",
@@ -93,7 +96,7 @@ tflite_cc_library_with_c_headers_test(
     ],
     deps = [
         ":c_api_types",
-        ":registration_external",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:version",
         "//tensorflow/lite/c:c_api_internal",
@@ -121,7 +124,7 @@ tflite_cc_library_with_c_headers_test(
     ],
     deps = [
         ":c_api_types",
-        ":registration_external",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite/core/async/c:types",
     ],
@@ -137,7 +140,7 @@ tflite_cc_library_with_c_headers_test(
     tags = ["allow_undefined_symbols"],  # For tflite::CreateOpResolver().
     deps = [
         ":c_api_types",
-        ":registration_external_without_alwayslink",
+        ":operator_without_alwayslink",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:version",
@@ -181,6 +184,7 @@ cc_test(
         ":c_api_experimental",
         ":c_api_types",
         ":common",
+        "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/core:subgraph",
@@ -208,6 +212,7 @@ cc_test(
         ":c_api_experimental",
         ":c_api_types",
         ":common",
+        "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/core:subgraph",
@@ -234,6 +239,7 @@ cc_test(
         ":c_api_types",
         ":c_api_without_op_resolver_without_alwayslink",
         ":common",
+        "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite/c:c_api_internal",
         "//tensorflow/lite/c:selectively_built_c_api_test_lib",
@@ -274,6 +280,7 @@ tflite_cc_library_with_c_headers_test(
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     visibility = [
+        "//tensorflow/compiler/mlir/lite/experimental/lrt:__subpackages__",
         "//tensorflow/lite:__subpackages__",
     ] + c_api_visibility_allowlist(),
 )
@@ -306,7 +313,7 @@ cc_test(
         ":c_api",
         ":c_api_types",
         ":common",
-        ":registration_external",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite:util",
@@ -327,10 +334,7 @@ tflite_cc_library_with_c_headers_test(
     ],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
-    visibility = [
-        "//tensorflow/lite:__subpackages__",
-        "@org_tensorflow_lite_support//tensorflow_lite_support/custom_ops:__subpackages__",
-    ] + common_header_visibility_allowlist(),
+    visibility = ["//tensorflow/lite:__subpackages__"] + common_header_visibility_allowlist(),
     deps = [
         ":c_api_types",
         "//tensorflow/lite:tflite_kernel_use_xnnpack_optional",
@@ -378,6 +382,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_opaque",
         ":c_api_types",
         ":common",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:signature_runner",
         "//tensorflow/lite/c:c_api_internal",
@@ -413,6 +418,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_types",
         ":c_api_without_op_resolver",
         ":common",
+        ":operator",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:kernel_api",
@@ -466,6 +472,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_types",
         ":c_api_without_op_resolver_without_alwayslink",
         ":common",
+        ":operator_without_alwayslink",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:kernel_api",
         "//tensorflow/lite:string_util",
@@ -507,6 +514,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_opaque_without_op_resolver",
         ":c_api_types",
         ":common",
+        ":operator",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite:util",
         "//tensorflow/lite/c:c_api_opaque_internal",
@@ -530,6 +538,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_types",
         ":c_api_without_op_resolver",
         ":common",
+        ":operator",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite:util",
         "//tensorflow/lite/c:c_api_opaque_internal",
@@ -566,6 +575,7 @@ tflite_cc_library_with_c_headers_test(
         ":c_api_types",
         ":c_api_without_op_resolver_without_alwayslink",
         ":common",
+        ":operator_without_alwayslink",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite:util",
         "//tensorflow/lite/c:c_api_opaque_internal_without_alwayslink",
@@ -609,9 +619,9 @@ cc_test(
 )
 
 tflite_cc_library_with_c_headers_test(
-    name = "registration_external",
-    srcs = ["registration_external.cc"],
-    hdrs = ["registration_external.h"],
+    name = "operator",
+    srcs = ["operator.cc"],
+    hdrs = ["operator.h"],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     visibility = [
@@ -619,6 +629,7 @@ tflite_cc_library_with_c_headers_test(
     ] + c_api_visibility_allowlist(),
     deps = [
         "//tensorflow/lite:builtin_ops",
+        "//tensorflow/lite/c:common",
         "//tensorflow/lite/c:common_internal",
         "//tensorflow/lite/core/async/c:types",
         "//tensorflow/lite/core/c:c_api_types",
@@ -630,13 +641,14 @@ tflite_cc_library_with_c_headers_test(
 )
 
 tflite_cc_library_with_c_headers_test(
-    name = "registration_external_without_alwayslink",
-    srcs = ["registration_external.cc"],
-    hdrs = ["registration_external.h"],
+    name = "operator_without_alwayslink",
+    srcs = ["operator.cc"],
+    hdrs = ["operator.h"],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     deps = [
         "//tensorflow/lite:builtin_ops",
+        "//tensorflow/lite/c:common",
         "//tensorflow/lite/c:common_internal",
         "//tensorflow/lite/core/async/c:types",
         "//tensorflow/lite/core/c:c_api_types",

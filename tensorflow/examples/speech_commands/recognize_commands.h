@@ -21,6 +21,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -54,10 +55,10 @@ class RecognizeCommands {
                              int32_t minimum_count = 3);
 
   // Call this with the results of running a model on sample data.
-  Status ProcessLatestResults(const Tensor& latest_results,
-                              const int64_t current_time_ms,
-                              string* found_command, float* score,
-                              bool* is_new_command);
+  absl::Status ProcessLatestResults(const Tensor& latest_results,
+                                    const int64_t current_time_ms,
+                                    string* found_command, float* score,
+                                    bool* is_new_command);
 
  private:
   // Configuration

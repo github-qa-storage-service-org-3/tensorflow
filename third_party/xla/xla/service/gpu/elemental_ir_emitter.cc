@@ -55,8 +55,6 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-using absl::StrAppend;
-
 GpuElementalIrEmitter::GpuElementalIrEmitter(
     IrEmitterContext& ir_emitter_context, llvm::IRBuilder<>* b)
     : ElementalIrEmitter(ir_emitter_context.llvm_module(), b),
@@ -133,7 +131,7 @@ llvm_ir::IrArray::Index GpuElementalIrEmitter::GetSourceIndexOfBitcast(
   // Decode the layout of the shape from the Protobufs attached to
   // backend_config_.
   auto gpu_config = hlo->backend_config<GpuBackendConfig>();
-  CHECK(gpu_config.ok());
+  CHECK_OK(gpu_config);
 
   const BitcastBackendConfig& bitcast_config =
       gpu_config.value().bitcast_backend_config();
@@ -162,17 +160,6 @@ absl::StatusOr<llvm::Value*> GpuElementalIrEmitter::EmitFloatBinaryOp(
     return llvm_ir::EmitCallToIntrinsic(
         opcode == HloOpcode::kMaximum ? llvm::Intrinsic::maxnum
                                       : llvm::Intrinsic::minnum,
-        {lhs_value, rhs_value}, {lhs_value->getType()}, b());
-  }
-
-  // sm_80 and up has min.NaN and max.NaN instructions.
-  if (output_type == F32 &&
-      ir_emitter_context_.cuda_compute_capability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      (opcode == HloOpcode::kMaximum || opcode == HloOpcode::kMinimum)) {
-    return llvm_ir::EmitCallToIntrinsic(
-        opcode == HloOpcode::kMaximum ? llvm::Intrinsic::maximum
-                                      : llvm::Intrinsic::minimum,
         {lhs_value, rhs_value}, {lhs_value->getType()}, b());
   }
 

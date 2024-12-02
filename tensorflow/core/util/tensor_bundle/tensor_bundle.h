@@ -72,6 +72,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/function_ref.h"
 #include "absl/strings/string_view.h"
+#include "xla/tsl/lib/io/buffered_file.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.h"
@@ -87,7 +88,6 @@ limitations under the License.
 #include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/protobuf/tensor_bundle.pb.h"
 #include "tensorflow/core/util/tensor_slice_set.h"
-#include "tsl/lib/io/buffered_file.h"
 #include "tsl/platform/errors.h"
 
 namespace tensorflow {
@@ -190,7 +190,7 @@ class BundleWriter {
 //
 // Returns a NotFoundError when "allow_missing_files" is set to false and
 // any data file named in "prefixes" does not exist.
-Status MergeBundles(Env* env, gtl::ArraySlice<tstring> prefixes,
+Status MergeBundles(Env* env, absl::Span<const tstring> prefixes,
                     absl::string_view merged_prefix,
                     bool allow_missing_files = false);
 
@@ -387,7 +387,7 @@ Status BundleReader::SortForSequentialAccess(
       return file_offset_a.shard_id < file_offset_b.shard_id;
     }
   });
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // BundleCache provides cached opening of files.

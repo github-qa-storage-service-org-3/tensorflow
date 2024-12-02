@@ -20,7 +20,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -246,7 +246,7 @@ TEST_F(TransposeFoldingTest, FoldConvDimSwapTransposeRhs) {
     dim->set_size(
         transpose_y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       x->shape(), transpose_y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -304,7 +304,7 @@ TEST_F(TransposeFoldingTest, FoldConvComplexTransposeRhs) {
     dim->set_size(
         transpose_y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       x->shape(), transpose_y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -367,7 +367,7 @@ TEST_F(TransposeFoldingTest, FoldConvTransposeLhs) {
     dim->set_stride(1);
     dim->set_size(y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       transpose_x->shape(), y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -436,7 +436,7 @@ TEST_F(TransposeFoldingTest, FoldConvComplexTransposeLhs) {
     dim->set_stride(1);
     dim->set_size(y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       transpose_x->shape(), y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);

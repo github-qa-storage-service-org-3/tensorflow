@@ -13,7 +13,7 @@ load(
     "if_google",
     "if_oss",
     "if_xla_available",
-    "tf_cc_shared_object",
+    "pywrap_aware_tf_cc_shared_object",
     "tf_custom_op_library_additional_deps_impl",
     "tf_monitoring_python_deps",
     "tf_native_cc_binary",
@@ -69,7 +69,6 @@ load("//tensorflow/python/tools/api/generator2:generate_api.bzl", "generate_apis
 
 PACKAGE_STATIC_DEPS = [
     "//:__subpackages__",
-    "@cudnn_frontend_archive//:__subpackages__",
     "@gif//:__subpackages__",
     "@highwayhash//:__subpackages__",
     "@hwloc//:__subpackages__",
@@ -684,15 +683,6 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-config_setting(
-    name = "no_nccl_support",
-    define_values = dict(
-        if_google({"GOOGLE_CUDA_COMPILER": "clang"}),
-        no_nccl_support = "true",
-    ),
-    visibility = ["//visibility:public"],
-)
-
 # Experimental features
 config_setting(
     name = "stackdriver_support",
@@ -761,7 +751,7 @@ alias(
     name = "is_cuda_enabled",
     actual = if_oss(
         "@local_config_cuda//:is_cuda_enabled",
-        "@local_config_cuda//cuda:using_clang",
+        "@local_config_cuda//cuda:using_config_cuda",
     ),
 )
 
@@ -775,6 +765,14 @@ alias(
     ),
 )
 
+selects.config_setting_group(
+    name = "is_cuda_clang",
+    match_all = [
+        ":is_cuda_enabled",
+        ":is_cuda_compiler_clang",
+    ],
+)
+
 # Config setting that is satisfied when CUDA device code should be compiled
 # with nvcc. It does not imply that CUDA support has been enabled.
 alias(
@@ -783,6 +781,14 @@ alias(
         "@local_config_cuda//:is_cuda_compiler_nvcc",
         "@local_config_cuda//cuda:FALSE",
     ),
+)
+
+selects.config_setting_group(
+    name = "is_cuda_nvcc",
+    match_all = [
+        ":is_cuda_enabled",
+        ":is_cuda_compiler_nvcc",
+    ],
 )
 
 # Config setting that is satisfied when building with --config=cuda in OSS.
@@ -913,43 +919,6 @@ selects.config_setting_group(
     visibility = ["//visibility:public"],
 )
 
-# This flag disables all google production dependencies, intended for
-# applications run with non-prod environment.
-# TODO(timshen): Currently this option only disables some dependencies.
-# See b/122528503.
-# copybara:uncomment_begin(google-only)
-# bool_flag(
-#     name = "tf_no_prod_deps",
-#     build_setting_default = False,
-# )
-#
-# config_setting(
-#     name = "no_prod_deps_define",
-#     define_values = {"tf_no_prod_deps": "1"},
-# )
-#
-# config_setting(
-#     name = "no_prod_deps_flag",
-#     flag_values = {":tf_no_prod_deps": "True"},
-# )
-#
-# selects.config_setting_group(
-#     name = "no_prod_deps",
-#     match_any = [
-#         ":no_prod_deps_define",
-#         ":no_prod_deps_flag",
-#     ],
-# )
-#
-# config_setting(
-#     name = "no_prod_deps_cuda",
-#     define_values = {
-#         "tf_no_prod_deps": "1",
-#         "GOOGLE_CUDA_COMPILER": "clang",
-#     },
-# )
-# copybara:uncomment_end
-
 config_setting(
     name = "lite_protos_legacy",
     define_values = {"TENSORFLOW_PROTOS": "lite"},
@@ -1054,7 +1023,7 @@ package_group(
         "//learning/serving/experimental/remote_predict/...",
         "//perftools/accelerators/xprof/convert/...",
         "//perftools/accelerators/xprof/integration_tests/...",
-        "//smartass/brain/configure/...",
+        "//smartass/brain/...",
         "//tensorflow/...",
         "//tensorflow_decision_forests/...",
         "//tensorflow_federated/...",
@@ -1068,6 +1037,7 @@ package_group(
         "//third_party/py/keras/...",
         "//third_party/py/tf_keras/...",
         "//third_party/yggdrasil_decision_forests/...",
+        "//waymo/accelerator/...",
         "//waymo/ml/cn/...",
         "//waymo/ml/models/...",
     ],
@@ -1110,23 +1080,16 @@ bzl_library(
         "//tensorflow/core/platform:rules_cc_bzl",
         "//third_party/compute_library:build_defs_bzl",
         "//third_party/llvm_openmp:openmp_bzl",
-        "//third_party/mkl_dnn:build_defs_bzl",
         "@bazel_skylib//lib:new_sets",
         "@bazel_skylib//rules:common_settings",
         "@local_config_cuda//cuda:build_defs_bzl",
         "@local_config_rocm//rocm:build_defs_bzl",
         "@local_config_tensorrt//:build_defs_bzl",
-        "@local_tsl//tsl:tsl_bzl",
-        "@local_tsl//tsl/platform/default:cuda_build_defs_bzl",
+        "@local_tsl//third_party/py/rules_pywrap:pywrap_bzl",
+        "@local_xla//xla/tsl:tsl_bzl",
         "@local_xla//xla/tsl/mkl:build_defs_bzl",
+        "@rules_java//java:rules",
     ],
-)
-
-bzl_library(
-    name = "tensorflow_default_bzl",
-    srcs = ["tensorflow.default.bzl"],
-    visibility = ["//visibility:public"],
-    deps = [":tensorflow_bzl"],
 )
 
 # TODO(jakeharmon8): Remove these in favor of tsl:grpc
@@ -1221,8 +1184,8 @@ tf_cc_shared_library(
                 "//tensorflow/core/util:determinism",  # Must be linked and exported to libtensorflow_framework.so.
                 "//tensorflow/lite/kernels/shim:tf_kernel_shim",
                 "@local_xla//xla/stream_executor:stream_executor_impl",
-                "@local_tsl//tsl/framework:bfc_allocator",
-                "@local_tsl//tsl/framework:metrics",
+                "@local_xla//xla/tsl/framework:bfc_allocator",
+                "@local_xla//xla/tsl/framework:metrics",
             ] + tf_additional_binary_deps() +
             # TODO(b/259305727): Remove this select and include captured_function in macos builds.
             select({
@@ -1262,7 +1225,7 @@ cc_import(
 # an "-exported_symbols_list" command.  -z defs disallows undefined
 # symbols in object files.
 
-tf_cc_shared_object(
+pywrap_aware_tf_cc_shared_object(
     name = "tensorflow",
     linkopts = select({
         "//tensorflow:macos": [
@@ -1350,7 +1313,7 @@ tf_cc_shared_library(
         "//tensorflow/core:tensorflow",
         "//tensorflow/core/data:standalone",
         # Exports for pywrap_tensorflow_internal. Many of these are transitive
-        # depedencies of the above, but must be explicitly listed for
+        # dependencies of the above, but must be explicitly listed for
         # cc_shared_library to work.
         "//tensorflow/c/eager:c_api_experimental",
         "//tensorflow/c/eager:c_api_internal",
@@ -1380,13 +1343,13 @@ tf_cc_shared_library(
         "//tensorflow/compiler/mlir/quantization/common/quantization_lib:quantization_config",
         "//tensorflow/compiler/mlir/lite/sparsity:sparsify_model",
         "//tensorflow/compiler/mlir/quantization/stablehlo/python:pywrap_quantization_lib_impl",
+        "//tensorflow/compiler/mlir/tensorflow_to_stablehlo/python:pywrap_tensorflow_to_stablehlo_lib_impl",
         "//tensorflow/compiler/mlir/quantization/tensorflow/calibrator:custom_aggregator_op",
         "//tensorflow/compiler/mlir/quantization/tensorflow/python:quantize_model_cc_impl",
         "//tensorflow/compiler/mlir/quantization/tensorflow:passes",
         "//tensorflow/compiler/mlir/tensorflow",
         "//tensorflow/compiler/mlir/tensorflow/c:mlir_c_api_registration",
         "//tensorflow/compiler/mlir/tensorflow:error_util",
-        "//tensorflow/compiler/mlir/tensorflow:export_graphdef",
         "//tensorflow/compiler/mlir/tensorflow:mlir_import_options",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
         "//tensorflow/compiler/mlir/tensorflow:translate_lib",
@@ -1414,6 +1377,7 @@ tf_cc_shared_library(
         "//tensorflow/core/grappler:grappler_item_builder",
         "//tensorflow/core/kernels:data_service_ops",
         "//tensorflow/core/kernels:dataset_ops",
+        "//tensorflow/core/tpu/kernels:sparse_core_layout",
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:path",
         "//tensorflow/core/platform:stacktrace_handler",
@@ -1444,9 +1408,12 @@ tf_cc_shared_library(
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/kernels:builtin_ops",
         "//tensorflow/lite/kernels:reference_ops",
-        "//tensorflow/lite/schema:schema_fbs",
+        "//tensorflow/compiler/mlir/lite/schema:schema_fbs",
         "//tensorflow/lite/toco/logging:conversion_log_util",
         "//tensorflow/lite/toco/logging:toco_conversion_log_proto_cc",
+        "//tensorflow/compiler/mlir/lite:model_flags_proto_cc",
+        "//tensorflow/compiler/mlir/lite:converter_flags_proto_cc",
+        "//tensorflow/compiler/mlir/lite:types_proto_cc",
         "//tensorflow/lite/toco:model_flags_proto_cc",
         "//tensorflow/lite/toco:toco_convert",
         "//tensorflow/lite/toco:toco_flags_proto_cc",
@@ -1610,7 +1577,6 @@ genrule(
         "//tensorflow/c/eager:headers",
         "//tensorflow/cc:headers",
         "//tensorflow/core:headers",
-        "@local_xla//xla/stream_executor:stream_executor_install_hdrs",
     ],
     outs = ["include"],
     cmd = """

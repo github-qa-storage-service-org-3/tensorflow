@@ -30,9 +30,13 @@ limitations under the License.
 #include "tensorflow/c/eager/c_api_experimental.h"
 #include "tensorflow/c/eager/tfe_op_internal.h"
 #include "tensorflow/c/safe_ptr.h"
+#include "tensorflow/c/tf_datatype.h"
+#include "tensorflow/c/tf_status.h"
+#include "tensorflow/c/tf_tensor.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 namespace parallel_device {
@@ -196,12 +200,12 @@ class ParallelTensor {
   // `shape` output argument. This blocks waiting for async tensors, may return
   // a delayed bad status encountered during async execution, and will return a
   // bad status unless all tensors have the same shape.
-  Status Shape(const std::vector<int64_t>** shape) const;
+  absl::Status Shape(const std::vector<int64_t>** shape) const;
   TF_DataType dtype() const { return dtype_; }
 
   // Sets its output argument to a summary of the values of this tensor on every
   // component device.
-  Status SummarizeValue(std::string& summary);
+  absl::Status SummarizeValue(std::string& summary);
 
   std::vector<TensorHandlePtr> release_tensors() { return std::move(tensors_); }
 

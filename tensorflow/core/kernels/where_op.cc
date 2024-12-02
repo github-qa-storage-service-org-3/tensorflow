@@ -40,12 +40,8 @@ limitations under the License.
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
 #include "tensorflow/core/util/gpu_solvers.h"
-#if GOOGLE_CUDA
-#include "xla/stream_executor/cuda/cuda_activation.h"
-using stream_executor::cuda::ScopedActivateExecutorContext;
-#elif TENSORFLOW_USE_ROCM
+#if TENSORFLOW_USE_ROCM
 #include "tensorflow/core/platform/rocm.h"
-using stream_executor::rocm::ScopedActivateExecutorContext;
 #endif  // TENSORFLOW_USE_ROCM
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
@@ -77,7 +73,7 @@ struct NumTrue<CPUDevice, T, int64_t> {
                         typename TTypes<T>::ConstFlat input,
                         TTypes<int64_t>::UnalignedScalar num_true) {
     num_true() = CountAccumulator<T>(input.data(), input.data() + input.size());
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -118,7 +114,7 @@ struct Where<CPUDevice, DIMS, T, TIndex> {
         ++*found_true;
       }
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -296,7 +292,8 @@ class WhereGPUOp : public AsyncOpKernel {
       // configured.
       auto stream = context->op_device_context()->stream();
       {
-        ScopedActivateExecutorContext scoped_activation{stream->parent()};
+        std::unique_ptr<stream_executor::ActivateContext> scoped_activation =
+            stream->parent()->Activate();
 
         // TODO(ebrevdo): Properly copy back found_true value to CPU for
         // validation checking.  Currently Where<GPUDevice>::Compute()
@@ -348,7 +345,7 @@ class WhereGPUOp : public AsyncOpKernel {
         //         num_true, " elements; but when writing their indices, saw ",
         //         found_true, " elements."),
         //     done);
-      }  // Release ScopedActivateExecutorContext to prevent deadlock when done
+      }  // Release ActivateContext to prevent deadlock when done
          // inlines another Op kernel, which may assume the original cuda
          // Context.
 

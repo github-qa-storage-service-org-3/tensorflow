@@ -15,17 +15,30 @@ limitations under the License.
 
 #include "xla/service/gpu/runtime/fft_thunk.h"
 
+#include <cstdint>
+#include <memory>
 #include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
+#include "xla/service/buffer_assignment.h"
+#include "xla/service/gpu/runtime/thunk.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
+#include "xla/stream_executor/blas.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/fft.h"
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -162,13 +175,13 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
         batch_size, &scratch_allocator);
     TF_RET_CHECK(fft_plan != nullptr)
         << "Failed to create cuFFT batched plan with scratch allocator";
-    fft_plan_ptr->scale_factor = 1.0f / output_distance;
+    fft_plan_ptr->scale_factor = output_distance;
   } else {
     fft->UpdatePlanWithScratchAllocator(stream, fft_plan.get(),
                                         &scratch_allocator);
   }
 
-  float scale_factor = fft_plan_ptr->scale_factor;
+  uint64_t scale_factor = fft_plan_ptr->scale_factor;
 
   bool launch_ok;
   switch (fft_type) {
@@ -192,7 +205,7 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
         TF_ASSIGN_OR_RETURN(auto blas, GetBlas(stream));
         launch_ok =
             blas->DoBlasScal(stream, ShapeUtil::ElementsIn(output_shape),
-                             complex64(scale_factor), &output_data, 1);
+                             complex64(1.0f / scale_factor), &output_data, 1);
       }
       break;
     }
@@ -204,7 +217,7 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
         TF_ASSIGN_OR_RETURN(auto blas, GetBlas(stream));
         launch_ok =
             blas->DoBlasScal(stream, ShapeUtil::ElementsIn(output_shape),
-                             complex128(scale_factor), &output_data, 1);
+                             complex128(1.0 / scale_factor), &output_data, 1);
       }
       break;
     }
@@ -228,7 +241,7 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
         TF_ASSIGN_OR_RETURN(auto blas, GetBlas(stream));
         launch_ok =
             blas->DoBlasScal(stream, ShapeUtil::ElementsIn(output_shape),
-                             scale_factor, &output_data, 1);
+                             1.0f / scale_factor, &output_data, 1);
       }
       break;
     }
@@ -240,7 +253,7 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
         TF_ASSIGN_OR_RETURN(auto blas, GetBlas(stream));
         launch_ok =
             blas->DoBlasScal(stream, ShapeUtil::ElementsIn(output_shape),
-                             scale_factor, &output_data, 1);
+                             1.0 / scale_factor, &output_data, 1);
       }
       break;
     }
@@ -251,7 +264,7 @@ absl::Status RunFft(se::DeviceMemoryBase input, const Shape& input_shape,
     return absl::OkStatus();
   }
   return Internal("Unable to launch fft with type %s",
-                       FftTypeToString(fft_type));
+                  FftTypeToString(fft_type));
 }
 
 }  // namespace gpu

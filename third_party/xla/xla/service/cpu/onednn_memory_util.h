@@ -25,6 +25,7 @@ limitations under the License.
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Value.h"
 #include "xla/literal.h"
+#include "xla/service/cpu/runtime_lightweight_check.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/xla_data.pb.h"
 
@@ -70,7 +71,7 @@ inline dnnl::memory::data_type ToOneDnnDataType(PrimitiveType ptype) {
 
     // TODO(intel-tf): properly handle not supported types:
     // S16, S64, U16, U32, U64, C64, C128, F8E5M2, F8E4M3FN, S4, U4,
-    // F8E4M3B11FNUZ
+    // F8E4M3B11FNUZ, F8E4M3, F8E3M4
     default:
       return dt::undef;
   }
@@ -117,6 +118,19 @@ class MemrefInfo {
  private:
   MemrefInfoPOD* pod_;
 };
+
+absl::StatusOr<dnnl::memory::desc> TransposeLastTwoDims(
+    const dnnl::memory::desc& md);
+#define TRANSPOSE_LAST_TWO_DIMS_IF(pred, mem_desc)        \
+  if (pred) {                                             \
+    auto trans_mem_desc = TransposeLastTwoDims(mem_desc); \
+    XLA_LIGHTWEIGHT_CHECK(trans_mem_desc.ok());           \
+    mem_desc = *trans_mem_desc;                           \
+  }
+
+dnnl::memory::desc ShapeToMemDesc(const Shape& shape);
+
+Shape MemDescToXlaShapeFlattened(const dnnl::memory::desc& md);
 
 }  // namespace cpu
 }  // namespace xla

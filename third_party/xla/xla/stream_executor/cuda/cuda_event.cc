@@ -13,36 +13,111 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "xla/stream_executor/cuda/cuda_event.h"
+
+#include <cstdint>
+
+#include "absl/base/casts.h"
 #include "absl/log/log.h"
-#include "absl/status/statusor.h"
+#include "absl/status/status.h"
 #include "third_party/gpus/cuda/include/cuda.h"
+#include "xla/stream_executor/cuda/cuda_status.h"
 #include "xla/stream_executor/event.h"
-#include "xla/stream_executor/gpu/gpu_driver.h"
-#include "xla/stream_executor/gpu/gpu_event.h"
-#include "xla/stream_executor/gpu/gpu_executor.h"
+#include "xla/stream_executor/gpu/context.h"
+#include "xla/stream_executor/gpu/scoped_activate_context.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace stream_executor {
 namespace gpu {
+namespace {
+absl::Status WaitStreamOnEvent(Context* context, CUstream stream,
+                               CUevent event) {
+  ScopedActivateContext activation(context);
+  return cuda::ToStatus(cuStreamWaitEvent(stream, event, 0 /* = flags */));
+}
 
-Event::Status GpuEvent::PollForStatus() {
-  absl::StatusOr<CUresult> status =
-      GpuDriver::QueryEvent(parent_->gpu_context(), gpu_event_);
-  if (!status.ok()) {
-    LOG(ERROR) << "Error polling for event status: "
-               << status.status().message();
-    return Event::Status::kError;
+void DestroyEvent(Context* context, CUevent event) {
+  if (event == nullptr) {
+    return;
   }
 
-  switch (status.value()) {
-    case CUDA_SUCCESS:
-      return Event::Status::kComplete;
-    case CUDA_ERROR_NOT_READY:
-      return Event::Status::kPending;
+  ScopedActivateContext activated{context};
+  auto result =
+      cuda::ToStatus(cuEventDestroy(event), "Error destroying CUDA event");
+  if (!result.ok()) {
+    LOG(ERROR) << result.message();
+  }
+}
+
+enum class EventFlags { kDefault, kDisableTiming };
+absl::StatusOr<CUevent> InitEvent(Context* context, EventFlags flags) {
+  int cuflags;
+  switch (flags) {
+    case EventFlags::kDefault:
+      cuflags = CU_EVENT_DEFAULT;
+      break;
+    case EventFlags::kDisableTiming:
+      cuflags = CU_EVENT_DISABLE_TIMING;
+      break;
     default:
-      LOG(INFO) << "Error condition returned for event status: "
-                << status.value();
-      return Event::Status::kError;
+      LOG(FATAL) << "impossible event flags: " << int(flags);
   }
+
+  ScopedActivateContext activated{context};
+  CUevent event_handle;
+  TF_RETURN_IF_ERROR(cuda::ToStatus(cuEventCreate(&event_handle, cuflags)));
+  return event_handle;
+}
+
+}  // namespace
+
+Event::Status CudaEvent::PollForStatus() {
+  ScopedActivateContext activated(context_);
+  CUresult res = cuEventQuery(handle_);
+  if (res == CUDA_SUCCESS) {
+    return Event::Status::kComplete;
+  } else if (res == CUDA_ERROR_NOT_READY) {
+    return Event::Status::kPending;
+  }
+  return Event::Status::kError;
+}
+
+absl::Status CudaEvent::WaitForEventOnExternalStream(std::intptr_t stream) {
+  return WaitStreamOnEvent(context_, absl::bit_cast<CUstream>(stream), handle_);
+}
+
+absl::StatusOr<CudaEvent> CudaEvent::Create(Context* context,
+                                            bool allow_timing) {
+  TF_ASSIGN_OR_RETURN(
+      CUevent event_handle,
+      InitEvent(context, allow_timing ? EventFlags::kDefault
+                                      : EventFlags::kDisableTiming));
+
+  return CudaEvent(context, event_handle);
+}
+
+CudaEvent::~CudaEvent() { DestroyEvent(context_, handle_); }
+
+CudaEvent& CudaEvent::operator=(CudaEvent&& other) {
+  if (this == &other) {
+    return *this;
+  }
+
+  DestroyEvent(context_, handle_);
+
+  context_ = other.context_;
+  handle_ = other.handle_;
+  other.context_ = nullptr;
+  other.handle_ = nullptr;
+
+  return *this;
+}
+
+CudaEvent::CudaEvent(CudaEvent&& other)
+    : context_(other.context_), handle_(other.handle_) {
+  other.context_ = nullptr;
+  other.handle_ = nullptr;
 }
 
 }  // namespace gpu

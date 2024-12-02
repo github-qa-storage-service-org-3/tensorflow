@@ -24,22 +24,23 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/model/indexing_analysis.h"
 #include "xla/service/gpu/model/indexing_map.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/shape.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
+#include "xla/stream_executor/device_description.h"
 
 namespace xla {
 namespace gpu {
@@ -77,26 +78,26 @@ class KernelFusionInterface : public FusionInterface {
   // unsupported (scatter, in-place DUS). Implementations will return nullopt.
   // Note: Work in progress, not implemented for all emitters.
   virtual std::optional<IndexingMap> ComputeThreadIdToOutputIndexing(
-      int64_t root_index, IndexingContext* indexing_context) const = 0;
+      int64_t root_index, mlir::MLIRContext* ctx) const = 0;
 
   // Computes an indexing map from thread to input element(s) of the root's
   // **hero**. Note that in many cases this is not computable from the output
   // indexing. The indexing may only be known for some operands of the hero.
   virtual std::optional<IndexingMap> ComputeThreadIdToInputIndexing(
       int64_t root_index, int64_t hero_operand_index,
-      IndexingContext* indexing_context) const = 0;
+      mlir::MLIRContext* ctx) const = 0;
 
   static constexpr std::array<int, 3> kIndexingMapThreadIdxDims = {0, 1, 2};
   static constexpr std::array<int, 3> kIndexingMapBlockIdxDims = {3, 4, 5};
 
  protected:
   // Returns the default mapping for the given launch dimensions: linearizes
-  // the thread index and then reshapes it into the output layout.
+  // the thread index and then reshapes it into the given layout.
   // Populates the ranges for d0, d1, d2, d3, d4, d5 from the thread counts and
   // block sizes in the given launch dimensions.
-  static IndexingMap GetDefaultThreadIdToOutputIndexingMap(
+  static IndexingMap GetDefaultThreadIdIndexingMap(
       const LaunchDimensions& launch_dims, int unroll_factor,
-      const Shape& output_shape, IndexingContext* indexing_context);
+      const Shape& shape, mlir::MLIRContext* ctx);
 };
 
 // Base class for fusions that are implemented using a single kernel, which is
@@ -133,6 +134,20 @@ BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
                      size_t num_inputs,
                      const LaunchDimensions& launch_dimensions,
                      llvm::IRBuilder<>* builder);
+absl::StatusOr<
+    std::tuple<llvm::Function*, std::vector<llvm_ir::IrArray /*inputs*/>,
+               std::vector<llvm_ir::IrArray> /*outputs*/>>
+BuildKernelPrototypeFromUniqueName(IrEmitterContext& ir_emitter_context,
+                                   const std::string& unique_name,
+                                   absl::Span<const KernelArgument> arguments,
+                                   size_t num_inputs,
+                                   const LaunchDimensions& launch_dimensions,
+                                   llvm::IRBuilder<>* builder);
+
+// Compute the kernel name. The opcode string may contain "-" which cannot be
+// in a PTX function name, so sanitize the name before uniquifying it.
+std::string GetSanitizedUniqueName(IrEmitterContext& ir_emitter_context,
+                                   const std::string& suggested_name);
 
 absl::Status AnnotateKernelLaunchDimensions(
     const se::DeviceDescription& device_info,

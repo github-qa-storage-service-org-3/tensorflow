@@ -24,32 +24,26 @@ limitations under the License.
 #include "xla/array2d.h"
 #include "xla/array3d.h"
 #include "xla/array4d.h"
-#include "xla/client/lib/arithmetic.h"
 #include "xla/client/local_client.h"
-#include "xla/client/padding.h"
-#include "xla/client/xla_builder.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/padding.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/reference_util.h"
 #include "xla/shape_util.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/literal_test_util.h"
 #include "xla/tests/test_macros.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/test.h"
 
 namespace xla {
 namespace {
 
-#ifdef XLA_BACKEND_SUPPORTS_BFLOAT16
-// Tests both F32 and BF16.
 static std::array<bool, 2> use_bfloat16_params{false, true};
-#else
-// Only tests F32.
-static std::array<bool, 1> use_bfloat16_params{false};
-#endif
 
 class ReduceWindowTestBase : public ClientLibraryTestBase {
  public:
@@ -889,7 +883,10 @@ INSTANTIATE_TEST_CASE_P(
 
 class R4ReduceWindowLargeTest : public R4ReduceWindowTest {};
 
-XLA_TEST_P(R4ReduceWindowLargeTest, DISABLED_ON_INTERPRETER(DoIt)) { DoIt(); }
+XLA_TEST_P(R4ReduceWindowLargeTest,
+           OVERSIZE_ON_GRM(DISABLED_ON_INTERPRETER(DoIt))) {
+  DoIt();
+}
 
 // Test cases that are large/slow/failed.
 const R4ReduceWindowTestData kR4ReduceWindowLargeTestValues[] = {
@@ -980,7 +977,9 @@ struct R3ReduceWindowTestData {
   int64_t layout[3];
   Padding padding;
   Reducer reducer;
-} kR3TestCases[] = {
+};
+
+R3ReduceWindowTestData kR3TestCases[] = {
     {/*base_bounds=*/{2, 1, 2}, /*window_bounds=*/{1, 1, 2},
      /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
      /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
@@ -1014,15 +1013,6 @@ struct R3ReduceWindowTestData {
     {/*base_bounds=*/{63, 261, 257}, /*window_bounds=*/{63, 261, 257},
      /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
      /*padding=*/Padding::kValid, /*reducer=*/Reducer::kMax},
-    {/*base_bounds=*/{10003, 10, 5}, /*window_bounds=*/{9999, 7, 3},
-     /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
-     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
-    {/*base_bounds=*/{9999, 1, 1}, /*window_bounds=*/{9999, 1, 1},
-     /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
-     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
-    {/*base_bounds=*/{10003, 10, 5}, /*window_bounds=*/{9999, 7, 3},
-     /*strides=*/{2, 2, 2}, /*layout=*/{2, 1, 0},
-     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
 };
 
 std::string R3ReduceWindowTestDataToString(
@@ -1047,50 +1037,75 @@ class R3ReduceWindowTest : public ReduceWindowTestBase,
                                ::testing::tuple<R3ReduceWindowTestData, bool>> {
  protected:
   R3ReduceWindowTest() { set_use_bfloat16(::testing::get<1>(GetParam())); }
+
+  void DoIt() {
+    XlaBuilder b(TestName());
+    const auto& param = ::testing::get<0>(GetParam());
+
+    const float kInitValue = 0.0f;
+    Array3D<float> input(param.base_bounds[0], param.base_bounds[1],
+                         param.base_bounds[2]);
+    // Choose a prime iota length so that each window sees a unique set of
+    // values. (Technically, the requirement is that the iota length is
+    // relatively prime to all of the dimensions involved in the reduce-window.)
+    input.FillRepeatedIota(0, 137);
+    Literal input_literal = LiteralUtil::CreateR3FromArray3DWithLayout(
+        input, LayoutUtil::MakeLayout(param.layout));
+    auto reducer = param.reducer;
+    if (use_bfloat16()) {
+      input_literal = LiteralUtil::ConvertF32ToBF16(input_literal);
+
+      // To avoid numerical issues, force the reducer to be kMax for bf16
+      // inputs.
+      reducer = kMax;
+    }
+
+    XlaOp parameter = Parameter(&b, 0, input_literal.shape(), "input");
+    auto init_value =
+        CreateConstantFromLiteral(LiteralUtil::CreateR0(kInitValue), &b);
+
+    auto computation = reducer == kAdd
+                           ? CreateScalarAddComputation(FloatType(), &b)
+                           : CreateScalarMaxComputation(FloatType(), &b);
+
+    ReduceWindow(/*operand=*/parameter,
+                 /*init_value=*/init_value,
+                 /*computation=*/computation,
+                 /*window_dimensions=*/param.window_bounds,
+                 /*window_strides=*/param.strides, /*padding=*/param.padding);
+
+    ComputeAndCompare(&b, {std::move(input_literal)}, DefaultErrorSpec());
+  }
 };
 
-XLA_TEST_P(R3ReduceWindowTest, DoIt) {
-  XlaBuilder b(TestName());
-  const auto& param = ::testing::get<0>(GetParam());
-
-  const float kInitValue = 0.0f;
-  Array3D<float> input(param.base_bounds[0], param.base_bounds[1],
-                       param.base_bounds[2]);
-  // Choose a prime iota length so that each window sees a unique set of values.
-  // (Technically, the requirement is that the iota length is relatively prime
-  // to all of the dimensions involved in the reduce-window.)
-  input.FillRepeatedIota(0, 137);
-  Literal input_literal = LiteralUtil::CreateR3FromArray3DWithLayout(
-      input, LayoutUtil::MakeLayout(param.layout));
-  auto reducer = param.reducer;
-  if (use_bfloat16()) {
-    input_literal = LiteralUtil::ConvertF32ToBF16(input_literal);
-
-    // To avoid numerical issues, force the reducer to be kMax for bf16
-    // inputs.
-    reducer = kMax;
-  }
-
-  XlaOp parameter = Parameter(&b, 0, input_literal.shape(), "input");
-  auto init_value =
-      CreateConstantFromLiteral(LiteralUtil::CreateR0(kInitValue), &b);
-
-  auto computation = reducer == kAdd
-                         ? CreateScalarAddComputation(FloatType(), &b)
-                         : CreateScalarMaxComputation(FloatType(), &b);
-
-  ReduceWindow(/*operand=*/parameter,
-               /*init_value=*/init_value,
-               /*computation=*/computation,
-               /*window_dimensions=*/param.window_bounds,
-               /*window_strides=*/param.strides, /*padding=*/param.padding);
-
-  ComputeAndCompare(&b, {std::move(input_literal)}, DefaultErrorSpec());
-}
+XLA_TEST_P(R3ReduceWindowTest, DoIt) { DoIt(); }
 
 INSTANTIATE_TEST_CASE_P(
     R3ReduceWindowTestInstantiation, R3ReduceWindowTest,
     ::testing::Combine(::testing::ValuesIn(kR3TestCases),
+                       ::testing::ValuesIn(use_bfloat16_params)),
+    R3ReduceWindowTestDataToString);
+
+class R3ReduceWindowLargeTest : public R3ReduceWindowTest {};
+
+XLA_TEST_P(R3ReduceWindowLargeTest, OVERSIZE_ON_GRM(DoIt)) { DoIt(); }
+
+// Test cases that are large/slow/failed.
+const R3ReduceWindowTestData kR3ReduceWindowLargeTestValues[] = {
+    {/*base_bounds=*/{10003, 10, 5}, /*window_bounds=*/{9999, 7, 3},
+     /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
+     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
+    {/*base_bounds=*/{9999, 1, 1}, /*window_bounds=*/{9999, 1, 1},
+     /*strides=*/{1, 1, 1}, /*layout=*/{2, 1, 0},
+     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
+    {/*base_bounds=*/{10003, 10, 5}, /*window_bounds=*/{9999, 7, 3},
+     /*strides=*/{2, 2, 2}, /*layout=*/{2, 1, 0},
+     /*padding=*/Padding::kValid, /*reducer=*/Reducer::kAdd},
+};
+
+INSTANTIATE_TEST_CASE_P(
+    R3ReduceWindowLargeTestInstantiation, R3ReduceWindowLargeTest,
+    ::testing::Combine(::testing::ValuesIn(kR3ReduceWindowLargeTestValues),
                        ::testing::ValuesIn(use_bfloat16_params)),
     R3ReduceWindowTestDataToString);
 
@@ -1318,7 +1333,7 @@ class R2ReduceWindowTest : public ReduceWindowTestBase,
         /*window_dilations=*/param.window_dilation,
         /*padding=*/padding);
 
-    ComputeAndCompare(&b, {MaybeConvertLiteralToBfloat16(input_literal)},
+    ComputeAndCompare(&b, {MaybeConvertLiteralToTestType(input_literal)},
                       DefaultErrorSpec());
   }
 };

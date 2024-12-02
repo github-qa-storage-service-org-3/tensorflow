@@ -17,7 +17,7 @@ limitations under the License.
 #define XLA_SERVICE_EIGH_EXPANDER_H_
 
 #include "absl/container/flat_hash_map.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/service/op_expander_pass.h"
 
 namespace xla {
@@ -35,7 +35,7 @@ class EighExpander : public OpExpanderPass {
   virtual XlaOp BuildEigh(XlaOp a, bool lower, int64_t max_iter, float tol,
                           bool sort_eigenvalues);
 
-  Status SortByEigenvalues(XlaOp& v, XlaOp& w);
+  absl::Status SortByEigenvalues(XlaOp& v, XlaOp& w);
 
  private:
   // Mapping from op signatures to existing computations.

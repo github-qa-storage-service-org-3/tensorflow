@@ -44,18 +44,16 @@ limitations under the License.
 #include "xla/stream_executor/device_description.pb.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/numeric_options.h"
+#include "xla/stream_executor/scratch_allocator.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/tsl/protobuf/dnn.pb.h"
 #include "tsl/platform/logging.h"
-#include "tsl/protobuf/dnn.pb.h"
 
 namespace Eigen {
 struct half;
 }  // namespace Eigen
 
 namespace stream_executor {
-
-class HostBuffer;
-class Stream;
-class ScratchAllocator;
 
 namespace dnn {
 
@@ -910,6 +908,8 @@ class ProfileResult {
     return algorithm_.has_value() &&
            elapsed_time_in_ms() != std::numeric_limits<float>::max();
   }
+  bool warmup_run_executed() const { return warmup_run_executed_; }
+  void set_warmup_run_executed(bool val) { warmup_run_executed_ = val; }
 
   AlgorithmDesc algorithm() const { return *algorithm_; }
   void set_algorithm(AlgorithmDesc val) { algorithm_ = val; }
@@ -926,6 +926,7 @@ class ProfileResult {
   // The scratch size algorithm_ requires. Currently it's only populated by
   // convolutions.
   size_t scratch_size_ = 0;
+  bool warmup_run_executed_ = false;
 };
 
 // Backend-specific data shared between repeated launches of the same
@@ -989,33 +990,6 @@ using FusedMatmulRunner = OpRunner<FusedMatmulSignature>;
 
 using NormSignature = void(std::vector<DeviceMemoryBase>);
 using NormRunner = OpRunner<NormSignature>;
-
-using FusedMHASignature = void(DeviceMemoryBase /*BMM1_inputA_data*/,
-                               DeviceMemoryBase /* BMM1_inputB_data */,
-                               DeviceMemoryBase /* BMM2_inputA_data */,
-                               DeviceMemoryBase /* output_data */,
-                               DeviceMemoryBase /* mask_data */,
-                               DeviceMemoryBase /* bias_data */,
-                               DeviceMemoryBase /* activation_data */,
-                               DeviceMemoryBase /* seqlen_q_data */,
-                               DeviceMemoryBase /* seqlen_k_data */);
-using FusedMHARunner = OpRunner<FusedMHASignature>;
-
-using FusedMHABackwardSignature = void(
-    DeviceMemoryBase /* BMM1_GRAD_GEMM1_inputA_data */,
-    DeviceMemoryBase /* BMM1_GRAD_GEMM2_inputB_data */,
-    DeviceMemoryBase /* BMM2_GRAD_GEMM1_inputA_data */,
-    DeviceMemoryBase /* BMM2_GRAD_GEMM2_inputB_data */,
-    DeviceMemoryBase /* d_output_data */,
-    DeviceMemoryBase /* d_BMM1_inputA_data */,
-    DeviceMemoryBase /* d_BMM1_inputB_data */,
-    DeviceMemoryBase /* d_BMM2_inputB_data */, DeviceMemoryBase /* d_S_data */,
-    DeviceMemoryBase /* softmax_sum_data */,
-    DeviceMemoryBase /* d_Q_accum_data */, DeviceMemoryBase /* mask_data */,
-    DeviceMemoryBase /* d_bias_data */, DeviceMemoryBase /* fwd_output_data */,
-    DeviceMemoryBase /* bias_data */, DeviceMemoryBase /* seqlen_q_data */,
-    DeviceMemoryBase /* seqlen_k_data */);
-using FusedMHABackwardRunner = OpRunner<FusedMHABackwardSignature>;
 
 // Describes the configuration for the algorithms that will used.
 //
@@ -1250,20 +1224,23 @@ class VersionInfo {
   int patch_;
 };
 
+class DnnSupport;
+
 class DnnGraph {
  public:
   DnnGraph() = default;
   virtual ~DnnGraph() = default;
 
-  // Returns non-OK status on hard failures (incorrectly constructed graph,
-  // anything else unexpected),
-  // false on expected ones (graph is valid but not supported),
-  // true on success.
-  virtual absl::StatusOr<bool> Prepare() = 0;
-  virtual absl::Status Build(int64_t plan_id) = 0;
+  virtual absl::Status Prepare(DnnSupport&, const NumericOptions&) = 0;
+  virtual absl::Status Build(DnnSupport&, std::optional<int64_t> plan_id) = 0;
   virtual absl::Status Execute(Stream& stream,
-                               absl::Span<DeviceMemoryBase> operands) const = 0;
+                               absl::Span<DeviceMemoryBase> operands,
+                               int64_t local_device_ordinal) const = 0;
+  virtual void InitDropoutState(int64_t local_device_count, int64_t seed,
+                                int64_t increment) = 0;
 };
+
+using LazyDnnGraph = std::unique_ptr<DnnGraph>;
 
 // Suite of operations typically used for implementing Deep/Convolutional Neural
 // Nets. Note: A false return value of an operation indicates the
@@ -1731,44 +1708,12 @@ class DnnSupport {
     return absl::UnimplementedError("Graph support requires cuDNN >= 8.1.");
   };
 
-  virtual absl::StatusOr<std::unique_ptr<const FusedMHARunner>>
-  FusedMHARunnerFromDesc(
-      Stream* stream, const AlgorithmDesc& algorithm_desc, FusedMHAKind kind,
-      const MatmulTensorDescriptor& bmm1_lhs_descriptor,
-      const MatmulTensorDescriptor& bmm1_rhs_descriptor,
-      const MatmulTensorDescriptor& bmm2_rhs_descriptor,
-      const MatmulTensorDescriptor& intermediate_bmm2_lhs_descriptor,
-      const TensorDescriptor& output_descriptor,
-      std::optional<TensorDescriptor> activation_descriptor,
-      std::optional<TensorDescriptor> mask_descriptor,
-      std::optional<TensorDescriptor> bias_descriptor, double scale,
-      std::optional<double> dropout_rate, std::optional<int64_t> seed,
-      bool is_flash_attention, bool is_causal_mask);
-
-  virtual absl::StatusOr<std::unique_ptr<const FusedMHABackwardRunner>>
-  FusedMHABackwardRunnerFromDesc(
-      Stream* stream, const AlgorithmDesc& algorithm_desc, FusedMHAKind kind,
-      const MatmulTensorDescriptor& bmm1_grad_gemm1_rhs_descriptor,
-      const MatmulTensorDescriptor& bmm1_grad_gemm2_rhs_descriptor,
-      const MatmulTensorDescriptor& bmm2_grad_gemm1_lhs_descriptor,
-      const MatmulTensorDescriptor& bmm2_grad_gemm2_rhs_descriptor,
-      const MatmulTensorDescriptor& d_output_descriptor,
-      const TensorDescriptor& d_bmm1_lhs_descriptor,
-      const TensorDescriptor& d_bmm1_rhs_descriptor,
-      const TensorDescriptor& d_bmm2_rhs_descriptor,
-      std::optional<TensorDescriptor> d_s_descriptor,
-      std::optional<TensorDescriptor> mask_descriptor,
-      std::optional<TensorDescriptor> d_bias_descriptor,
-      std::optional<TensorDescriptor> fwd_output_descriptor,
-      std::optional<TensorDescriptor> bias_descriptor, double scale,
-      std::optional<double> dropout_rate, std::optional<int64_t> seed,
-      bool is_flash_attention, bool is_causal_mask);
-
   virtual bool GetMIOpenConvolveAlgorithms(
-      ConvolutionKind kind, DataType element_type, Stream* stream,
-      const BatchDescriptor& input_descriptor, DeviceMemoryBase input_data,
-      const FilterDescriptor& filter_descriptor, DeviceMemoryBase filter_data,
-      const BatchDescriptor& output_descriptor, DeviceMemoryBase output_data,
+      ConvolutionKind kind, DataType element_type, DataType output_type,
+      Stream* stream, const BatchDescriptor& input_descriptor,
+      DeviceMemoryBase input_data, const FilterDescriptor& filter_descriptor,
+      DeviceMemoryBase filter_data, const BatchDescriptor& output_descriptor,
+      DeviceMemoryBase output_data,
       const ConvolutionDescriptor& convolution_descriptor,
       ScratchAllocator* scratch_allocator,
       std::vector<ProfileResult>* out_algorithms);

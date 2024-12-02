@@ -15,8 +15,8 @@ limitations under the License.
 
 #include <optional>
 
-#include "xla/client/xla_computation.h"
 #include "xla/execution_options_util.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/service/despecializer.h"
 #include "xla/service/float_normalization.h"
 #include "xla/status_macros.h"
@@ -97,7 +97,7 @@ XLA_TEST_P(DepthwiseConvolution2DTest, DoIt) {
       BuildHloTextDepthwiseConvolution2D(spec, use_bfloat16);
 
   EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{0.01, 0.01},
-                            [](HloModule* module) -> Status {
+                            [](HloModule* module) -> absl::Status {
                               BFloat16MixedPrecisionRemoval remover;
                               TF_RETURN_IF_ERROR(remover.Run(module).status());
                               Despecializer despecializer;

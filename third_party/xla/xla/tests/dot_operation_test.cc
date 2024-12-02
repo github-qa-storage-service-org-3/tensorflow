@@ -13,30 +13,34 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <limits>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
-#if TENSORFLOW_USE_ROCM
-#include "rocm/rocm_config.h"
-#endif
 #include "xla/array2d.h"
 #include "xla/array3d.h"
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/lib/matrix.h"
 #include "xla/client/local_client.h"
-#include "xla/client/xla_builder.h"
+#include "xla/error_spec.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/primitive_util.h"
 #include "xla/reference_util.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/shape_util.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/test_macros.h"
 #include "xla/tests/test_utils.h"
+#include "tsl/platform/ml_dtypes.h"
 #include "tsl/platform/test.h"
 #include "tsl/platform/test_benchmark.h"
+
+#if TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#endif
 
 namespace xla {
 namespace {
@@ -319,7 +323,6 @@ class ParametricDotTest : public DotOperationTest,
         propagate_grad_xy_ = param.dot_lhs_row_major ? 1 : 2;
       }
     }
-    ManifestCheckingTest::SetUp();
   }
 
   template <typename NativeT>
@@ -356,6 +359,34 @@ void ParametricDotTest::ComputeAndCompareR2WithError<int32_t>(
   ComputeAndCompareR2(builder, expected, arguments);
 }
 
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError<uint8_t>(
+    XlaBuilder* builder, const Array2D<uint8_t>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ComputeAndCompareR2(builder, expected, arguments);
+}
+
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError(
+    XlaBuilder* builder, const Array2D<tsl::float8_e5m2>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ErrorSpec error_spec(0.3, 3e-3);
+  error_spec.low_precision_fp_error_spec.type =
+      primitive_util::NativeToPrimitiveType<tsl::float8_e5m2>();
+  error_spec.low_precision_fp_error_spec.within_n_values = 1;
+  ComputeAndCompareR2(builder, expected, arguments, error_spec);
+}
+
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError(
+    XlaBuilder* builder, const Array2D<tsl::float8_e4m3fn>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ErrorSpec error_spec(0.3, 3e-3);
+  error_spec.low_precision_fp_error_spec.type =
+      primitive_util::NativeToPrimitiveType<tsl::float8_e4m3fn>();
+  error_spec.low_precision_fp_error_spec.within_n_values = 1;
+  ComputeAndCompareR2(builder, expected, arguments, error_spec);
+}
 template <typename NativeT>
 void ParametricDotTest::TestImpl() {
   DotTestParam param = GetParam();
@@ -472,12 +503,16 @@ std::vector<DotTestParam> CreateDotTestParameters() {
 XLA_TEST_P(ParametricDotTest, TestF16) { TestImpl<Eigen::half>(); }
 #endif
 XLA_TEST_P(ParametricDotTest, TestF32) { TestImpl<float>(); }
-XLA_TEST_P(ParametricDotTest, TestF64) { TestImpl<double>(); }
+XLA_TEST_P(ParametricDotTest, OVERSIZE_ON_GRM(TestF64)) { TestImpl<double>(); }
 XLA_TEST_P(ParametricDotTest, TestC64) { TestImpl<std::complex<float>>(); }
 #ifndef XLA_BACKEND_DOES_NOT_SUPPORT_COMPLEX128
 XLA_TEST_P(ParametricDotTest, TestC128) { TestImpl<std::complex<double>>(); }
 #endif
 XLA_TEST_P(ParametricDotTest, TestS32) { TestImpl<int32_t>(); }
+XLA_TEST_P(ParametricDotTest, TestF8E5M2) { TestImpl<tsl::float8_e5m2>(); }
+XLA_TEST_P(ParametricDotTest, TestF8E4M3FN) { TestImpl<tsl::float8_e4m3fn>(); }
+
+XLA_TEST_P(ParametricDotTest, TestU8) { TestImpl<uint8_t>(); }
 
 INSTANTIATE_TEST_CASE_P(DotTests, ParametricDotTest,
                         ::testing::ValuesIn(CreateDotTestParameters()),
@@ -643,7 +678,7 @@ TYPED_TEST_CASE(DotOperationTestForBatchMatMul, TypesF16F32F64);
 // Regression test for b/32055648. The root of the graph is a kFusion of 4
 // bitcasts. Although bitcasts don't map to thunks, the root should still be
 // sync-dependent on bitcasts' operands.
-XLA_TYPED_TEST(DotOperationTestForBatchMatMul, Types) {
+XLA_TYPED_TEST(DotOperationTestForBatchMatMul, DISABLED_ON_TPU(Types)) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto x = Parameter(&builder, 0, ShapeUtil::MakeShapeWithType<T>({2, 2, 2, 2}),
@@ -2291,6 +2326,22 @@ ENTRY MatrixVectorComplex {
   p0 = s8[5,5]{1,0} parameter(0)
   p1 = s16[5,1]{0,1} parameter(1)
   ROOT dot = s32[5,1]{1,0} dot(p0, p1), lhs_contracting_dims={1},
+                                        rhs_contracting_dims={0}
+}
+)";
+
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
+}
+
+XLA_TEST_F(DotOperationTextTest, MixedPrecisionDotLowPrecisionOutput) {
+  absl::string_view hlo_string =
+      R"(
+HloModule MixedPrecisionDotLowPrecisionOutput
+
+ENTRY main {
+  p0 = f16[5,5]{1,0} parameter(0)
+  p1 = f32[5,1]{0,1} parameter(1)
+  ROOT dot = f16[5,1]{1,0} dot(p0, p1), lhs_contracting_dims={1},
                                         rhs_contracting_dims={0}
 }
 )";

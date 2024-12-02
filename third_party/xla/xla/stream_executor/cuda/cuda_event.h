@@ -16,14 +16,47 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_CUDA_CUDA_EVENT_H_
 #define XLA_STREAM_EXECUTOR_CUDA_CUDA_EVENT_H_
 
-#include "xla/stream_executor/gpu/gpu_event.h"
+#include <cstdint>
 
-namespace stream_executor {
-namespace cuda {
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "third_party/gpus/cuda/include/cuda.h"
+#include "xla/stream_executor/event.h"
+#include "xla/stream_executor/gpu/context.h"
 
-using CUDAEvent = gpu::GpuEvent;
+namespace stream_executor::gpu {
 
-}  // namespace cuda
-}  // namespace stream_executor
+class GpuContext;
+
+// This class implements Event::PollForStatus for CUDA devices.
+class CudaEvent : public Event {
+ public:
+  Event::Status PollForStatus() override;
+  absl::Status WaitForEventOnExternalStream(std::intptr_t stream) override;
+
+  // Creates a new CudaEvent. If allow_timing is false, the event will not
+  // support timing, which is cheaper to create.
+  static absl::StatusOr<CudaEvent> Create(Context* context, bool allow_timing);
+
+  CUevent GetHandle() const { return handle_; }
+
+  ~CudaEvent() override;
+  CudaEvent(const CudaEvent&) = delete;
+  CudaEvent& operator=(const CudaEvent&) = delete;
+  CudaEvent(CudaEvent&& other);
+  CudaEvent& operator=(CudaEvent&& other);
+
+ private:
+  explicit CudaEvent(Context* context, CUevent handle)
+      : context_(context), handle_(handle) {}
+
+  // The Context used to which this object and GpuEventHandle are bound.
+  Context* context_;
+
+  // The underlying CUDA event handle.
+  CUevent handle_;
+};
+
+}  // namespace stream_executor::gpu
 
 #endif  // XLA_STREAM_EXECUTOR_CUDA_CUDA_EVENT_H_

@@ -38,7 +38,7 @@ limitations under the License.
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
@@ -54,8 +54,8 @@ limitations under the License.
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/lite/quantization/ir/FakeQuantSupport.h"
 #include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/quantization/common/ir/FakeQuantSupport.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_config.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_traits.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -134,11 +134,14 @@ using OpQuantSpecGetter =
 // Quantization scale spec of an op. The information defined in the MLIR
 // interfaces FixedOutputRangeInterface and SameOperandsAndResultsScale should
 // be checked first if present.
+// TODO: b/323478683: Consider deprecating this.
 struct OpQuantScaleSpec {
   // Whether this op has a fixed range requirement (e.g. sigmoid)
   bool has_fixed_output_range = false;
-  // Whether this op should have same result and operand scales (e.g. concat)
+  // Whether this op should have same operand and result scales (e.g. concat)
   bool has_same_scale_requirement = false;
+  // Whether this op should have same operand and result type (e.g. gather)
+  bool has_same_operand_and_result_type_requirement = false;
   // Returns the fixed output range, when has_fixed_output_range is set.
   GetFixedOutputRangeFunc fixed_output_range_func;
   // Returns whether same operands and results scales are required.
@@ -490,6 +493,7 @@ class QuantizationPattern : public RewritePattern {
         continue;
       }
 
+      bool is_operand_or_result_modified = false;
       // Collect all the quantized inputs and "clone" the matched op by these
       // inputs.
       SmallVector<Value, 4> inputs;
@@ -514,6 +518,7 @@ class QuantizationPattern : public RewritePattern {
             // Dynamic range quantization is applied by having QuantizeOp as an
             // input. Only int8 weight is supported for now.
             inputs.push_back(dq_op.getOperand());
+            is_operand_or_result_modified = true;
           } else {
             // Otherwise, it's the case where the operand is activations or the
             // quantizing_op is non-supported/weight-only.
@@ -522,6 +527,7 @@ class QuantizationPattern : public RewritePattern {
         } else {
           if (auto dq_op =
                   dyn_cast_or_null<DequantizeOpT>(operand.getDefiningOp())) {
+            is_operand_or_result_modified = true;
             inputs.push_back(dq_op.getOperand());
           } else if (!ele_type.isF32()) {
             // If the operand is an integer tensor, then it doesn't require the
@@ -558,6 +564,7 @@ class QuantizationPattern : public RewritePattern {
           outputs_replaced.insert(
               {user.getResult(), enumerated_result.index()});
           output_types.push_back(user.getType());
+          is_operand_or_result_modified = true;
         } else if (!result_ele_type.isF32()) {
           // If the result is an integer tensor, then it doesn't require the
           // D op in the pattern.
@@ -571,6 +578,13 @@ class QuantizationPattern : public RewritePattern {
         } else {
           return failure();
         }
+      }
+
+      // For float16 quantization if none of the operand or result is modified,
+      // replacing the op. See b/335025403.
+      if (inference_type == tensorflow::DT_HALF &&
+          !is_operand_or_result_modified) {
+        return failure();
       }
 
       rewriter.setInsertionPointAfter(quantizing_op);

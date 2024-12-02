@@ -21,8 +21,21 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
+#include "tsl/platform/errors.h"
 
 namespace xla {
 
@@ -164,8 +177,9 @@ std::optional<std::vector<HloInstruction*>> FindElementwiseOperationGroup(
 // Generates a new elementwise operation using the slice_sources as operands,
 // and replaces the uses of elementwise operation_on_slices with slices of the
 // new elementwise operations.
-Status SinkSlices(const std::vector<HloInstruction*>& slice_sources,
-                  const std::vector<HloInstruction*>& operation_on_slices) {
+absl::Status SinkSlices(
+    const std::vector<HloInstruction*>& slice_sources,
+    const std::vector<HloInstruction*>& operation_on_slices) {
   const Shape shape = slice_sources[0]->shape();
   PrimitiveType element_type = operation_on_slices[0]->shape().element_type();
   Shape new_shape = ShapeUtil::ChangeElementType(shape, element_type);
@@ -187,7 +201,7 @@ Status SinkSlices(const std::vector<HloInstruction*>& slice_sources,
              << " to replace: " << user->ToString();
     TF_RETURN_IF_ERROR(user->ReplaceAllUsesWith(user_slice));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace

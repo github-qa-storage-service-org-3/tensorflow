@@ -16,6 +16,8 @@ limitations under the License.
 #include "tensorflow/core/tpu/tpu_compile.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -25,27 +27,44 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
-#include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "tensorflow/compiler/tf2xla/xla_resource.h"
 #include "xla/client/compile_only_client.h"
-#include "xla/literal_util.h"
+#include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
 #include "xla/xla_data.pb.h"
+#include "tensorflow/core/common_runtime/function_body.h"
 #include "tensorflow/core/common_runtime/function_utils.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_optimizer.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/strcat.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/tpu/compile_metadata.pb.h"
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace tpu {
@@ -101,8 +120,8 @@ Status SetPerCoreArgShapes(
     }
   } else {
     TF_RET_CHECK(proto_arg.sharding().type() == xla::OpSharding::REPLICATED)
-        << "Unsupported argument sharding: "
-        << " proto_arg=" << proto_arg.DebugString();
+        << "Unsupported argument sharding: " << " proto_arg="
+        << proto_arg.DebugString();
     for (int core = 0; core < per_core_arg_shapes->size(); ++core) {
       (*arg_core_mapping)[arg_index].indices.push_back(
           (*per_core_arg_shapes)[core].size());
@@ -284,23 +303,21 @@ Status AssignReturnValueToCore(
 }
 
 // If the metadata specifies any bounded dynamic shapes in the arg then create
-// the matching Tensor values for the Argument.
+// the matching xla shape  for the Argument.
 Status MaybeBuildBoundedDynamicArgValues(
     const tpu::TPUCompileMetadataProto::Arg& proto_arg,
     const TensorShape& shape, XlaCompiler::Argument& arg) {
   // If any entry in the is_bounded_dynamic_dim list is true then we update the
   // value_bound and value_dynamism fields to indicate that there is dynamism,
   // the bounds, and which dimensions are dynamic.
-  auto is_dynamic_dim = absl::MakeConstSpan(proto_arg.is_bounded_dynamic_dim());
+  std::vector<bool> is_dynamic_dim(proto_arg.is_bounded_dynamic_dim().begin(),
+                                   proto_arg.is_bounded_dynamic_dim().end());
   if (std::any_of(is_dynamic_dim.begin(), is_dynamic_dim.end(),
                   [](bool v) { return v; })) {
-    // Assume that the values in the shape are the maximums.
-    arg.value_bound = Tensor(arg.type, shape);
-    // Build a literal tensor of Bools to hold which Dims are dynamic.
-    auto literal = xla::LiteralUtil::CreateR1(is_dynamic_dim);
-    Tensor dynamism_tensor(DT_BOOL);
-    TF_RETURN_IF_ERROR(LiteralToHostTensor(literal, DT_BOOL, &dynamism_tensor));
-    arg.value_dynamism = dynamism_tensor;
+    xla::PrimitiveType primitive_type;
+    TF_RETURN_IF_ERROR(DataTypeToPrimitiveType(arg.type, &primitive_type));
+    arg.shape = xla::ShapeUtil::MakeShape(primitive_type, shape.dim_sizes(),
+                                          is_dynamic_dim);
   }
   return absl::OkStatus();
 }
@@ -433,7 +450,7 @@ Status RunShapeInferenceOnComputation(
 Status CompileTFFunctionToHlo(
     const FunctionLibraryDefinition& flib_def, int graph_def_version,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
-    const std::vector<TensorShape>& arg_shapes,
+    const std::vector<TensorShape>& arg_shapes, const DeviceType& device_type,
     const GuaranteedConsts& guaranteed_constants, const NameAttrList& function,
     const tpu::TPUCompileMetadataProto& metadata,
     xla::CompileOnlyClient* client,
@@ -442,7 +459,7 @@ Status CompileTFFunctionToHlo(
     bool use_tuple_args, XlaCompiler::CompilationResult* compilation_result) {
   XlaCompiler::Options compiler_options;
   FunctionLibraryDefinition flib_definition(flib_def);
-  compiler_options.device_type = DeviceType(DEVICE_TPU_XLA_JIT);
+  compiler_options.device_type = device_type;
   compiler_options.client = client;
   compiler_options.flib_def = &flib_definition;
   compiler_options.allow_cpu_custom_calls = false;
@@ -478,7 +495,7 @@ Status CompileTFFunctionToHlo(
     args[i].node_name = fbody->arg_nodes[i]->name();
   }
 
-  std::vector<gtl::InlinedVector<int64_t, 4>> arg_shape_dims;
+  std::vector<absl::InlinedVector<int64_t, 4UL>> arg_shape_dims;
   arg_shape_dims.reserve(arg_shapes.size());
   std::vector<PartialTensorShape> partial_arg_shapes(arg_shapes.size());
   for (const TensorShape& shape : arg_shapes) {

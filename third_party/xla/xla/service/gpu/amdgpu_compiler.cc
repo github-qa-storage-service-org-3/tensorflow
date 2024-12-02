@@ -18,34 +18,39 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "llvm/IR/Module.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/pass/hlo_pass_fix.h"
+#include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/service/algebraic_simplifier.h"
 #include "xla/service/call_inliner.h"
 #include "xla/service/convert_mover.h"
 #include "xla/service/dot_dimension_merger.h"
 #include "xla/service/float_normalization.h"
-#include "xla/service/gpu/autotuner_util.h"
-#include "xla/service/gpu/conv_algorithm_picker.h"
-#include "xla/service/gpu/cublas_pad_for_gemms.h"
+#include "xla/service/float_support.h"
+#include "xla/service/gpu/autotuning/autotuner_util.h"
+#include "xla/service/gpu/autotuning/conv_algorithm_picker.h"
+#include "xla/service/gpu/autotuning/gemm_algorithm_picker.h"
 #include "xla/service/gpu/cublas_padding_requirements.h"
-#include "xla/service/gpu/cusolver_rewriter.h"
-#include "xla/service/gpu/gemm_algorithm_picker.h"
 #include "xla/service/gpu/gpu_compiler.h"
-#include "xla/service/gpu/gpu_conv_padding_legalization.h"
-#include "xla/service/gpu/gpu_conv_rewriter.h"
-#include "xla/service/gpu/gpu_sort_rewriter.h"
 #include "xla/service/gpu/llvm_gpu_backend/gpu_backend_lib.h"
 #include "xla/service/gpu/target_constants.h"
-#include "xla/service/gpu/triangular_solve_rewriter.h"
+#include "xla/service/gpu/transforms/algebraic_simplifier.h"
+#include "xla/service/gpu/transforms/conv_padding_legalization.h"
+#include "xla/service/gpu/transforms/conv_rewriter.h"
+#include "xla/service/gpu/transforms/cublas_pad_for_gemms.h"
+#include "xla/service/gpu/transforms/cudnn_fused_conv_rewriter.h"
+#include "xla/service/gpu/transforms/gpusolver_rewriter.h"
+#include "xla/service/gpu/transforms/sort_rewriter.h"
+#include "xla/service/gpu/transforms/triangular_solve_rewriter.h"
 #include "xla/service/hlo_constant_folding.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_pass_fix.h"
-#include "xla/service/hlo_pass_pipeline.h"
 #include "xla/service/hlo_verifier.h"
 #include "xla/service/reshape_mover.h"
 #include "xla/service/tuple_simplifier.h"
@@ -53,7 +58,8 @@ limitations under the License.
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/rocm/rocm_platform_id.h"
-#include "xla/stream_executor/stream_executor_pimpl.h"
+#include "xla/stream_executor/semantic_version.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
@@ -64,7 +70,8 @@ namespace gpu {
 
 namespace {
 
-struct ConvBfloat16Support : public FloatSupport {
+class ConvBfloat16Support : public FloatSupport {
+ public:
   explicit ConvBfloat16Support(const se::RocmComputeCapability& rocm)
       : FloatSupport(BF16),
         // TODO: MIOpen does not support bf16 convolutions yet
@@ -93,7 +100,8 @@ struct ConvBfloat16Support : public FloatSupport {
 absl::Status AMDGPUCompiler::OptimizeHloConvolutionCanonicalization(
     HloModule* hlo_module, se::GpuComputeCapability gpu_version,
     se::dnn::VersionInfo dnn_version,
-    se::DeviceMemoryAllocator* device_allocator) {
+    se::DeviceMemoryAllocator* device_allocator,
+    const se::SemanticVersion& toolkit_version) {
   // Convert convolutions into CustomCalls to MIOpen, then canonicalize them
   // (PadInsertion).
   HloPassPipeline pipeline("conv_canonicalization");
@@ -107,8 +115,10 @@ absl::Status AMDGPUCompiler::OptimizeHloConvolutionCanonicalization(
   pipeline.AddPass<FloatNormalization>(&conv_bf16_support);
 
   pipeline.AddPass<GpusolverRewriter>();
-  pipeline.AddPass<GpuConvRewriter>();
-  pipeline.AddPass<GpuConvPaddingLegalization>();
+  pipeline.AddPass<ConvRewriter>(gpu_version);
+  pipeline.AddPass<ConvPaddingLegalization>();
+  auto rcc = std::get<se::RocmComputeCapability>(gpu_version);
+  pipeline.AddPass<CudnnFusedConvRewriter>(rcc, dnn_version, toolkit_version);
 
   // The conv padding/vectorization passes which we need to get rid of.  They
   // also leave behind unnecessary tuple/get-tuple-element pairs that
@@ -116,24 +126,24 @@ absl::Status AMDGPUCompiler::OptimizeHloConvolutionCanonicalization(
   pipeline.AddPass<CallInliner>();
   pipeline.AddPass<TupleSimplifier>();
 
-  // tf2xla bridge, DepthwiseConvolutionConverter and GpuConvRewriter
+  // tf2xla bridge, DepthwiseConvolutionConverter and ConvRewriter
   // introduces reshapes and transposes that can be eliminated using
   // AlgebraicSimplifier  We run algsimp to a fixed point.
   AlgebraicSimplifierOptions options =
       GetAlgebraicSimplifierOptions(hlo_module->config());
   options.set_enable_conv_operand_swap(false);
   options.set_enable_unconditional_reduce_of_concat_replacement(false);
-  pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(options);
+  pipeline.AddPass<HloPassFix<GpuAlgebraicSimplifier>>(options, gpu_version);
 
-  // tf2xla bridge, DepthwiseConvolutionConverter, GpuConvRewriter, and
+  // tf2xla bridge, DepthwiseConvolutionConverter, ConvRewriter, and
   // CudnnSimplifyPadding introduce reshapes and transposes.  Run ReshapeMover
   // to a fixed point.  Include algsimp because ReshapeMover relies on it.
   [&, &pipeline = pipeline.AddPass<HloPassFix<HloPassPipeline>>(
           "reshape_mover_after_conv_canonicalization")] {
     ReshapeMoverOptions reshape_mover_options;
     reshape_mover_options.reshape_of_1d_broadcast_is_cheap = true;
-    pipeline.AddPass<HloPassFix<ReshapeMover>>(reshape_mover_options);
-    pipeline.AddPass<AlgebraicSimplifier>(options);
+    pipeline.AddPass<ReshapeMover>(reshape_mover_options);
+    pipeline.AddPass<GpuAlgebraicSimplifier>(options, gpu_version);
   }();
 
   // The reshapes and transposes can possibly be eliminated using
@@ -144,10 +154,10 @@ absl::Status AMDGPUCompiler::OptimizeHloConvolutionCanonicalization(
   [&, &pipeline = pipeline.AddPass<HloPassFix<HloPassPipeline>>(
           "simplify_after_conv_canonicalization")] {
     pipeline.AddPass<ConvertMover>();
-    pipeline.AddPass<AlgebraicSimplifier>(options);
+    pipeline.AddPass<GpuAlgebraicSimplifier>(options, gpu_version);
   }();
 
-  // GpuConvRewriter, GpuConvPaddingLegalization and
+  // ConvRewriter, ConvPaddingLegalization and
   // CudnnConvPadForTensorCores may add instructions which can be simplified
   // by constant folding.
   pipeline.AddPass<HloConstantFolding>();
@@ -209,7 +219,8 @@ bool AMDGPUCompiler::RequiresCollectiveScheduleLinearizer(
 }
 
 absl::Status AMDGPUCompiler::AddConvAndGemmAutotuningPasses(
-    HloPassPipeline* pipeline, HloModule* hlo_module,
+    HloPassPipeline* pipeline, const se::GpuComputeCapability& gpu_version,
+    const CompileOptions& options, HloModule* hlo_module,
     AutotuneConfig& autotune_config, tsl::thread::ThreadPool* thread_pool) {
   if (GpuConvAlgorithmPicker::IsEnabled(hlo_module)) {
     pipeline->AddPass<GpuConvAlgorithmPicker>(autotune_config);
@@ -221,7 +232,7 @@ absl::Status AMDGPUCompiler::AddConvAndGemmAutotuningPasses(
 absl::Status AMDGPUCompiler::AddCustomKernelReplacementPasses(
     HloPassPipeline* pipeline, const DebugOptions& debug_options) {
   if (debug_options.xla_gpu_enable_cub_radix_sort()) {
-    pipeline->AddPass<GpuSortRewriter>();
+    pipeline->AddPass<SortRewriter>();
   }
   return absl::OkStatus();
 }

@@ -20,9 +20,21 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
+#include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
+#include "tensorflow/compiler/tf2xla/xla_compiler.h"
+#include "tensorflow/compiler/tf2xla/xla_expression.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "xla/hlo/builder/value_inference.h"
 #include "xla/literal.h"
+#include "tensorflow/core/common_runtime/function_body.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/platform/status.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 
@@ -79,10 +91,10 @@ absl::InlinedVector<int, 5> ConvertCompileTimeConstArgumentsToConst(
   return resolved_constant_idxs;
 }
 
-Status FindMustBeConstNodes(XlaOpKernelContext* ctx,
-                            const NameAttrList& func_name,
-                            std::vector<bool>* must_be_const_nodes,
-                            const FunctionBody** body) {
+absl::Status FindMustBeConstNodes(XlaOpKernelContext* ctx,
+                                  const NameAttrList& func_name,
+                                  std::vector<bool>* must_be_const_nodes,
+                                  const FunctionBody** body) {
   TF_RETURN_IF_ERROR(ctx->compiler()->FindFunctionBody(func_name, body));
   must_be_const_nodes->resize((*body)->graph->num_node_ids(), false);
   return BackwardsConstAnalysis(*((*body)->graph),

@@ -45,12 +45,8 @@ struct SE_Stream {
 };
 
 struct SE_Event {
-  explicit SE_Event(stream_executor::StreamExecutor* parent) : event(parent) {}
-  stream_executor::Event event;
-};
-
-struct SE_StreamExecutorConfig {
-  stream_executor::StreamExecutorConfig config;
+  explicit SE_Event(stream_executor::StreamExecutor* parent) {}
+  std::unique_ptr<stream_executor::Event> event;
 };
 
 // Ignored -- these are just used to enforce the interface types

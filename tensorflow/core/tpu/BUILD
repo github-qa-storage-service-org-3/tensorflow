@@ -1,5 +1,6 @@
 # Description: Utilities for TPU Operations
 
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_libtpu",
@@ -7,7 +8,6 @@ load(
     "tf_cc_test",
 )
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -57,7 +57,7 @@ tf_cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:statusor",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -103,7 +103,7 @@ cc_library(
         "@local_tsl//tsl/platform:logging",
         "@local_xla//xla:shape_util",
         "@local_xla//xla:xla_data_proto_cc",
-        "@local_xla//xla/client:xla_builder",
+        "@local_xla//xla/hlo/builder:xla_builder",
     ],
 )
 
@@ -237,18 +237,29 @@ cc_library(
         "//tensorflow/compiler/tf2xla:layout_util",
         "//tensorflow/compiler/tf2xla:tf2xla_util",
         "//tensorflow/compiler/tf2xla:xla_compiler",
+        "//tensorflow/compiler/tf2xla:xla_resource",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
+        "//tensorflow/core:portable_gif_internal",
         "//tensorflow/core/framework:attr_value_proto_cc",
+        "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:status",
+        "//tensorflow/core/platform:strcat",
         "//tensorflow/core/protobuf/tpu:compile_metadata_proto_cc",
         "//tensorflow/core/tpu/kernels:tpu_compile_op_support",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
-        "@local_xla//xla:literal_util",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla:shape_util",
+        "@local_xla//xla:status_macros",
         "@local_xla//xla:xla_data_proto_cc",
         "@local_xla//xla/client:compile_only_client",
+        "@local_xla//xla/hlo/ir:hlo",
     ],
 )
 
@@ -266,6 +277,7 @@ cc_library(
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -274,9 +286,7 @@ cc_library(
         "@local_xla//xla:shape_layout",
         "@local_xla//xla:shape_tree",
         "@local_xla//xla:shape_util",
-        "@local_xla//xla:status",
         "@local_xla//xla:status_macros",
-        "@local_xla//xla:statusor",
         "@local_xla//xla:util",
         "@local_xla//xla:xla_data_proto_cc",
         "@local_xla//xla/hlo/ir:hlo",
@@ -370,7 +380,10 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:logging",
-    ] + if_libtpu(["//tensorflow/compiler/jit"]),
+    ] + if_libtpu([
+        "//tensorflow/compiler/jit:xla_tpu_jit",
+        "//tensorflow/compiler/jit:xla_tpu_device",
+    ]),
 )
 
 bzl_library(

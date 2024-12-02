@@ -19,79 +19,53 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_GPU_GPU_STREAM_H_
 #define XLA_STREAM_EXECUTOR_GPU_GPU_STREAM_H_
 
+#include <optional>
 #include <variant>
 
 #include "absl/log/check.h"
+#include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
+#include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
-#include "xla/stream_executor/stream_executor_internal.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_common.h"
 
 namespace stream_executor {
 namespace gpu {
-
-class GpuExecutor;
 
 // Wraps a GpuStreamHandle in order to satisfy the platform-independent
 // StreamInterface.
 //
 // Thread-safe post-initialization.
-class GpuStream : public internal::StreamInterface {
+class GpuStream : public StreamCommon {
  public:
-  explicit GpuStream(GpuExecutor* parent)
-      : parent_(parent), gpu_stream_(nullptr), completed_event_(nullptr) {}
-
-  // Note: teardown is handled by a parent's call to DeallocateStream.
-  ~GpuStream() override = default;
-
-  void* platform_specific_stream() override { return gpu_stream_; }
-
-  // Explicitly initialize the CUDA resources associated with this stream, used
-  // by StreamExecutor::AllocateStream().
-  bool Init();
-
-  void SetPriority(StreamPriority priority) override {
-    stream_priority_ = priority;
+  GpuStream(GpuExecutor* parent,
+            std::optional<std::variant<StreamPriority, int>> priority)
+      : StreamCommon(parent) {
+    if (priority.has_value()) {
+      stream_priority_ = priority.value();
+    }
   }
-
-  void SetPriority(int priority) override { stream_priority_ = priority; }
 
   std::variant<StreamPriority, int> priority() const override {
     return stream_priority_;
   }
 
-  // Explicitly destroy the CUDA resources associated with this stream, used by
-  // StreamExecutor::DeallocateStream().
-  void Destroy();
-
-  // Returns true if no work is pending or executing on the stream.
-  bool IsIdle() const;
-
-  // Retrieves an event which indicates that all work enqueued into the stream
-  // has completed. Ownership of the event is not transferred to the caller, the
-  // event is owned by this stream.
-  GpuEventHandle* completed_event() { return &completed_event_; }
-
-  // Returns the GpuStreamHandle value for passing to the CUDA API.
-  //
-  // Precond: this GpuStream has been allocated (otherwise passing a nullptr
-  // into the NVIDIA library causes difficult-to-understand faults).
-  GpuStreamHandle gpu_stream() const {
-    DCHECK(gpu_stream_ != nullptr);
-    return const_cast<GpuStreamHandle>(gpu_stream_);
-  }
-
-  // TODO(timshen): Migrate away and remove this function.
-  GpuStreamHandle cuda_stream() const { return gpu_stream(); }
-
-  GpuExecutor* parent() const { return parent_; }
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const Kernel& k, const KernelArgs& args) override;
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const ClusterDim& cluster_dims, const Kernel& k,
+                      const KernelArgs& args) override;
 
  private:
-  GpuExecutor* parent_;         // Executor that spawned this stream.
-  GpuStreamHandle gpu_stream_;  // Wrapped CUDA stream handle.
-  std::variant<StreamPriority, int> stream_priority_;
+  // Helper method to launch a kernel with optional cluster dimensions.
+  virtual absl::Status Launch(const ThreadDim& thread_dims,
+                              const BlockDim& block_dims,
+                              const std::optional<ClusterDim>& cluster_dims,
+                              const Kernel& kernel, const KernelArgs& args) = 0;
 
-  // Event that indicates this stream has completed.
-  GpuEventHandle completed_event_ = nullptr;
+  std::variant<StreamPriority, int> stream_priority_;
 };
 
 // Helper functions to simplify extremely common flows.

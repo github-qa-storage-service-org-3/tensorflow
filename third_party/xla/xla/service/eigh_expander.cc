@@ -23,19 +23,20 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/lib/comparators.h"
-#include "xla/client/lib/constants.h"
-#include "xla/client/lib/loops.h"
-#include "xla/client/lib/math.h"
-#include "xla/client/lib/matrix.h"
-#include "xla/client/lib/slicing.h"
-#include "xla/client/xla_builder.h"
+#include "absl/status/statusor.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/comparators.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/loops.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/lib/slicing.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/literal_util.h"
 #include "xla/primitive_util.h"
+#include "xla/service/hlo_creation_utils.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 
@@ -236,9 +237,9 @@ void PermuteColumnsInRow(XlaOp& left, XlaOp& right) {
 // implicit way of computing a tournament for n players such that each player
 // plays every other player exactly once in n - 1 rounds. See the Brent/Luk
 // paper for more details.
-Status ApplyRotations(int64_t n, XlaOp& w_tl, XlaOp& w_tr, XlaOp& w_bl,
-                      XlaOp& w_br, XlaOp& v_tl, XlaOp& v_tr, XlaOp& v_bl,
-                      XlaOp& v_br) {
+absl::Status ApplyRotations(int64_t n, XlaOp& w_tl, XlaOp& w_tr, XlaOp& w_bl,
+                            XlaOp& w_br, XlaOp& v_tl, XlaOp& v_tr, XlaOp& v_bl,
+                            XlaOp& v_br) {
   TF_ASSIGN_OR_RETURN(Eigh2x2 rotation,
                       HermitianEigenDecomposition2x2(w_tl, w_tr, w_br));
 
@@ -260,7 +261,7 @@ Status ApplyRotations(int64_t n, XlaOp& w_tl, XlaOp& w_tr, XlaOp& w_bl,
   ApplyJacobiRotationOverRows(rotation, v_tl, v_tr, v_bl, v_br);
   PermuteRowsInColumn(v_tl, v_bl);
   PermuteRowsInColumn(v_tr, v_br);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 struct FrobeniusNorms {
@@ -351,7 +352,7 @@ absl::StatusOr<std::vector<XlaOp>> Sweeps(
 
 }  // namespace
 
-Status EighExpander::SortByEigenvalues(XlaOp& v, XlaOp& w) {
+absl::Status EighExpander::SortByEigenvalues(XlaOp& v, XlaOp& w) {
   XlaBuilder* builder = v.builder();
   TF_ASSIGN_OR_RETURN(Shape v_shape, builder->GetShape(v));
   TF_ASSIGN_OR_RETURN(Shape w_shape, builder->GetShape(w));
@@ -370,7 +371,7 @@ Status EighExpander::SortByEigenvalues(XlaOp& v, XlaOp& w) {
            num_dims - 1);
   w = GetMatrixDiagonal(GetTupleElement(sort_result, 0));
   v = GetTupleElement(sort_result, 1);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // This is the cyclic Jacobi iteration.
@@ -582,15 +583,8 @@ absl::StatusOr<HloInstruction*> EighExpander::ExpandInstruction(
     }
     XlaOp result = BuildEigh(a, lower, max_iter, tol, sort_eigenvalues);
     TF_ASSIGN_OR_RETURN(XlaComputation xla_computation, builder.Build(result));
-
-    TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
-                        xla_computation.GetProgramShape());
-    HloModuleConfig config(program_shape);
-    TF_ASSIGN_OR_RETURN(auto new_module, HloModule::CreateFromProto(
-                                             xla_computation.proto(), config));
-    HloCloneContext context(module);
-    computation =
-        module->DeepCloneComputation(new_module->entry_computation(), &context);
+    TF_ASSIGN_OR_RETURN(
+        computation, XlaComputationToHloComputation(xla_computation, module));
   }
 
   return instruction->parent()->AddInstruction(HloInstruction::CreateCall(

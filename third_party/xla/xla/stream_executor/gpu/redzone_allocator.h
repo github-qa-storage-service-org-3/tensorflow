@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/gpu/gpu_asm_opts.h"
 #include "xla/stream_executor/scratch_allocator.h"
@@ -59,7 +60,8 @@ class RedzoneAllocator : public ScratchAllocator {
     return allocated_bytes_excluding_redzones_;
   }
 
-  absl::StatusOr<DeviceMemory<uint8>> AllocateBytes(int64_t byte_size) override;
+  absl::StatusOr<DeviceMemory<uint8_t>> AllocateBytes(
+      int64_t byte_size) override;
 
   // Non-empty redzone check status implies that there was a write into a
   // redzone, with a string communicating the location of the write.
@@ -102,9 +104,6 @@ class RedzoneAllocator : public ScratchAllocator {
   absl::StatusOr<RedzoneCheckStatus> CheckRedzones() const;
 
   Stream* stream() const { return stream_; }
-
-  // Return a pointer to in-process kernel symbol (used to check redzones).
-  void* kernel_symbol() const;
 
  private:
   const int device_ordinal_;

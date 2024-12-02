@@ -1,11 +1,19 @@
 load(
-    "//tensorflow:tensorflow.bzl",
-    "check_deps",
-    "tf_cc_binary",
+    "@local_config_rocm//rocm:build_defs.bzl",
+    "if_rocm_is_configured",
+)
+load(
+    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
+    "if_cuda_is_configured",
 )
 load(
     "@local_xla//xla/stream_executor:build_defs.bzl",
     "if_gpu_is_configured",
+)
+load(
+    "//tensorflow:tensorflow.bzl",
+    "check_deps",
+    "tf_cc_binary",
 )
 load(
     "//tensorflow/core/platform:build_config.bzl",
@@ -18,14 +26,6 @@ load(
     "if_llvm_powerpc_available",
     "if_llvm_system_z_available",
     "if_llvm_x86_available",
-)
-load(
-    "@local_config_rocm//rocm:build_defs.bzl",
-    "if_rocm_is_configured",
-)
-load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
-    "if_cuda_is_configured",
 )
 
 package(
@@ -56,6 +56,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tools/kernel_gen/transforms:passes",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineToStandard",
         "@llvm-project//mlir:ArithDialect",
@@ -65,6 +66,7 @@ cc_library(
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ComplexToStandard",
         "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:DataLayoutInterfaces",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:GPUDialect",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
@@ -88,6 +90,7 @@ cc_library(
         "@llvm-project//mlir:ShapeDialect",
         "@llvm-project//mlir:ShapeToStandard",
         "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/mlir_hlo:all_passes",  # fixdeps: keep
@@ -127,6 +130,7 @@ tf_cc_binary(
         "@llvm-project//llvm:TargetParser",
         "@llvm-project//mlir:BufferizationInterfaces",
         "@llvm-project//mlir:ExecutionEngineUtils",
+        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MemRefTransforms",
         "@llvm-project//mlir:Pass",
@@ -154,6 +158,7 @@ tf_cc_binary(
         "//tensorflow/compiler/mlir/tools/kernel_gen/ir:tf_framework_ops",
         "//tensorflow/compiler/mlir/tools/kernel_gen/transforms:gpu_passes",  # fixdeps: keep
         "//tensorflow/compiler/mlir/tools/kernel_gen/transforms:passes",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:MlirOptLib",
         "@local_xla//xla/mlir_hlo:all_passes",
@@ -207,6 +212,7 @@ cc_library(
         "//tensorflow/core/framework:resource_base",
         "//tensorflow/core/platform:status",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ExecutionEngine",
         "@local_tsl//tsl/platform:thread_annotations",
@@ -251,5 +257,4 @@ cc_library(
 tf_proto_library(
     name = "compile_cache_item_proto",
     srcs = ["compile_cache_item.proto"],
-    cc_api_version = 2,
 )

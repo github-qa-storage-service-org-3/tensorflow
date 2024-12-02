@@ -22,8 +22,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/hlo_pass_interface.h"
-#include "xla/statusor.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 
 namespace xla {
 
@@ -56,9 +55,7 @@ class CollectiveTransformationReorder : public HloModulePass {
   CollectiveTransformationReorder() = default;
   ~CollectiveTransformationReorder() override = default;
   absl::string_view name() const override {
-    static constexpr absl::string_view kName =
-        "collective-transformation-reorderer";
-    return kName;
+    return "collective-transformation-reorderer";
   }
   using HloPassInterface::Run;
   absl::StatusOr<bool> Run(

@@ -16,14 +16,15 @@ limitations under the License.
 #include "xla/service/hlo_rematerialization.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -35,9 +36,12 @@ limitations under the License.
 #include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_clone_context.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -47,18 +51,21 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/hlo/utils/hlo_query.h"
+#include "xla/layout_util.h"
 #include "xla/map_util.h"
+#include "xla/service/call_graph.h"
 #include "xla/service/hlo_cost_analysis.h"
 #include "xla/service/hlo_dataflow_analysis.h"
 #include "xla/service/hlo_dce.h"
 #include "xla/service/logical_buffer.h"
+#include "xla/service/tuple_points_to_analysis.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/numbers.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 
@@ -67,8 +74,7 @@ namespace {
 using ::tsl::strings::HumanReadableNumBytes;
 
 // Potential optimizations:
-// . TODO(b/35244891): Avoid N^2 behavior by keeping a priority queue
-//   of candidates.
+// . Avoid N^2 behavior by keeping a priority queue of candidates.
 // . Cache IsRematerializable in Item?  Only correct if control
 //   predecessors and successors don't change.
 
@@ -522,7 +528,7 @@ class MemoryUsageTracker {
   // EndInstruction) to accurately model memory usage. At BeginInstruction the
   // memory for the output value(s) of the current instruction is allocated. At
   // EndInstruction memory for dead operand(s) is freed.
-  Status BeginInstruction(Item* item);
+  absl::Status BeginInstruction(Item* item);
 
   int64_t RematerializationCost(const std::vector<Item*>& items,
                                 int64_t memory_reduced,
@@ -552,7 +558,7 @@ class MemoryUsageTracker {
   // Finishes the placement of the current instruction. This frees any dead
   // operands or dead result of the instruction. This must be called after
   // each call to BeginInstruction.
-  Status EndInstruction();
+  absl::Status EndInstruction();
 
   // Returns the number of bytes that the current memory usage will be reduced
   // if the given instruction is compact.
@@ -564,16 +570,18 @@ class MemoryUsageTracker {
   int64_t MemoryReducedIfRematerialized(
       absl::Span<const Item* const> items) const;
 
-  Status AddCompressInstructions(Item* original_item, Item* compressed_item,
-                                 Item* uncompressed_item);
+  absl::Status AddCompressInstructions(Item* original_item,
+                                       Item* compressed_item,
+                                       Item* uncompressed_item);
 
   // Adjusts memory usage to account for the rematerialization of
   // original_item for all remaining unplaced uses. The rematerialization
   // is remat_item. This method should be called after the HLO graph has
   // been transformed (rematerialization instruction created and connected
   // to uses).
-  Status AddRematerializedInstruction(Item* original_item, Item* remat_item,
-                                      absl::Span<Item*> indirect_users);
+  absl::Status AddRematerializedInstruction(Item* original_item,
+                                            Item* remat_item,
+                                            absl::Span<Item*> indirect_users);
 
   // Given a list of uses return two lists where one is the ones which are
   // placed and the other is ones which are not yet placed.
@@ -584,11 +592,11 @@ class MemoryUsageTracker {
   // Given the newly created instructions for host memory offload, create new
   // buffers, link their uses to their users, and update the current memory
   // usage.
-  Status AddHostOffloadCopyInstructions(Item* original_item,
-                                        Item* copy_start_to_host_item,
-                                        Item* copy_done_to_host_item,
-                                        Item* copy_start_to_device_item,
-                                        Item* copy_done_to_device_item);
+  absl::Status AddHostOffloadCopyInstructions(Item* original_item,
+                                              Item* copy_start_to_host_item,
+                                              Item* copy_done_to_host_item,
+                                              Item* copy_start_to_device_item,
+                                              Item* copy_done_to_device_item);
 
   // Counts the bytes that this item occupies by summing up the buffers defined
   // by this item. If only_count_unplaced_users is true, only count users of
@@ -659,7 +667,7 @@ class MemoryUsageTracker {
 
   const HloRematerialization::Options& options() const { return options_; }
 
-  // Check invariants of the data structure. This is expensive to call.
+  // Checks invariants of the data structure. This is expensive to call.
   bool Check() const;
 
   std::string ToString() const;
@@ -709,21 +717,21 @@ class MemoryUsageTracker {
     }
   };
 
-  // Adjust our tracked memory usage as a result of this new item coming into
+  // Adjusts our tracked memory usage as a result of this new item coming into
   // scope.
   void CountAllocatedMemory(Item* item);
 
-  // Adjust our tracked memory usage as a result of this item going out of
+  // Adjusts our tracked memory usage as a result of this item going out of
   // scope.
-  Status CountFreedMemory(Item* item);
+  absl::Status CountFreedMemory(Item* item);
 
-  // Buffers have users and users have buffers used, this function resolves
+  // Buffers have users and users have buffers used. This function resolves
   // outstanding issues in that bidirectional dependency.
   void ReplaceUsesInUsersOfBuffer(Buffer& buffer, BufferId old_id) const;
 
-  // Get the compact shape of given hlo instruction. An internal cache is used
+  // Gets the compact shape of given hlo instruction. An internal cache is used
   // to avoid computing the shape multiple times.
-  absl::StatusOr<Shape> GetCompactShape(const HloInstruction* hlo);
+  absl::StatusOr<const Shape*> GetCompactShape(const HloInstruction* hlo);
 
   // Creates a Buffer representing the given logical buffer. The buffer is added
   // to buffers_ and a reference is returned.
@@ -738,7 +746,7 @@ class MemoryUsageTracker {
                      std::move(users), live_out, has_indirect_uses);
   }
 
-  // Create a new buffer representing a rematerialization of given buffer for
+  // Creates a new buffer representing a rematerialization of given buffer for
   // the given uses.
   Buffer& RematerializeBuffer(const Buffer& original_buffer, Item* remat_item,
                               UsesList&& rematerialized_uses) {
@@ -754,10 +762,10 @@ class MemoryUsageTracker {
                      /*has_indirect_uses=*/false);
   }
 
-  // Return number of bytes allocated for the buffer with the given id. Buffers
-  // allocated by the calling computation (eg, parameter and output buffers) are
-  // considered to have zero bytes because the memory is accounted for in a
-  // different computation.
+  // Returns the number of bytes allocated for the buffer with the given id.
+  // Buffers allocated by the calling computation (eg, parameter and output
+  // buffers) are considered to have zero bytes because the memory is accounted
+  // for in a different computation.
   int64_t AllocatedSize(BufferId buffer_id) const {
     const Buffer& buffer = buffers_.at(buffer_id);
     HloInstruction* inst = buffer.defining_instruction->instruction;
@@ -775,8 +783,8 @@ class MemoryUsageTracker {
     }
   }
 
-  // Returns true if BeginInstruction and EndInstruction has been called for the
-  // given instruction.
+  // Returns whether BeginInstruction and EndInstruction have been called for
+  // the given instruction.
   bool IsFinished(Item* item) const {
     return item->placed && item != in_progress_item_;
   }
@@ -814,7 +822,7 @@ class MemoryUsageTracker {
     return false;
   }
 
-  // Create a new buffer, add it to buffers_, and return a reference.
+  // Creates a new buffer, adds it to buffers_, and returns a reference.
   Buffer& NewBuffer(Item* defining_instruction, const Shape& shape,
                     const ShapeIndex& index, UsesList&& uses, bool live_out,
                     bool has_indirect_uses) {
@@ -941,7 +949,7 @@ void MemoryUsageTracker::CountAllocatedMemory(Item* item) {
   }
 }
 
-Status MemoryUsageTracker::CountFreedMemory(Item* item) {
+absl::Status MemoryUsageTracker::CountFreedMemory(Item* item) {
   for (BufferId buffer_id : item->buffers_used) {
     Buffer& buffer = buffers_.at(buffer_id);
     buffer.unfinished_user_count--;
@@ -967,10 +975,10 @@ Status MemoryUsageTracker::CountFreedMemory(Item* item) {
       // free up the parameter space and reuse it for other tensors.
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status MemoryUsageTracker::BeginInstruction(Item* item) {
+absl::Status MemoryUsageTracker::BeginInstruction(Item* item) {
   const HloInstruction* instruction = item->instruction;
   VLOG(3) << "BeginInstruction " << instruction->name();
   TF_RET_CHECK(in_progress_item_ == nullptr);
@@ -989,10 +997,10 @@ Status MemoryUsageTracker::BeginInstruction(Item* item) {
   if (VLOG_IS_ON(1)) {
     DCHECK(Check());
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status MemoryUsageTracker::EndInstruction() {
+absl::Status MemoryUsageTracker::EndInstruction() {
   TF_RET_CHECK(in_progress_item_ != nullptr);
   VLOG(3) << "EndInstruction " << in_progress_item_->instruction->name();
 
@@ -1006,7 +1014,7 @@ Status MemoryUsageTracker::EndInstruction() {
   if (VLOG_IS_ON(1)) {
     DCHECK(Check());
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 int64_t MemoryUsageTracker::MemoryReducedIfCompressed(
@@ -1117,9 +1125,8 @@ void MemoryUsageTracker::ReplaceUsesInUsersOfBuffer(Buffer& buffer,
   }
 }
 
-Status MemoryUsageTracker::AddCompressInstructions(Item* original_item,
-                                                   Item* compressed_item,
-                                                   Item* uncompressed_item) {
+absl::Status MemoryUsageTracker::AddCompressInstructions(
+    Item* original_item, Item* compressed_item, Item* uncompressed_item) {
   CHECK(original_item->placed)
       << "Compressing instruction, but the original is not yet placed.";
   CHECK_EQ(original_item->buffers_output.size(), 1)
@@ -1183,10 +1190,10 @@ Status MemoryUsageTracker::AddCompressInstructions(Item* original_item,
   // original buffer with the newly created final buffer.
   ReplaceUsesInUsersOfBuffer(uncompressed_buffer, original_buffer_id);
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status MemoryUsageTracker::AddRematerializedInstruction(
+absl::Status MemoryUsageTracker::AddRematerializedInstruction(
     Item* original_item, Item* remat_item, absl::Span<Item*> indirect_users) {
   VLOG(3) << "AddRematerializedInstruction: original_instruction = "
           << original_item->instruction->name()
@@ -1328,10 +1335,10 @@ Status MemoryUsageTracker::AddRematerializedInstruction(
 
   DCHECK(Check());
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status MemoryUsageTracker::AddHostOffloadCopyInstructions(
+absl::Status MemoryUsageTracker::AddHostOffloadCopyInstructions(
     Item* original_item, Item* copy_start_to_host_item,
     Item* copy_done_to_host_item, Item* copy_start_to_device_item,
     Item* copy_done_to_device_item) {
@@ -1471,7 +1478,7 @@ Status MemoryUsageTracker::AddHostOffloadCopyInstructions(
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 std::string MemoryUsageTracker::ToString() const {
@@ -1506,17 +1513,16 @@ std::string MemoryUsageTracker::ToString() const {
   return output;
 }
 
-absl::StatusOr<Shape> MemoryUsageTracker::GetCompactShape(
+absl::StatusOr<const Shape*> MemoryUsageTracker::GetCompactShape(
     const HloInstruction* hlo) {
   auto it = compact_shape_.find(hlo);
   if (it != compact_shape_.end()) {
-    return it->second;
+    return &it->second;
   }
   const Shape& original_shape = hlo->shape();
   TF_ASSIGN_OR_RETURN(Shape min_shape,
                       options_.compact_shape_function(original_shape));
-  compact_shape_[hlo] = min_shape;
-  return min_shape;
+  return &compact_shape_.emplace(hlo, min_shape).first->second;
 }
 
 bool MemoryUsageTracker::Check() const {
@@ -1660,9 +1666,10 @@ std::optional<int64_t> MemoryUsageTracker::GetCostOfCompression(
     return {};
   }
 
-  Shape compact_shape = GetCompactShape(candidate_item->instruction).value();
+  const Shape* compact_shape =
+      GetCompactShape(candidate_item->instruction).value();
   const int64_t memory_reduced =
-      MemoryReducedIfCompressed(candidate_item, compact_shape);
+      MemoryReducedIfCompressed(candidate_item, *compact_shape);
   // Since the compressed and uncompressed buffers need to be alive
   // while performing the compression/uncompression, only perform
   // the compression if the sum of the two sizes is less than the
@@ -1670,7 +1677,7 @@ std::optional<int64_t> MemoryUsageTracker::GetCostOfCompression(
   const int64_t size = options_.hlo_cost_analysis.GetShapeSize(
       candidate_item->instruction->shape());
   const int64_t reduced_size =
-      options_.hlo_cost_analysis.GetShapeSize(compact_shape);
+      options_.hlo_cost_analysis.GetShapeSize(*compact_shape);
   // TODO(victorstone): I don't think this size check is right.
   if (memory_reduced > 0 && size + reduced_size < peak_memory_bytes) {
     return memory_limit_bytes / memory_reduced;
@@ -1893,7 +1900,7 @@ MemoryUsageTracker::PickRematerializationCandidates(
       continue;
     }
 
-    // First, calculate the cost of compression rematerialziation for this
+    // First, calculate the cost of compression rematerialization for this
     // instruction.
     if (options_.remat_mode_config.compress && block.size() == 1) {
       auto cost =
@@ -1907,7 +1914,7 @@ MemoryUsageTracker::PickRematerializationCandidates(
         // computed inside GetCostOfCompression, should we get it from there? Or
         // is it ok to recompute?
         best_strategy.compact_shape =
-            GetCompactShape(block[0]->instruction).value();
+            *GetCompactShape(block[0]->instruction).value();
         best_items = block;
         best_cost = *cost;
       }
@@ -1989,6 +1996,8 @@ UsesList MemoryUsageTracker::GetItemUses(Item* item) const {
   return combined_users;
 }
 
+// Performs the rematerialization of all items in `best_items` and returns the
+// number of net instructions added.
 absl::StatusOr<int64_t> RematerializeInstructions(
     MemoryUsageTracker* memory_tracker, std::vector<Item*>* best_items,
     absl::flat_hash_set<const HloInstruction*>* remat_move_instructions,
@@ -2060,7 +2069,8 @@ absl::StatusOr<int64_t> RematerializeInstructions(
                 HloInstruction::CreateGetTupleElement(
                     ShapeUtil::GetTupleElementShape(remat_use->shape(),
                                                     *user.index),
-                    remat_use, *user.index));
+                    remat_use, *user.index),
+                /*new_name=*/"gte.remat");
             indirect_users.push_back(instruction_list->CreateItem(remat_use));
             gte_cache[*user.index] = remat_use;
           } else {
@@ -2069,7 +2079,8 @@ absl::StatusOr<int64_t> RematerializeInstructions(
         }
         if (user_operand->shape() != remat_use->shape()) {
           remat_use = computation->AddInstruction(
-              HloInstruction::CreateBitcast(user_operand->shape(), remat_use));
+              HloInstruction::CreateBitcast(user_operand->shape(), remat_use),
+              /*new_name=*/"bitcast.remat");
           indirect_users.push_back(instruction_list->CreateItem(remat_use));
         }
         TF_RETURN_IF_ERROR(user.user->instruction->ReplaceOperandWith(
@@ -2172,6 +2183,8 @@ absl::StatusOr<int64_t> RematerializeInstructions(
   return net_instructions_added;
 }
 
+// Performs rematerialization of `best_item` via the compression strategy.
+// Returns the net number of instructions added.
 absl::StatusOr<int64_t> CompressInstruction(MemoryUsageTracker* memory_tracker,
                                             Item* best_item,
                                             const Shape& compact_shape,
@@ -2222,9 +2235,12 @@ absl::StatusOr<int64_t> CompressInstruction(MemoryUsageTracker* memory_tracker,
   instruction_list->InsertBeforeInstructions(uncompressed_item, place_before);
   instruction_list->InsertAfterInstructions(compressed_item, {best_item});
 
+  // Net two instructions added.
   return 2;
 }
 
+// Performs rematerialization of `best_item` via the host offload strategy.
+// Returns the net number of instructions added.
 absl::StatusOr<int64_t> OffloadInstruction(MemoryUsageTracker* memory_tracker,
                                            Item* best_item,
                                            InstructionList* instruction_list) {
@@ -2350,11 +2366,11 @@ absl::StatusOr<int64_t> OffloadInstruction(MemoryUsageTracker* memory_tracker,
         // to the host and back. However, that check does not necessarily
         // guarantee that the compute is split in such a way that it will give
         // us enough compute to hide both copies in series. For example lets say
-        // that the copies take this long: | <-------------  Copies take this
-        // long
-        // -------------->| Lets say the two copies take the same amount of
-        // time: | <----- Copy to host -----> <---- Copy to device ----> |
-
+        // that the copies in total take this long:
+        // | <-------------  Copies take this long --------------> |
+        // Lets say the two copies take the same amount of time:
+        // | <----- Copy to host -----> <---- Copy to device ----> |
+        //
         // And you have a compute sequence that looks like this:
         // +-----------+ +-----------+   +-----------+ +-----------+
         // | Compute-1 | | Compute-2 |   | Compute-3 | | Compute-4 |
@@ -2365,7 +2381,7 @@ absl::StatusOr<int64_t> OffloadInstruction(MemoryUsageTracker* memory_tracker,
         //          Copy-done to host ^
         //        Copy-start to device ^
         //                                     Copy-done to device ^
-
+        //
         // However, if the compute sequence is not even, like this:
         // +-----------------------------------------+ +-----------+
         // |                Compute-1                | | Compute-2 |
@@ -2484,6 +2500,7 @@ absl::StatusOr<int64_t> OffloadInstruction(MemoryUsageTracker* memory_tracker,
       best_item, copy_start_to_host_item, copy_done_to_host_item,
       copy_start_to_device_item, copy_done_to_device_item));
 
+  // Net four instructions added.
   return 4;
 }
 
@@ -2759,7 +2776,9 @@ absl::StatusOr<bool> HloRematerialization::RematerializeComputation(
       // in the callee computations.
       for (HloComputation* called_computation :
            callsite->called_computations()) {
-        if (!ContainsKey(rematerialized_computations_, called_computation)) {
+        if (!ContainsKey(rematerialized_computations_, called_computation) &&
+            HloInstruction::IsThreadIncluded(
+                called_computation->execution_thread(), execution_threads)) {
           // Memory limit for the subcomputation is the memory limit less the
           // amount of memory used at this point in the computation.
           int64_t subcomputation_memory_limit_bytes = std::max<int64_t>(
@@ -2860,17 +2879,71 @@ absl::StatusOr<bool> HloRematerialization::Run(
         module_output_size += options_.hlo_cost_analysis.GetShapeSize(subshape);
       });
 
-  const int64_t adjusted_memory_limit_bytes =
+  int64_t adjusted_memory_limit_bytes =
       std::max<int64_t>(0, options_.memory_limit_bytes - module_output_size);
   VLOG(1) << "Adjusted memory limit accounting for output ("
           << HumanReadableNumBytes(module_output_size)
           << "): " << HumanReadableNumBytes(adjusted_memory_limit_bytes);
 
+  call_graph_ = CallGraph::Build(module);
+
+  // Buffer assignment allocates a single stack for all asynchronous
+  // computations of the same thread, which persists for the entire duration of
+  // the program. We need to account for this by adjusting the memory limit.
+  int64_t total_async_peak_memory = 0;
+  if (!options_.async_computation_parallelism.empty()) {
+    // We cannot compute memory usage for both the main and asynchronous threads
+    // at the same time, as that will cause the asynchronous callee usage to be
+    // added to the main thread callers usage. The callee's memory is
+    // preallocated, so the caller doesn't pay for it.
+    absl::flat_hash_set<std::string_view> async_threads;
+    for (const auto& [computation, _] :
+         options_.async_computation_parallelism) {
+      async_threads.insert(computation->execution_thread());
+    }
+    TF_RETURN_IF_ERROR(call_graph_->VisitNodes(
+        [this, module,
+         &async_threads](const CallGraphNode& node) -> absl::Status {
+          auto callee_thread = node.computation()->execution_thread();
+          if (node.context() == CallContext::kControlFlow &&
+              HloInstruction::IsThreadIncluded(callee_thread, async_threads)) {
+            TF_ASSIGN_OR_RETURN(computation_peak_memory_[node.computation()],
+                                ComputePeakMemory(node.computation(),
+                                                  module->schedule().sequence(
+                                                      node.computation()),
+                                                  {callee_thread}));
+          }
+          return absl::OkStatus();
+        },
+        /*visit_unreachable_nodes=*/false));
+
+    int64_t async_peak_memory = 0;
+    // Only consider asynchronous computations invoked from the main thread.
+    for (const auto [entry_computation, parallel_threads] :
+         options_.async_computation_parallelism) {
+      const int64_t peak_memory =
+          computation_peak_memory_.at(entry_computation);
+      // Adjust memory usage for parallel execution of the same computation
+      // on different devices.
+      const int64_t parallel_peak_memory = peak_memory * parallel_threads;
+      async_peak_memory = std::max(async_peak_memory, parallel_peak_memory);
+    }
+    adjusted_memory_limit_bytes =
+        std::max<int64_t>(0, adjusted_memory_limit_bytes - async_peak_memory);
+    total_async_peak_memory += async_peak_memory;
+    VLOG(1) << "Adjusted memory limit accounting for async computations ("
+            << HumanReadableNumBytes(async_peak_memory)
+            << "): " << HumanReadableNumBytes(adjusted_memory_limit_bytes);
+
+    // Reset back to a clean state, since we don't expect to utilize the
+    // async computation memory usage anymore.
+    computation_peak_memory_.clear();
+  }
   // Compute peak memory usage of all computations in the module called in a
   // sequential context.
-  call_graph_ = CallGraph::Build(module);
   TF_RETURN_IF_ERROR(call_graph_->VisitNodes(
-      [this, module, &execution_threads](const CallGraphNode& node) -> Status {
+      [this, module,
+       &execution_threads](const CallGraphNode& node) -> absl::Status {
         if (node.context() == CallContext::kControlFlow &&
             HloInstruction::IsThreadIncluded(
                 node.computation()->execution_thread(), execution_threads)) {
@@ -2880,17 +2953,18 @@ absl::StatusOr<bool> HloRematerialization::Run(
                                 module->schedule().sequence(node.computation()),
                                 execution_threads));
         }
-        return OkStatus();
+        return absl::OkStatus();
       },
       /*visit_unreachable_nodes=*/false));
 
   // The peak memory usage of the module equals the peak memory use of the entry
-  // computation plus the output size of the computation. This is because the
-  // peak memory for a computation does not include the output as this is
-  // typically accounted for in the caller.
+  // computation plus the output size of the computation plus memory use of
+  // asynchronous computations. This is because the peak memory for a
+  // computation does not include the output as this is typically accounted for
+  // in the caller.
   const int64_t before_peak_memory =
       computation_peak_memory_.at(module->entry_computation()) +
-      module_output_size;
+      module_output_size + total_async_peak_memory;
   VLOG(1) << "Peak memory usage of module (before): "
           << HumanReadableNumBytes(before_peak_memory);
 
@@ -2926,7 +3000,7 @@ absl::StatusOr<bool> HloRematerialization::Run(
           << net_instructions_added_ << " net instructions added";
   const int64_t current_peak_memory =
       computation_peak_memory_.at(module->entry_computation()) +
-      module_output_size;
+      module_output_size + total_async_peak_memory;
   VLOG(1) << "Peak memory usage of module now "
           << HumanReadableNumBytes(current_peak_memory) << " ("
           << current_peak_memory << " bytes), was "

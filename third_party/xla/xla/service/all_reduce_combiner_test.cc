@@ -18,16 +18,22 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "xla/hlo/ir/collective_device_list.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_matchers.h"
-#include "xla/literal.h"
 #include "xla/literal_util.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -71,7 +77,7 @@ HloInstruction* MakeCrossReplicaReductions(
         b->AddInstruction(HloInstruction::CreateBroadcast(shape, constant, {}));
     inputs->push_back(input);
     all_reduces.push_back(b->AddInstruction(HloInstruction::CreateAllReduce(
-        shape, {input}, reduction, /*replica_groups=*/{},
+        shape, {input}, reduction, /*device_list=*/CollectiveDeviceList(),
         /*constrain_layout=*/false, /*channel_id=*/nullopt,
         /*use_global_device_ids=*/false)));
   }
@@ -90,18 +96,6 @@ HloComputation* MakeReduction(const HloOpcode type, HloModule* module) {
   HloComputation* reduction =
       module->AddEmbeddedComputation(sum_builder.Build());
   return reduction;
-}
-
-// Creates replica groups for AllReduce. groups[i] represents replica ids
-// for group 'i'.
-std::vector<ReplicaGroup> CreateReplicaGroups(
-    absl::Span<const std::vector<int64_t>> groups) {
-  std::vector<ReplicaGroup> replica_groups(groups.size());
-  for (int64_t i = 0; i < groups.size(); ++i) {
-    *replica_groups[i].mutable_replica_ids() = {groups[i].begin(),
-                                                groups[i].end()};
-  }
-  return replica_groups;
 }
 
 using AllReduceCombinerTest = HloTestBase;
@@ -215,12 +209,13 @@ TEST_F(AllReduceCombinerTest, NoDependentCombination) {
   auto constant = b.AddInstruction(
       HloInstruction::CreateConstant(LiteralUtil::CreateR0(42.3)));
   auto all_reduce = b.AddInstruction(HloInstruction::CreateAllReduce(
-      constant->shape(), {constant}, reduction, /*replica_groups=*/{},
+      constant->shape(), {constant}, reduction,
+      /*device_list=*/CollectiveDeviceList(),
       /*constrain_layout=*/false, /*channel_id=*/nullopt,
       /*use_global_device_ids=*/false));
   b.AddInstruction(HloInstruction::CreateAllReduce(
       constant->shape(), {all_reduce}, reduction,
-      /*replica_groups=*/{}, /*constrain_layout=*/false,
+      /*device_list=*/CollectiveDeviceList(), /*constrain_layout=*/false,
       /*channel_id=*/nullopt, /*use_global_device_ids=*/false));
 
   module->AddEntryComputation(b.Build());
@@ -242,12 +237,12 @@ TEST_F(AllReduceCombinerTest, GroupAllReduce) {
       HloInstruction::CreateConstant(LiteralUtil::CreateR0(42.3)));
   auto crs0 = b.AddInstruction(HloInstruction::CreateAllReduce(
       constant->shape(), {constant}, reduction,
-      CreateReplicaGroups({{0, 1}, {2, 3}}),
+      CollectiveDeviceList({{0, 1}, {2, 3}}),
       /*constrain_layout=*/false,
       /*channel_id=*/nullopt, /*use_global_device_ids=*/false));
   auto crs1 = b.AddInstruction(HloInstruction::CreateAllReduce(
       constant->shape(), {constant}, reduction,
-      CreateReplicaGroups({{0, 2}, {1, 3}}),
+      CollectiveDeviceList({{0, 2}, {1, 3}}),
       /*constrain_layout=*/false,
       /*channel_id=*/nullopt, /*use_global_device_ids=*/false));
   b.AddInstruction(HloInstruction::CreateTuple({crs0, crs1}));

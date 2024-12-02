@@ -23,8 +23,8 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/collective_ops_utils.h"
-#include "xla/service/gpu/nccl_api.h"
-#include "xla/service/gpu/nccl_collective_thunk.h"
+#include "xla/service/gpu/runtime/nccl_api.h"
+#include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/stream_executor/stream.h"
 
 namespace xla {
@@ -39,7 +39,8 @@ class NcclAllGatherStartThunk : public NcclCollectiveThunk {
  public:
   NcclAllGatherStartThunk(ThunkInfo thunk_info, NcclApi* nccl_api,
                           const HloAllGatherInstruction* inst,
-                          std::vector<Buffer> buffers);
+                          std::vector<Buffer> buffers,
+                          bool p2p_memcpy_enabled = false);
 
   static const char* GetHloOpName() { return "all-gather-start"; }
 
@@ -56,7 +57,7 @@ class NcclAllGatherStartThunk : public NcclCollectiveThunk {
  protected:
   absl::Status RunNcclCollective(const ExecuteParams& params,
                                  se::Stream& stream,
-                                 NcclApi::NcclCommHandle comm) override;
+                                 NcclCommHandleWrapper comm_wrapper) override;
 
  private:
   const NcclAllGatherConfig config_;

@@ -1,10 +1,13 @@
-"""Starlark macros for MKL.
+"""Starlark macros for MKL and oneDNN.
 
 if_mkl is a conditional to check if we are building with MKL.
 if_mkl_ml is a conditional to check if we are building with MKL-ML.
 if_mkl_ml_only is a conditional to check for MKL-ML-only (no MKL-DNN) mode.
 if_mkl_lnx_x64 is a conditional to check for MKL
 if_enable_mkl is a conditional to check if building with MKL and MKL is enabled.
+if_mkldnn_openmp checks if we are building x86 backend with OpenMP.
+if_mkldnn_aarch64_acl checks if we are building with Arm Compute Library.
+if_mkldnn_aarch64_acl_openmp checks if we are building ACL with OpenMP.
 
 mkl_repository is a repository rule for creating MKL repository rule that can
 be pointed to either a local folder, or download it from the internet.
@@ -33,8 +36,8 @@ def if_mkl(if_true, if_false = []):
     """
     return select({
         "@local_xla//xla/tsl/mkl:build_with_mkl_aarch64": if_true,
-        "@local_tsl//tsl:linux_x86_64": if_true,
-        "@local_tsl//tsl:windows": if_true,
+        "@local_xla//xla/tsl:linux_x86_64": if_true,
+        "@local_xla//xla/tsl:windows": if_true,
         "//conditions:default": if_false,
     })
 
@@ -50,7 +53,7 @@ def if_mkl_ml(if_true, if_false = []):
       a select evaluating to either if_true or if_false as appropriate.
     """
     return select({
-        "@local_tsl//third_party/mkl_dnn:build_with_mkl_opensource": if_false,
+        "@local_xla//xla/tsl/mkl:build_with_mkl_opensource": if_false,
         "@local_xla//xla/tsl/mkl:build_with_mkl": if_true,
         "//conditions:default": if_false,
     })
@@ -102,8 +105,8 @@ def mkl_deps():
     """
     return select({
         "@local_xla//xla/tsl/mkl:build_with_mkl_aarch64": ["@mkl_dnn_acl_compatible//:mkl_dnn_acl"],
-        "@local_tsl//tsl:linux_x86_64": ["@onednn//:mkl_dnn"],
-        "@local_tsl//tsl:windows": ["@onednn//:mkl_dnn"],
+        "@local_xla//xla/tsl:linux_x86_64": ["@onednn//:mkl_dnn"],
+        "@local_xla//xla/tsl:windows": ["@onednn//:mkl_dnn"],
         "//conditions:default": [],
     })
 
@@ -116,9 +119,37 @@ def onednn_v3_define():
     """
     return select({
         "@local_xla//xla/tsl/mkl:build_with_mkl_aarch64": ["-DENABLE_ONEDNN_V3"],
-        "@local_tsl//tsl:linux_x86_64": ["-DENABLE_ONEDNN_V3"],
-        "@local_tsl//tsl:windows": ["-DENABLE_ONEDNN_V3"],
+        "@local_xla//xla/tsl:linux_x86_64": ["-DENABLE_ONEDNN_V3"],
+        "@local_xla//xla/tsl:windows": ["-DENABLE_ONEDNN_V3"],
         "//conditions:default": [],
+    })
+
+def if_mkldnn_openmp(if_true, if_false = []):
+    """Returns `if_true` if OpenMP is used with oneDNN.
+
+    Shorthand for select()'ing on whether we're building with
+    oneDNN open source library only with openmp
+
+    Returns a select statement which evaluates to if_true if we're building
+    with oneDNN open source library only with OpenMP. Otherwise, the
+    select statement evaluates to if_false.
+
+    """
+    return select({
+        "@local_xla//xla/tsl/mkl:build_with_mkldnn_openmp": if_true,
+        "//conditions:default": if_false,
+    })
+
+def if_mkldnn_aarch64_acl(if_true, if_false = []):
+    return select({
+        "@local_xla//xla/tsl/mkl:build_with_mkl_aarch64": if_true,
+        "//conditions:default": if_false,
+    })
+
+def if_mkldnn_aarch64_acl_openmp(if_true, if_false = []):
+    return select({
+        "@local_xla//xla/tsl/mkl:build_with_mkl_aarch64_openmp": if_true,
+        "//conditions:default": if_false,
     })
 
 def _enable_local_mkl(repository_ctx):

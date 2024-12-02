@@ -25,13 +25,13 @@ limitations under the License.
 #include "xla/stream_executor/gpu/gpu_driver.h"
 #include "xla/stream_executor/gpu/gpu_init.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/framework/device_id.h"
+#include "xla/tsl/lib/gtl/inlined_vector.h"
+#include "xla/tsl/lib/random/simple_philox.h"
 #include "tensorflow/core/common_runtime/device/device_mem_allocator.h"
 #include "tensorflow/core/framework/typed_allocator.h"
 #include "tensorflow/core/protobuf/bfc_memory_map.pb.h"
 #include "tensorflow/core/protobuf/config.pb.h"
-#include "tsl/framework/device_id.h"
-#include "tsl/lib/gtl/inlined_vector.h"
-#include "tsl/lib/random/simple_philox.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/strcat.h"
 #include "tsl/platform/test.h"
@@ -435,7 +435,7 @@ class GPUBFCAllocatorPrivateMethodsTest
 
     std::array<BFCAllocator::BinDebugInfo, BFCAllocator::kNumBins> bin_infos;
     {
-      mutex_lock l(a.lock_);
+      absl::MutexLock l(&a.mutex_);
       bin_infos = a.get_bin_debug_info();
     }
 
@@ -487,7 +487,7 @@ class GPUBFCAllocatorPrivateMethodsTest
       initial_ptrs[i] = nullptr;
     }
     {
-      mutex_lock l(a.lock_);
+      absl::MutexLock l(&a.mutex_);
       bin_infos = a.get_bin_debug_info();
     }
     for (int i = 0; i < BFCAllocator::kNumBins; i++) {
@@ -510,18 +510,6 @@ class GPUBFCAllocatorPrivateMethodsTest
         EXPECT_EQ(bin_info.total_chunks_in_use, 0);
       }
     }
-  }
-
-  void TestLog2FloorNonZeroSlow() {
-    GPUBFCAllocator a(GetParam()(1ull << 32), 1 /* total_memory */, "GPU_0_bfc",
-                      {});
-    EXPECT_EQ(-1, a.Log2FloorNonZeroSlow(0));
-    EXPECT_EQ(0, a.Log2FloorNonZeroSlow(1));
-    EXPECT_EQ(1, a.Log2FloorNonZeroSlow(2));
-    EXPECT_EQ(1, a.Log2FloorNonZeroSlow(3));
-    EXPECT_EQ(9, a.Log2FloorNonZeroSlow(1023));
-    EXPECT_EQ(10, a.Log2FloorNonZeroSlow(1024));
-    EXPECT_EQ(10, a.Log2FloorNonZeroSlow(1025));
   }
 
   void TestForceAllowGrowth() {
@@ -562,10 +550,6 @@ class GPUBFCAllocatorPrivateMethodsTest
 };
 
 TEST_P(GPUBFCAllocatorPrivateMethodsTest, BinDebugInfo) { TestBinDebugInfo(); }
-
-TEST_P(GPUBFCAllocatorPrivateMethodsTest, Log2FloorNonZeroSlow) {
-  TestLog2FloorNonZeroSlow();
-}
 
 TEST_P(GPUBFCAllocatorPrivateMethodsTest, ForceAllowGrowth) {
   TestForceAllowGrowth();
@@ -627,7 +611,7 @@ class GPUBFCAllocatorPrivateMethodsTest_SubAllocatorSpecific
     }
 
     {
-      mutex_lock l(a.lock_);
+      absl::MutexLock l(&a.mutex_);
       // Make sure there are more than 1 regions in preparation for the test.
       EXPECT_LT(1, a.region_manager_.regions().size());
     }
@@ -640,7 +624,7 @@ class GPUBFCAllocatorPrivateMethodsTest_SubAllocatorSpecific
     // Deallocate free regions and there shall be only one region left.
     EXPECT_EQ(true, a.DeallocateFreeRegions(/*rounded_bytes=*/0));
     {
-      mutex_lock l(a.lock_);
+      absl::MutexLock l(&a.mutex_);
       EXPECT_EQ(1, a.region_manager_.regions().size());
     }
 
