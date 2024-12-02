@@ -24,6 +24,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/data/global_shuffle_utils.h"
 #include "tensorflow/core/data/name_utils.h"
@@ -31,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 #include "tsl/platform/thread_annotations.h"
 
 namespace tensorflow {
@@ -313,11 +315,11 @@ class RepeatDatasetOp::Dataset : public DatasetBase {
       int64_t input_cardinality = dataset()->input_->Cardinality();
       int64_t repeat_count = i_;
       return [parent_index_mapper, input_cardinality,
-              repeat_count](size_t element_position) -> size_t {
+              repeat_count](size_t element_position) -> absl::StatusOr<size_t> {
         if (element_position >= input_cardinality) {
           // The input element position is out-of-range. The caller is
           // responsible for handle this case (e.g.: returning end_of_sequence).
-          return element_position;
+          return absl::OutOfRangeError("Finite repeat is out of range");
         }
 
         // First, maps the input indices from
@@ -326,8 +328,8 @@ class RepeatDatasetOp::Dataset : public DatasetBase {
         // mod. This way, the shuffling happens across repetitions.
         size_t repeated_element_position =
             repeat_count * input_cardinality + element_position;
-        size_t shuffled_element_position =
-            parent_index_mapper(repeated_element_position);
+        TF_ASSIGN_OR_RETURN(size_t shuffled_element_position,
+                            parent_index_mapper(repeated_element_position));
         return shuffled_element_position % input_cardinality;
       };
     }
@@ -354,22 +356,37 @@ class RepeatDatasetOp::Dataset : public DatasetBase {
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       mutex_lock l(mu_);
+      int64_t input_empty;
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), kInputImplEmpty, &input_empty));
+      TF_RETURN_IF_ERROR(reader->ReadScalar(prefix(), kCurIteration, &i_));
+
       if (ctx->restored_element_count().has_value()) {
-        i_ = *ctx->restored_element_count() / dataset()->input_->Cardinality();
+        CardinalityOptions options;
+        options.set_compute_level(
+            CardinalityOptions::CARDINALITY_COMPUTE_MODERATE);
+        const int64_t input_cardinality =
+            dataset()->input_->Cardinality(std::move(options));
         // For upstream iterators, the restored element count should be the
         // element count within the current repetition.
         IteratorContext::Params params(ctx);
         params.restored_element_count =
-            *ctx->restored_element_count() % dataset()->input_->Cardinality();
+            *ctx->restored_element_count() % (input_cardinality);
+        params.index_mapper = GetIndexMapper(ctx->index_mapper());
         IteratorContext ctx_with_restored_element_count(params);
-        return RestoreInput(&ctx_with_restored_element_count, reader,
-                            input_impl_);
+        if (!input_empty) {
+          // Needs to re-`MakeIterator` because `i_` might have changed.
+          TF_RETURN_IF_ERROR(dataset()->input_->MakeIterator(
+              ctx, this, nested_prefix(prefix(), i_), &input_impl_));
+          TF_RETURN_IF_ERROR(RestoreInput(&ctx_with_restored_element_count,
+                                          reader, input_impl_));
+          ctx->MergeCheckpoint(ctx_with_restored_element_count.checkpoint());
+        } else {
+          input_impl_.reset();
+        }
+        return absl::OkStatus();
       }
 
-      TF_RETURN_IF_ERROR(reader->ReadScalar(prefix(), kCurIteration, &i_));
-      int64_t input_empty;
-      TF_RETURN_IF_ERROR(
-          reader->ReadScalar(prefix(), kInputImplEmpty, &input_empty));
       if (static_cast<bool>(!input_empty)) {
         TF_RETURN_IF_ERROR(dataset()->input_->MakeIterator(
             ctx, this, nested_prefix(prefix(), i_), &input_impl_));

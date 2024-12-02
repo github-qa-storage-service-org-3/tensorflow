@@ -25,6 +25,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "tensorflow/core/common_runtime/cost_measurement_registry.h"
 #include "tensorflow/core/common_runtime/request_cost.h"
@@ -34,6 +35,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/kernels/batching_util/adaptive_shared_batch_scheduler.h"
 #include "tensorflow/core/kernels/batching_util/batch_scheduler.h"
+#include "tensorflow/core/kernels/batching_util/batch_scheduler_utils.h"
 #include "tensorflow/core/kernels/batching_util/shared_batch_scheduler.h"
 #include "tensorflow/core/kernels/batching_util/threadsafe_status.h"
 #include "tensorflow/core/platform/context.h"
@@ -44,6 +46,21 @@ limitations under the License.
 
 namespace tensorflow {
 namespace serving {
+
+// Options used to create a batch resource.
+struct BatchResourceOptions {
+  int32_t num_batch_threads;
+  int32_t max_batch_size;
+  int32_t batch_timeout_micros;
+  int32_t max_enqueued_batches;
+  std::vector<int32_t> allowed_batch_sizes;
+  std::string batch_padding_policy{kPadUpPolicy};
+  int32_t low_priority_max_batch_size;
+  int32_t low_priority_batch_timeout_micros;
+  int32_t low_priority_max_enqueued_batches;
+  std::vector<int32_t> low_priority_allowed_batch_sizes;
+  MixedPriorityBatchingPolicy mixed_priority_batching_policy;
+};
 
 // Base class for resource that encapsulating the state and logic for batching
 // tensors.
@@ -199,10 +216,12 @@ class BatchResourceBase : public ResourceBase {
       int32_t batch_timeout_micros, int32_t max_enqueued_batches,
       const std::vector<int32>& allowed_batch_sizes,
       bool enable_large_batch_splitting, bool disable_padding,
+      absl::string_view batch_padding_policy,
       int32_t low_priority_max_batch_size,
       int32_t low_priority_batch_timeout_micros,
       int32_t low_priority_max_enqueued_batches,
-      const std::vector<int32>& low_priority_allowed_batch_sizes);
+      const std::vector<int32>& low_priority_allowed_batch_sizes,
+      MixedPriorityBatchingPolicy mixed_priority_batching_policy);
 
   static AdaptiveBatcherT::QueueOptions GetAdaptiveBatcherQueueOptions(
       int32_t max_batch_size, int32_t batch_timeout_micros,
@@ -250,7 +269,7 @@ class BatchResourceBase : public ResourceBase {
   //   2) the input size from this task;
   //   3) the padding amount.
   static void SplitBatchCostsAndRecordMetrics(
-      const std::string& model_name,
+      const std::string& model_name, const std::string& op_name,
       const std::vector<std::unique_ptr<CostMeasurement>>&
           batch_cost_measurements,
       int64_t processed_size, BatchT& batch);
@@ -266,10 +285,15 @@ class BatchResourceBase : public ResourceBase {
   // Assumes the batch is non-empty.
   static Status ValidateBatch(const BatchT& batch);
 
+  // Returns a boolean indicating whether a batch is formed from low priority
+  // tasks only or not.
+  bool IsLowPriorityBatch(const BatchT& batch) const;
+
   // Returns the smallest entry in 'allowed_batch_sizes_' that is greater than
   // or equal to 'batch_size'. If 'allowed_batch_sizes_' is empty, simply
   // returns 'batch_size'.
-  int RoundToLowestAllowedBatchSize(int batch_size) const;
+  int RoundToLowestAllowedBatchSize(int batch_size,
+                                    bool is_low_priority_batch = false) const;
 
   // Helper function to propagate the status to the task's context and call the
   // done callback on the task.
@@ -312,9 +336,14 @@ class BatchResourceBase : public ResourceBase {
   static Status EmitIndexTensor(OpKernelContext* context, const BatchT& batch,
                                 int output_index);
 
-  // Looks up the batcher queue for 'queue_name'. If it did't previously exist,
+  // Looks up the batcher queue for 'queue_name'. If it didn't previously exist,
   // creates it.
+  //
+  // The model_name and op_name are the names of the current model and
+  // operation, respectively.
   Status LookupOrCreateBatcherQueue(const string& queue_name,
+                                    const string& model_name,
+                                    const string& op_name,
                                     BatcherQueueT** queue);
 
   SessionMetadata session_metadata_;

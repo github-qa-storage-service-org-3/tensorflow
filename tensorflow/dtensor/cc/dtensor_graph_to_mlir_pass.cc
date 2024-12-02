@@ -31,7 +31,6 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
@@ -68,7 +67,9 @@ DTensorMlirPassRunner::DTensorMlirPassRunner()
   // Explicitly enable MLIR bridge as DTensor introduces some ops like
   // XlaAllReduce are only supported in MLIR.
   GetMlirCommonFlags()->tf_mlir_enable_mlir_bridge =
-      ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_ENABLED;
+      ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_UNSPECIFIED;
+  VLOG(0) << "DO NOT SUBMIT enable_mlir_bridge in Dtensor ";
+  // exit(1);
 
   // Creates a pipeline that include each DTensor related passes.
   mlir::TF::StandardPipelineOptions pipeline_options;

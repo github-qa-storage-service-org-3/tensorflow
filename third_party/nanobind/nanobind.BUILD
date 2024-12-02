@@ -4,9 +4,12 @@ package(default_visibility = ["//visibility:public"])
 
 cc_library(
     name = "nanobind",
-    srcs = glob([
-        "src/*.cpp",
-    ]),
+    srcs = glob(
+        [
+            "src/*.cpp",
+        ],
+        exclude = ["src/nb_combined.cpp"],
+    ),
     copts = ["-fexceptions"],
     defines = [
         "NB_BUILD=1",
@@ -20,7 +23,7 @@ cc_library(
         ],
     ),
     deps = [
-        "@org_tensorflow//third_party/python_runtime:headers",
+        "@local_tsl//third_party/python_runtime:headers",
         "@robin_map",
     ],
 )

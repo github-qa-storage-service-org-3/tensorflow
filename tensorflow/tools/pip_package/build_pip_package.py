@@ -69,6 +69,36 @@ def prepare_headers(headers: list[str], srcs_dir: str) -> None:
     srcs_dir: target directory where headers are copied to.
   """
   path_to_exclude = [
+      "cuda_cccl/_virtual_includes",
+      "cuda_cublas/_virtual_includes",
+      "cuda_cudart/_virtual_includes",
+      "cuda_cudnn/_virtual_includes",
+      "cuda_cufft/_virtual_includes",
+      "cuda_cupti/_virtual_includes",
+      "cuda_curand/_virtual_includes",
+      "cuda_cusolver/_virtual_includes",
+      "cuda_cusparse/_virtual_includes",
+      "cuda_nccl/_virtual_includes",
+      "cuda_nvcc/_virtual_includes",
+      "cuda_nvjitlink/_virtual_includes",
+      "cuda_nvml/_virtual_includes",
+      "cuda_nvrtc/_virtual_includes",
+      "cuda_nvtx/_virtual_includes",
+      "external/cuda_cccl",
+      "external/cuda_cublas",
+      "external/cuda_cudart",
+      "external/cuda_cudnn",
+      "external/cuda_cufft",
+      "external/cuda_cupti",
+      "external/cuda_curand",
+      "external/cuda_cusolver",
+      "external/cuda_cusparse",
+      "external/cuda_nccl",
+      "external/cuda_nvcc",
+      "external/cuda_nvjitlink",
+      "external/cuda_nvml",
+      "external/cuda_nvrtc",
+      "external/cuda_nvtx",
       "external/pypi",
       "external/jsoncpp_git/src",
       "local_config_cuda/cuda/_virtual_includes",
@@ -219,14 +249,24 @@ def patch_so(srcs_dir: str) -> None:
     srcs_dir: target directory with .so files to patch.
   """
   to_patch = {
-      "tensorflow/python/_pywrap_tensorflow_internal.so":
-      "$ORIGIN/../../tensorflow/tsl/python/lib/core",
-      ("tensorflow/compiler/mlir/quantization/tensorflow/python/"
-       "pywrap_function_lib.so"): "$ORIGIN/../../../../../python",
-      ("tensorflow/compiler/mlir/quantization/tensorflow/python/"
-       "pywrap_quantize_model.so"): "$ORIGIN/../../../../../python",
-      ("tensorflow/compiler/mlir/quantization/tensorflow/calibrator/"
-       "pywrap_calibration.so"): "$ORIGIN/../../../../../python",
+      "tensorflow/python/_pywrap_tensorflow_internal.so": (
+          "$ORIGIN/../../tensorflow/compiler/xla/tsl/python/lib/core"
+      ),
+      (
+          "tensorflow/compiler/mlir/quantization/tensorflow/python/"
+          "pywrap_function_lib.so"
+      ): "$ORIGIN/../../../../../python",
+      (
+          "tensorflow/compiler/mlir/quantization/tensorflow/python/"
+          "pywrap_quantize_model.so"
+      ): "$ORIGIN/../../../../../python",
+      (
+          "tensorflow/compiler/mlir/tensorflow_to_stablehlo/python/"
+          "pywrap_tensorflow_to_stablehlo.so"
+      ): "$ORIGIN/../../../../python",
+      (
+          "tensorflow/compiler/mlir/lite/python/_pywrap_converter_api.so"
+      ): "$ORIGIN/../../../../python",
   }
   for file, path in to_patch.items():
     rpath = subprocess.check_output(

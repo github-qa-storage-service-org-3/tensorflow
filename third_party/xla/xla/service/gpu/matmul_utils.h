@@ -54,12 +54,12 @@ const tsl::protobuf::RepeatedField<int64_t>& BatchDimensionsForOperand(
     const HloInstruction& dot, int operand_number);
 
 // Index of the only contracting dimension of dot instruction operand.
-int64_t ContractingDimensionIndex(const HloInstruction& dot,
-                                  int operand_number);
+absl::StatusOr<int64_t> ContractingDimensionIndex(const HloInstruction& dot,
+                                                  int operand_number);
 
 // Index of the only non-contracting dimension of dot instruction operand.
-int64_t NonContractingDimensionIndex(const HloInstruction& dot,
-                                     int operand_number);
+absl::StatusOr<int64_t> NonContractingDimensionIndex(const HloInstruction& dot,
+                                                     int operand_number);
 
 // Normalize shape to (batch, rows, columns) logical dimensions.
 absl::StatusOr<Shape> GetBatchRowColumnShape(
@@ -107,6 +107,11 @@ struct GemmConfig : public se::gpu::GemmConfig {
   static constexpr int64_t kDefaultWorkspace = 4 * 1024 * 1024;  // 4 MiB
 
   static absl::StatusOr<GemmConfig> For(const HloInstruction* gemm);
+
+  // Gets the GemmConfig of the `gemm` instruction with overridden
+  // GemmBackendConfig.
+  static absl::StatusOr<GemmConfig> For(const HloInstruction* gemm,
+                                        const GemmBackendConfig& config);
 
   static absl::StatusOr<GemmConfig> For(
       const Shape& lhs_shape, absl::Span<const int64_t> lhs_batch_dims,

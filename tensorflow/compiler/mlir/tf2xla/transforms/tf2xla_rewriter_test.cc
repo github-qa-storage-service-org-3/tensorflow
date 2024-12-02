@@ -42,9 +42,9 @@ limitations under the License.
 #include "xla/client/xla_computation.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
@@ -127,7 +127,7 @@ class Tf2XlaRewriterTest : public ::testing::Test {
         module_, test::GetMlirModuleFromString(module_string, &context_));
 
     context_.loadAllAvailableDialects();
-    return tsl::OkStatus();
+    return absl::OkStatus();
   }
 
   Status LegalizeSingleOp(Operation& op) {
@@ -143,7 +143,7 @@ class Tf2XlaRewriterTest : public ::testing::Test {
       return tsl::errors::Internal("Failed to rewrite op");
     }
 
-    return tsl::OkStatus();
+    return absl::OkStatus();
   }
 
   Status LegalizeModule(std::string module_string = kMlirModuleStr) {
@@ -170,7 +170,7 @@ class Tf2XlaRewriterTest : public ::testing::Test {
       return tsl::errors::Internal("Could not legalize all ops");
     }
 
-    return tsl::OkStatus();
+    return absl::OkStatus();
   }
 
   mlir::func::FuncOp GetMainFunc() {

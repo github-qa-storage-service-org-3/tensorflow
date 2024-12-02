@@ -17,20 +17,34 @@ limitations under the License.
 
 #include "xla/translate/hlo_to_mhlo/hlo_utils.h"
 
+#include <cassert>
 #include <cstddef>
-#include <type_traits>
+#include <cstdint>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
-#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
-#include "mlir/IR/TypeUtilities.h"  // from @llvm-project
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Casting.h"
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/TypeUtilities.h"
+#include "mlir/IR/ValueRange.h"
+#include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/mlir/utils/type_util.h"
+#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/primitive_util.h"
+#include "xla/shape.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -39,23 +53,22 @@ using mlir::AffineMap;
 using mlir::Builder;
 using mlir::DenseElementsAttr;
 using mlir::ShapedType;
-using xla::LiteralBase;
-using xla::StatusOr;
 
 template <typename CppType>
 ::mlir::DenseElementsAttr CreateDenseAttrFromLiteral(
     const ShapedType& type, const LiteralBase& literal) {
-  if constexpr (std::is_same_v<CppType, u4> || std::is_same_v<CppType, s4>) {
+  if constexpr (is_intN_v<CppType>) {
     // DenseElementsAttr::get() does not support being passed an i4 array.
-    // Instead, create buffer of padded i4 values and call
+    // Instead, create buffer of padded, packed values and call
     // DenseElementsAttr::getFromRawBuffer()
     auto data_span = literal.data<CppType>();
-    std::vector<char> int4_padded_data;
-    int4_padded_data.reserve(literal.element_count());
+    std::vector<char> packed_padded_data;
+    packed_padded_data.reserve(literal.element_count());
     for (size_t i = 0; i < literal.element_count(); i++) {
-      int4_padded_data.push_back(static_cast<char>(data_span[i]));
+      packed_padded_data.push_back(static_cast<char>(data_span[i]));
     }
-    return ::mlir::DenseElementsAttr::getFromRawBuffer(type, int4_padded_data);
+    return ::mlir::DenseElementsAttr::getFromRawBuffer(type,
+                                                       packed_padded_data);
   } else {
     auto data_span = literal.data<CppType>();
     return ::mlir::DenseElementsAttr::get(
@@ -116,7 +129,8 @@ absl::StatusOr<mlir::DenseElementsAttr> CreateDenseElementsAttrFromLiteral(
 
   // TODO(hinsu): Support remaining XLA primitive types.
   auto element_type = literal.shape().element_type();
-  return primitive_util::PrimitiveTypeSwitch<StatusOr<mlir::DenseElementsAttr>>(
+  return primitive_util::PrimitiveTypeSwitch<
+      absl::StatusOr<mlir::DenseElementsAttr>>(
       [&](auto primitive_type_constant)
           -> absl::StatusOr<mlir::DenseElementsAttr> {
         if constexpr (primitive_util::IsArrayType(primitive_type_constant)) {
@@ -137,6 +151,48 @@ mlir::DenseIntElementsAttr CreateDenseIntElementsAttrFromVector(
       mlir::RankedTensorType::get(shape.empty() ? vector.size() : shape,
                                   builder.getIntegerType(64)),
       vector);
+}
+
+mlir::Value CreateTupleValue(mlir::OpBuilder* func_builder, mlir::Location loc,
+                             mlir::ValueRange& flatten_values,
+                             mlir::Type type) {
+  auto tuple_type = type.dyn_cast<mlir::TupleType>();
+  if (!tuple_type) {
+    assert(!flatten_values.empty());
+    auto retval = flatten_values.front();
+    flatten_values = flatten_values.drop_front();
+    return retval;
+  }
+
+  llvm::SmallVector<mlir::Value> flatten_sub_values;
+  for (auto child_type : tuple_type.getTypes())
+    flatten_sub_values.push_back(
+        CreateTupleValue(func_builder, loc, flatten_values, child_type));
+
+  return func_builder->create<mlir::mhlo::TupleOp>(loc, flatten_sub_values)
+      .getResult();
+}
+
+mlir::Operation* CreateTupleFromOpResults(mlir::OpBuilder* func_builder,
+                                          mlir::Location loc,
+                                          mlir::Operation* op,
+                                          mlir::Type type) {
+  if (!type.isa<mlir::TupleType>()) return op;
+
+  mlir::ValueRange flattened_results_ref(op->getResults());
+  auto result =
+      CreateTupleValue(func_builder, loc, flattened_results_ref, type);
+  auto defining_tuple_op = result.getDefiningOp<mlir::mhlo::TupleOp>();
+  assert(defining_tuple_op && "builder didn't return the right type");
+  auto tupleOp = defining_tuple_op.getOperation();
+  return tupleOp;
+}
+
+mlir::TypeRange Untuple(const mlir::Type& type) {
+  if (llvm::isa<mlir::TupleType>(type)) {
+    return llvm::dyn_cast<mlir::TupleType>(type).getTypes();
+  }
+  return type;
 }
 
 }  // namespace xla

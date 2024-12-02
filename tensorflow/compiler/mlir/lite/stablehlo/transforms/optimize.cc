@@ -27,6 +27,7 @@ limitations under the License.
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -37,8 +38,8 @@ namespace odml {
 // Convert mhlo.dot to mhlo.dot_general.
 LogicalResult ConvertDotToDotGeneral(mhlo::DotOp op,
                                      PatternRewriter &rewriter) {
-  auto lhs_type = op.getLhs().getType().cast<ShapedType>();
-  auto rhs_type = op.getRhs().getType().cast<ShapedType>();
+  auto lhs_type = mlir::cast<ShapedType>(op.getLhs().getType());
+  auto rhs_type = mlir::cast<ShapedType>(op.getRhs().getType());
   if (!lhs_type.hasRank() || !rhs_type.hasRank()) {
     return rewriter.notifyMatchFailure(op, "unsupported unranked input type");
   }
@@ -57,7 +58,7 @@ LogicalResult ConvertDotToDotGeneral(mhlo::DotOp op,
           /*rhsBatchingDimensions=*/{},
           /*lhsContractingDimensions=*/{lhs_type.getRank() - 1},
           /*rhsContractingDimensions=*/{0}),
-      op.getPrecisionConfigAttr());
+      op.getPrecisionConfigAttr(), mhlo::DotAlgorithmAttr{});
   return success();
 }
 
@@ -160,7 +161,7 @@ LogicalResult RemoveReshapeAroundDotGeneral(mhlo::ReshapeOp reshape_after,
           range(batch_dims_count + shape_y1.size(), contracting_dims_count),
           /*rhsContractingDimensions=*/
           range(batch_dims_count, contracting_dims_count)),
-      dot.getPrecisionConfigAttr());
+      dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
   return success();
 }
 
@@ -264,7 +265,7 @@ LogicalResult LiftDotConcatLHS(mhlo::ConcatenateOp concat,
   new_concat_shape[new_concat_dim] = 0;
   for (auto v : all_dot_lhs) {
     new_concat_shape[new_concat_dim] +=
-        v.getType().dyn_cast<ShapedType>().getShape()[new_concat_dim];
+        mlir::dyn_cast<ShapedType>(v.getType()).getShape()[new_concat_dim];
   }
 
   auto new_concat = rewriter.create<mhlo::ConcatenateOp>(
@@ -272,7 +273,8 @@ LogicalResult LiftDotConcatLHS(mhlo::ConcatenateOp concat,
       rewriter.getI64IntegerAttr(new_concat_dim));
   rewriter.replaceOpWithNewOp<mhlo::DotGeneralOp>(
       concat, concat.getType(), new_concat, first_dot.getRhs(),
-      first_dot.getDotDimensionNumbers(), first_dot.getPrecisionConfigAttr());
+      first_dot.getDotDimensionNumbers(), first_dot.getPrecisionConfigAttr(),
+      first_dot.getAlgorithmAttr());
   return success();
 }
 
@@ -353,7 +355,7 @@ LogicalResult LiftDotConcatLHSAndRHS(mhlo::ConcatenateOp concat,
   lhs_new_concat_shape[lhs_batch_dim] = 0;
   for (auto v : all_dot_lhs) {
     lhs_new_concat_shape[lhs_batch_dim] +=
-        v.getType().dyn_cast<ShapedType>().getShape()[lhs_batch_dim];
+        mlir::dyn_cast<ShapedType>(v.getType()).getShape()[lhs_batch_dim];
   }
   const int64_t rhs_batch_dim =
       first_dot.getDotDimensionNumbers().getRhsBatchingDimensions()[0];
@@ -362,7 +364,7 @@ LogicalResult LiftDotConcatLHSAndRHS(mhlo::ConcatenateOp concat,
   rhs_new_concat_shape[rhs_batch_dim] = 0;
   for (auto v : all_dot_rhs) {
     rhs_new_concat_shape[rhs_batch_dim] +=
-        v.getType().dyn_cast<ShapedType>().getShape()[rhs_batch_dim];
+        mlir::dyn_cast<ShapedType>(v.getType()).getShape()[rhs_batch_dim];
   }
 
   auto lhs_new_concat = rewriter.create<mhlo::ConcatenateOp>(
@@ -373,7 +375,8 @@ LogicalResult LiftDotConcatLHSAndRHS(mhlo::ConcatenateOp concat,
       all_dot_rhs, rewriter.getI64IntegerAttr(rhs_batch_dim));
   rewriter.replaceOpWithNewOp<mhlo::DotGeneralOp>(
       concat, concat.getType(), lhs_new_concat, rhs_new_concat,
-      first_dot.getDotDimensionNumbers(), first_dot.getPrecisionConfigAttr());
+      first_dot.getDotDimensionNumbers(), first_dot.getPrecisionConfigAttr(),
+      first_dot.getAlgorithmAttr());
   return success();
 }
 
@@ -610,7 +613,7 @@ LogicalResult ConvertReshapeDotRhsToBatchedDot(mhlo::DotGeneralOp dot,
           /*rhsBatchingDimensions=*/{0},
           /*lhsContractingDimensions=*/dim_nums.getLhsContractingDimensions(),
           /*rhsContractingDimensions=*/new_rhs_contracting_dims),
-      dot.getPrecisionConfigAttr());
+      dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
   return success();
 }
 

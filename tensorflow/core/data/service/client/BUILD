@@ -1,9 +1,9 @@
 # tf.data service client library.
 
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies")
 load("//tensorflow/core/platform:build_config.bzl", "tf_protos_profiler_service")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -120,10 +120,10 @@ tf_cc_test(
         "//tensorflow/core/data/service:dispatcher_client",
         "//tensorflow/core/data/service:test_cluster",
         "//tensorflow/core/data/service:test_util",
-        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ] + tf_grpc_cc_dependencies() + tf_protos_profiler_service(),
 )
 

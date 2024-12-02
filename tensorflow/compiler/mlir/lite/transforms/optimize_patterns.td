@@ -22,6 +22,7 @@ include "mlir/Dialect/Func/IR/FuncOps.td"
 include "tensorflow/compiler/mlir/lite/ir/tfl_ops.td"
 include "tensorflow/compiler/mlir/lite/utils/utils.td"
 include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.td"
+include "tensorflow/compiler/mlir/lite/ir/tfl_op_enums.td"
 
 // Checks if the param passed is a F32 ElementsAttr.
 def F32ElementsAttr : ElementsAttrBase<
@@ -365,6 +366,15 @@ class ConstDoubleValueLessThan<string n> : Constraint<
   "$0.cast<DenseElementsAttr>().getNumElements() == 1 && "
   "std::abs(*$0.cast<DenseElementsAttr>().getValues<float>().begin()) < "
   # n>>;
+
+// Constraint that the attribute value is negative infinity or negative largest.
+// We use both -inf & flt_min due to the forward compatibility.
+def ConstAPFloatNegLargestOrNegInfinity : Constraint<CPred<
+  "$0.isa<DenseElementsAttr>() && "
+  "$0.cast<DenseElementsAttr>().getNumElements() == 1 && "
+  "(($0.cast<DenseElementsAttr>().getValues<APFloat>()[0].isLargest() && "
+  "$0.cast<DenseElementsAttr>().getValues<APFloat>()[0].isNegative()) || "
+  "$0.cast<DenseElementsAttr>().getValues<APFloat>()[0].isNegInfinity())">>;
 
 def L2NormValidReduceIndex : Constraint<CPred<
   "L2NormalizeReduceAxis($0, $1.cast<DenseElementsAttr>())">>;
@@ -771,9 +781,13 @@ def UndoBroadcastConvBiasAdd : Pat<
    (HasRankAtLeast<2> $bias),
    (IsDefinedByConv2DOp $lhs)]>;
 
-// Function to map final permutation to initial permutation
-// initial -> permutation1 -> permutation2 -> final
-def RemapPermutation: NativeCodeCall<"RemapPermutation($0, $1)">;
+// Pattern to convert a trivial transpose op to a reshape op.
+def ConvertTrivialTransposeOpToReshapeOp : Pat<
+  (TFL_TransposeOp:$transpose_op $input, (Arith_ConstantOp:$permutation $p1)),
+  (TFL_ReshapeOp $input, (Arith_ConstantOp (GetShape $transpose_op))),
+  [(IsTransposeTrivial $input, $permutation),
+   (AnyStaticShapeTensor $input),
+   (AnyStaticShapeTensor $transpose_op)]>;
 
 // Pattern to fuse redundant tanspose op
 def FoldDoubleTranspose : Pat<
@@ -1010,6 +1024,30 @@ def FoldNormalizationIntoSoftmax : Pat<
   (TFL_SoftmaxOp $input, $beta),
   [(IsSame $input, $max_input),
    (AxesIsLastDimension $axes, $max_input),
+   (HasOneUse $sub),
+   (HasOneUse $max)]>;
+
+// Convert softmax(x-reshape(maximum(max(x), -inf))) into softmax(x) as the softmax op already deals
+// with the max normalization. This comes from upstream Jax (https://github.com/google/jax/pull/15677)
+def FoldNormalizationIntoSoftmaxJaxWithAxisMinus1 : Pat<
+  (TFL_SoftmaxOp
+    (TFL_SubOp:$sub $input,
+    (TFL_ReshapeOp:$reshape
+      (TFL_MaximumOp:$maximum
+        (TFL_ReduceMaxOp:$max $max_input, (Arith_ConstantOp I32ElementsAttr: $axes),
+                              ConstBoolAttrFalse),
+        (Arith_ConstantOp F32ElementsAttr: $threshold)
+      ),
+      (Arith_ConstantOp I32ElementsAttr: $shape)
+    ),
+    TFL_AF_None),
+    $beta),
+  (TFL_SoftmaxOp $input, $beta),
+  [(IsSame $input, $max_input),
+   (AxesIsLastDimension $axes, $max_input),
+   (ConstAPFloatNegLargestOrNegInfinity $threshold),
+   (HasOneUse $maximum),
+   (HasOneUse $reshape),
    (HasOneUse $sub),
    (HasOneUse $max)]>;
 
@@ -1529,7 +1567,8 @@ def FuseReshapesAroundBatchMatMulLHS1: Pat<
       $rhs, $adj_x, $adj_y, $bool_attr),
     (Arith_ConstantOp $s1)),
   (TFL_BatchMatMulOp $input, $rhs, $adj_x, $adj_y, $bool_attr),
-  [(HasRank<3> $rhs),
+  [(HasRankAtLeast<3> $input),
+   (HasRank<3> $rhs),
    (HasRank<3> $initial_shape_change),
    (IsBroadcastDimEqualToOne $rhs),
    (IsBroadcastDimEqualToOne $input),
@@ -1561,6 +1600,20 @@ def FuseTransposeAfterBatchMatmul : Pat<
   ),
   [(AreLastTwoDimsTransposed $perm_value)]>;
 
+// Fuse redundant RHS TFL_TransposeOp into TFL_BatchMatMulOp if rhs is constant
+// tensor of rank-2.
+def FuseTransposeIntoBatchMatMulRHS: Pat<
+  (TFL_BatchMatMulOp $lhs,
+    (TFL_TransposeOp (TFL_QConstOp:$input $_, $_), (Arith_ConstantOp:$perm_value $p0)),
+    $adj_x, $adj_y, $asymmetric_quantize_inputs),
+  (TFL_FullyConnectedOp
+    $lhs,
+    $input, (CreateNoneValue $lhs), TFL_AF_None, TFL_FCWO_Default,
+    ConstBoolAttrTrue, $asymmetric_quantize_inputs),
+  [(HasRank<2> $input),
+   (AreLastTwoDimsTransposed $perm_value),
+   (IsBoolAttrEqual<"false"> $adj_y)]>;
+
 // Replace conv-->transpose-->add with conv-->add-->transpose
 // The bias needs only reshape (i.e. ReshapeNCHWBiasToNHWC) and not transpose
 // because the bias's shape simply changes from NxCx1x1 to Nx1x1xC.
@@ -1579,3 +1632,143 @@ def ReorderNCHWTransposeAdd : Pat <
   (IsDefinedByConv2DOp $input),
   (HasOneUse $add_op),
   (HasOneUse $transpose_op)]>;
+
+
+// TODO(weiyiw): Also support variant length arguments
+def FuseSliceAndPack : Pat<(
+  TFL_PackOp
+    (variadic
+      (TFL_ReshapeOp
+        (TFL_SliceOp $input0,
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"0">),
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"1">)), $_),
+      (TFL_ReshapeOp
+        (TFL_SliceOp $input1,
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"1">),
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"1">)), $_),
+      (TFL_ReshapeOp
+        (TFL_SliceOp $input2,
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"2">),
+          (Arith_ConstantOp ConstantAttr<RankedI32ElementsAttr<[1]>,"1">)), $_)
+    ), $_, $_), (replaceWithValue $input0),
+    [(IsSame $input0, $input1), (IsSame $input0, $input2)]>;
+
+// Given a value, checks if dim `d` is static.
+class HasStaticDim<int d> : Constraint<CPred<
+  "!$0.getType().cast<ShapedType>().isDynamicDim(" # d # ")">>;
+
+class IsBalancedPaddingArray<int spatials_start, int spatials_end> :
+  Constraint<CPred<
+    "IsBalancedPaddingArray("# spatials_start #","# spatials_end #","
+      "$0.cast<DenseElementsAttr>())">>;
+
+// Given in_shape, out_shape, stride checks ceil(in_shape[d] / stride) == out_shape[d]
+def IsSameStridedShape2D : Constraint<CPred<
+  "HasSameStridedShape($0.getDefiningOp<TFL::Conv2DOp>(),"
+    "$1.getType().cast<ShapedType>().getShape())">>;
+
+def IsSameStridedShapeDepthwise : Constraint<CPred<
+  "HasSameStridedShape($0.getDefiningOp<TFL::DepthwiseConv2DOp>(),"
+    "$1.getType().cast<ShapedType>().getShape())">>;
+
+def IsSameStridedShape3D : Constraint<CPred<
+  "HasSameStridedShape($0.getDefiningOp<TFL::Conv3DOp>(),"
+    "$1.getType().cast<ShapedType>().getShape())">>;
+
+def IsValidPadding : Constraint<CPred<"$0.str() == \"VALID\"">>;
+
+// Fuse explicit tfl.pad ops into standard convolutions when it implies "SAME"
+// padding. "SAME" padding is defined to be any non-trivial padding where
+// ceil(in_dim_i / stride_i) == out_dim_i
+// and 0 <= (pad_i_hi - pad_i_lo) <= 1 for all spatial dims i.
+
+def FuseSamePaddingConv2D : Pat<
+  (TFL_Conv2DOp:$conv_out
+    (TFL_PadOp $input, (Arith_ConstantOp $paddings)),
+    $filter,
+    $bias,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    $padding,
+    $stride_h,
+    $stride_w
+  ), (TFL_Conv2DOp
+    $input,
+    $filter,
+    $bias,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    TFL_PAD_Same,
+    $stride_h,
+    $stride_w
+  ),
+  [(HasStaticDim<1> $input),
+    (HasStaticDim<2> $input),
+    (IsBalancedPaddingArray<1, 3> $paddings),
+    (IsValidPadding $padding),
+    (IsSameStridedShape2D $conv_out, $input)]>;
+
+def FuseSamePaddingDepthwiseConv : Pat<
+  (TFL_DepthwiseConv2DOp:$conv_out
+    (TFL_PadOp $input, (Arith_ConstantOp $paddings)),
+    $filter,
+    $bias,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    $padding,
+    $stride_h,
+    $stride_w,
+    $depth
+  ), (TFL_DepthwiseConv2DOp
+    $input,
+    $filter,
+    $bias,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    TFL_PAD_Same,
+    $stride_h,
+    $stride_w,
+    $depth
+  ),
+  [(HasStaticDim<1> $input),
+    (HasStaticDim<2> $input),
+    (IsBalancedPaddingArray<1, 3> $paddings),
+    (IsValidPadding $padding),
+    (IsSameStridedShapeDepthwise $conv_out, $input)]>;
+
+def FuseSamePaddingConv3D : Pat<
+  (TFL_Conv3DOp:$conv_out
+    (TFL_PadOp $input, (Arith_ConstantOp $paddings)),
+    $filter,
+    $bias,
+    $d_dilate,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    $padding,
+    $stride_d,
+    $stride_h,
+    $stride_w
+  ), (TFL_Conv3DOp
+    $input,
+    $filter,
+    $bias,
+    $d_dilate,
+    $h_dilate,
+    $w_dilate,
+    $faf,
+    TFL_PAD_Same,
+    $stride_d,
+    $stride_h,
+    $stride_w
+  ),
+  [(HasStaticDim<1> $input),
+    (HasStaticDim<2> $input),
+    (HasStaticDim<3> $input),
+    (IsBalancedPaddingArray<1, 4> $paddings),
+    (IsValidPadding $padding),
+    (IsSameStridedShape3D $conv_out, $input)]>;

@@ -1,5 +1,6 @@
 """Provides build configuration for TensorFlow."""
 
+load("@rules_java//java:defs.bzl", "java_test")
 load(
     "//tensorflow:py.default.bzl",
     _plain_py_binary = "py_binary",
@@ -19,6 +20,9 @@ load(
     "if_enable_mkl",
     "if_mkl",
     "if_mkl_ml",
+    "if_mkldnn_aarch64_acl",
+    "if_mkldnn_aarch64_acl_openmp",
+    "if_mkldnn_openmp",
     "onednn_v3_define",
 )
 
@@ -57,21 +61,16 @@ load(
     "windows_llvm_openmp_linkopts",
 )
 load(
-    "//third_party/mkl_dnn:build_defs.bzl",
-    "if_mkldnn_aarch64_acl",
-    "if_mkldnn_aarch64_acl_openmp",
-    "if_mkldnn_openmp",
-)
-load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm",
     "rocm_copts",
 )
 load(
-    "@local_tsl//tsl:tsl.bzl",
+    "@local_xla//xla/tsl:tsl.bzl",
     "tsl_gpu_library",
     _cc_header_only_library = "cc_header_only_library",
     _if_cuda_or_rocm = "if_cuda_or_rocm",
+    _if_hermetic_cuda_tools = "if_hermetic_cuda_tools",
     _if_nccl = "if_nccl",
     _transitive_hdrs = "transitive_hdrs",
 )
@@ -89,7 +88,7 @@ def register_extension_info(**kwargs):
 # not contain rc or alpha, only numbers.
 # Also update tensorflow/core/public/version.h
 # and tensorflow/tools/pip_package/setup.py
-VERSION = "2.17.0"
+VERSION = "2.18.0"
 VERSION_MAJOR = VERSION.split(".")[0]
 two_gpu_tags = ["requires-gpu-nvidia:2", "manual", "no_pip"]
 
@@ -106,7 +105,7 @@ def clean_dep(target):
     """
 
     # A repo-relative label is resolved relative to the file in which the
-    # Label() call appears, i.e. @local_tsl.
+    # Label() call appears, i.e. @tsl.
     return str(Label(target))
 
 cc_header_only_library = _cc_header_only_library
@@ -286,7 +285,7 @@ def if_not_mobile(a):
 
 # Config setting selector used when building for products
 # which requires restricted licenses to be avoided.
-def if_not_mobile_or_arm_or_lgpl_restricted(a):
+def if_not_mobile_or_arm_or_macos_or_lgpl_restricted(a):
     _ = (a,)
     return select({
         "//conditions:default": [],
@@ -802,7 +801,7 @@ def tf_cc_shared_object(
     testonly = kwargs.pop("testonly", False)
 
     for name_os, name_os_major, name_os_full in names:
-        # Windows DLLs cant be versioned
+        # Windows DLLs can't be versioned
         if name_os.endswith(".dll"):
             name_os_major = name_os
             name_os_full = name_os
@@ -1077,7 +1076,8 @@ def tf_cc_binary(
                 ],
             ),
             tags = tags,
-            data = depset(data + added_data_deps),
+            data = depset(data + added_data_deps).to_list() +
+                   tf_binary_additional_srcs(fullversion = True),
             linkopts = linkopts + _rpath_linkopts(name_os),
             visibility = visibility,
             **kwargs
@@ -1570,7 +1570,7 @@ def tf_cc_test(
         ),
         data = data +
                tf_binary_dynamic_kernel_dsos() +
-               tf_binary_additional_srcs(),
+               tf_binary_additional_srcs(fullversion = True),
         exec_properties = tf_exec_properties(kwargs),
         **kwargs
     )
@@ -1735,6 +1735,7 @@ def tf_gpu_only_cc_test(
     tf_gpu_kernel_library(
         name = gpu_lib_name,
         srcs = srcs + tf_binary_additional_srcs(),
+        data = tf_binary_additional_srcs(fullversion = True),
         deps = deps,
         testonly = 1,
         features = features,
@@ -1883,7 +1884,7 @@ def tf_java_test(
         name = cc_library_name,
         srcs = tf_binary_additional_srcs(fullversion = True) + tf_binary_dynamic_kernel_dsos() + tf_binary_dynamic_kernel_deps(kernels),
     )
-    native.java_test(
+    java_test(
         name = name,
         srcs = srcs,
         deps = deps + [cc_library_name],
@@ -3271,7 +3272,6 @@ def tf_python_pybind_static_deps(testonly = False):
         "@com_googlesource_code_re2//:__subpackages__",
         "@compute_library//:__subpackages__",
         "@cpuinfo//:__subpackages__",
-        "@cudnn_frontend_archive//:__subpackages__",  #  TFRT integration for TensorFlow.
         "@curl//:__subpackages__",
         "@dlpack//:__subpackages__",
         "@double_conversion//:__subpackages__",
@@ -3577,3 +3577,6 @@ def replace_with_portable_tf_lib_when_required(non_portable_tf_deps, use_lib_wit
 
 def tf_python_framework_friends():
     return ["//tensorflow:__subpackages__"]
+
+def if_hermetic_cuda_tools(if_true, if_false = []):
+    return _if_hermetic_cuda_tools(if_true, if_false)

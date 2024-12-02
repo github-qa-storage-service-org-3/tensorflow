@@ -17,10 +17,11 @@ limitations under the License.
 
 // Must be included first
 // clang-format off
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "pybind11/attr.h"  // from @pybind11
-#include "tsl/python/lib/core/numpy.h" //NOLINT
+#include "xla/tsl/python/lib/core/numpy.h" //NOLINT
 // clang-format on
 
 #include "Python.h"
@@ -537,7 +538,7 @@ static py::bytes TFE_GetCompilerIr(py::handle& ctx,
         TensorHandleFromInterface(abstract_tensor_handle));
   }
 
-  StatusOr<std::string> hlo_str;
+  absl::StatusOr<std::string> hlo_str;
   std::vector<Device*> devices = context->local_device_mgr()->ListDevices();
   Device* selected_device =
       GetDevice(context, device_name, platform_name, devices);
@@ -782,11 +783,20 @@ PYBIND11_MODULE(_pywrap_tfe, m) {
         tensorflow::GetMlirCommonFlags()->tf_mlir_enable_mlir_bridge);
   });
   m.def("TF_EnableMlirBridge", [](bool enabled) {
+    // tensorflow::GetMlirCommonFlags()->tf_mlir_enable_mlir_bridge =
+    //     enabled
+    //      ? tensorflow::ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_ENABLED
+    //      : tensorflow::ConfigProto::Experimental::
+    //            MLIR_BRIDGE_ROLLOUT_DISABLED;
     tensorflow::GetMlirCommonFlags()->tf_mlir_enable_mlir_bridge =
-        enabled
-            ? tensorflow::ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_ENABLED
-            : tensorflow::ConfigProto::Experimental::
-                  MLIR_BRIDGE_ROLLOUT_DISABLED;
+        tensorflow::ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_UNSPECIFIED;
+    if (enabled) {
+      VLOG(0) << "DO NOT SUBMIT tfe_wrapper enable mlir bridge";
+      // exit(1);
+    } else {
+      VLOG(0) << "DO NOT SUBMIT tfe_wrapper disable mlir bridge";
+      // exit(1);
+    }
   });
   m.def("TF_EnableXlaDevices", [] {
     tensorflow::GetXlaDeviceFlags()->tf_xla_enable_xla_devices = true;
@@ -902,7 +912,7 @@ PYBIND11_MODULE(_pywrap_tfe, m) {
             tensorflow::FunctionDef function_def;
             return function_def;
           }
-          status->status = ::tensorflow::OkStatus();
+          status->status = absl::OkStatus();
           tensorflow::MaybeRaiseRegisteredFromTFStatus(status.get());
           return *ctx_function_def;
         });

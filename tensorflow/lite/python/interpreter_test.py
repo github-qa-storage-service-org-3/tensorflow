@@ -205,7 +205,7 @@ class InterpreterTest(test_util.TensorFlowTestCase):
     input_details = interpreter.get_input_details()
     self.assertEqual(2, len(input_details))
     self.assertEqual('input', input_details[0]['name'])
-    self.assertEqual(np.string_, input_details[0]['dtype'])
+    self.assertEqual(np.bytes_, input_details[0]['dtype'])
     self.assertTrue(([10] == input_details[0]['shape']).all())
     self.assertEqual((0.0, 0), input_details[0]['quantization'])
     self.assertQuantizationParamsEqual(
@@ -220,7 +220,7 @@ class InterpreterTest(test_util.TensorFlowTestCase):
     output_details = interpreter.get_output_details()
     self.assertEqual(1, len(output_details))
     self.assertEqual('output', output_details[0]['name'])
-    self.assertEqual(np.string_, output_details[0]['dtype'])
+    self.assertEqual(np.bytes_, output_details[0]['dtype'])
     self.assertTrue(([3] == output_details[0]['shape']).all())
     self.assertEqual((0.0, 0), output_details[0]['quantization'])
     self.assertQuantizationParamsEqual(
@@ -310,15 +310,13 @@ class InterpreterTestErrorPropagation(test_util.TensorFlowTestCase):
 
   # Model must have at least 7 bytes to hold model identifier
   def testTooShortModelContent(self):
-    with self.assertRaisesRegex(
-        ValueError,
-        'Model provided must have at least 7 bytes to hold identifier.',
-    ):
+    with self.assertRaisesRegex(ValueError,
+                                'The model is not a valid Flatbuffer buffer'):
       interpreter_wrapper.Interpreter(model_content=b'short')
 
   def testInvalidModelContent(self):
     with self.assertRaisesRegex(ValueError,
-                                'Model provided has model identifier \''):
+                                'The model is not a valid Flatbuffer buffer'):
       interpreter_wrapper.Interpreter(model_content=b'wrong_identifier')
 
   def testInvalidModelFile(self):
