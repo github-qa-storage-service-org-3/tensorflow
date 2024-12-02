@@ -14,24 +14,30 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/parallel_map_dataset_op.h"
 
+#include <cstddef>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/call_once.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/stats_utils.h"
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/random/random.h"
 #include "tensorflow/core/platform/status.h"
@@ -39,6 +45,7 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/profiler/lib/traceme_encode.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
+#include "tsl/platform/logging.h"
 
 namespace tensorflow {
 namespace data {
@@ -146,13 +153,13 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
   Status Get(OpKernelContext* ctx, int64 index,
              std::vector<Tensor>* out_tensors) const override {
     TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
+    absl::call_once(instantiated_captured_func_once_, [this, ctx] {
+      instantiated_captured_func_status_ = captured_func_->Instantiate(
+          InstantiateCapturedFunctionParams(ctx), &instantiated_captured_func_);
+    });
+    TF_RETURN_IF_ERROR(instantiated_captured_func_status_);
     std::vector<Tensor> args;
     TF_RETURN_IF_ERROR(input_->Get(ctx, index, &args));
-    if (!instantiated_captured_func_) {
-      TF_RETURN_IF_ERROR(
-          captured_func_->Instantiate(InstantiateCapturedFunctionParams(ctx),
-                                      &instantiated_captured_func_));
-    }
     return instantiated_captured_func_->RunInstantiated(args, out_tensors);
   }
 
@@ -305,9 +312,9 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
       RecordStop(ctx);
       result->notification.WaitForNotification();
       RecordStart(ctx);
-      profiler::TraceMe traceme([&] {
-        return profiler::TraceMeEncode("ParallelMapConsume",
-                                       {{"element_id", result->uid}});
+      tsl::profiler::TraceMe traceme([&] {
+        return tsl::profiler::TraceMeEncode("ParallelMapConsume",
+                                            {{"element_id", result->uid}});
       });
       return ProcessResult(ctx, result, out_tensors, end_of_sequence);
     }
@@ -315,11 +322,34 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
    protected:
     std::shared_ptr<model::Node> CreateNode(
         IteratorContext* ctx, model::Node::Args args) const override {
+      std::shared_ptr<model::Parameter> parameter;
+      if (num_parallel_calls_ &&
+          dataset()->num_parallel_calls_ == model::kAutotune) {
+        parameter = model::MakeParameter(
+            "parallelism", num_parallel_calls_, /*min=*/1,
+            /*max=*/ctx->runner_threadpool_size(),
+            // This is to ensure before this op has seen its first element,
+            // `MaximumBufferedBytes()` can use the correct `parameter->value`
+            // to estimate the maximum buffer bytes.
+            GetAutotuneDefaultParallelism(ctx));
+      } else {
+        parameter =
+            model::MakeParameter("parallelism", num_parallel_calls_, /*min=*/1,
+                                 /*max=*/ctx->runner_threadpool_size());
+      }
+      std::optional<int64_t> estimated_element_size =
+          dataset()->GetEstimatedElementSize();
+      if (!estimated_element_size) {
+        VLOG(2) << absl::StrFormat(
+            "Cannot estimate the size of the output tensor because the "
+            "output shape of node %s(id:%d) is only partially known.",
+            args.name, args.id);
+      }
+
       return model::MakeAsyncKnownRatioNode(
           std::move(args),
-          /*ratio=*/1,
-          {model::MakeParameter("parallelism", num_parallel_calls_, /*min=*/1,
-                                /*max=*/ctx->runner_threadpool_size())});
+          /*ratio=*/1, {std::move(parameter)},
+          /*is_legacy_prefetch_autotuned=*/false, estimated_element_size);
     }
 
     Status SaveInternal(SerializationContext* ctx,
@@ -489,9 +519,9 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
     void CallFunction(const std::shared_ptr<IteratorContext>& ctx,
                       const std::shared_ptr<InvocationResult>& result)
         TF_LOCKS_EXCLUDED(*mu_) {
-      profiler::TraceMe traceme([&] {
-        return profiler::TraceMeEncode("ParallelMapProduce",
-                                       {{"element_id", result->uid}});
+      tsl::profiler::TraceMe traceme([&] {
+        return tsl::profiler::TraceMeEncode("ParallelMapProduce",
+                                            {{"element_id", result->uid}});
       });
       // Get the next input element.
       std::vector<Tensor> input_element;
@@ -757,6 +787,8 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
   const std::unique_ptr<CapturedFunction> captured_func_;
   const int op_version_;
   // This is used for random access provided by Get().
+  mutable absl::once_flag instantiated_captured_func_once_;
+  mutable absl::Status instantiated_captured_func_status_;
   mutable std::unique_ptr<InstantiatedCapturedFunction>
       instantiated_captured_func_;
   absl::Status random_indexing_compatible_;

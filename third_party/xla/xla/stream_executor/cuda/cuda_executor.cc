@@ -16,12 +16,14 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <ios>
 #include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/base/casts.h"
@@ -31,6 +33,7 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/event.h"
+#include "xla/stream_executor/event_based_timer.h"
 #include "xla/stream_executor/fft.h"
 #include "xla/stream_executor/gpu/gpu_diagnostics.h"
 #include "xla/stream_executor/kernel_spec.h"
@@ -59,13 +62,16 @@ limitations under the License.
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/cuda/cuda_diagnostics.h"
 #include "xla/stream_executor/cuda/cuda_driver.h"
+#include "xla/stream_executor/cuda/cuda_event.h"
 #include "xla/stream_executor/cuda/cuda_platform_id.h"
+#include "xla/stream_executor/cuda/delay_kernel.h"
 #include "xla/stream_executor/gpu/gpu_collectives.h"
 #include "xla/stream_executor/gpu/gpu_command_buffer.h"
 #include "xla/stream_executor/gpu/gpu_driver.h"
 #include "xla/stream_executor/gpu/gpu_event.h"
 #include "xla/stream_executor/gpu/gpu_kernel.h"
 #include "xla/stream_executor/gpu/gpu_runtime.h"
+#include "xla/stream_executor/gpu/gpu_semaphore.h"
 #include "xla/stream_executor/gpu/gpu_stream.h"
 #include "xla/stream_executor/gpu/gpu_timer.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
@@ -76,11 +82,11 @@ limitations under the License.
 #include "xla/stream_executor/plugin_registry.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_internal.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/fingerprint.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/numa.h"
 #include "tsl/platform/statusor.h"
 
 // LOG(ERROR) uses a const named ERROR, so a macro with the same name is
@@ -103,9 +109,21 @@ bool FLAGS_prefer_cubin_to_ptx = true;
 namespace stream_executor {
 namespace gpu {
 
+namespace {
+
+bool ShouldLaunchDelayKernel() {
+  // Only launch the delay kernel if CUDA_LAUNCH_BLOCKING is not set to 1.
+  static bool value = [] {
+    const char* blocking = std::getenv("CUDA_LAUNCH_BLOCKING");
+    return !blocking || std::string_view{blocking} != "1";
+  }();
+  return value;
+}
+
+}  // namespace
 static GpuEvent* AsGpuEvent(Event* event) {
   DCHECK(event != nullptr);
-  return static_cast<GpuEvent*>(event->implementation());
+  return static_cast<GpuEvent*>(event);
 }
 
 // Given const GPU memory, returns a libcuda device pointer datatype, suitable
@@ -136,32 +154,38 @@ GpuExecutor::~GpuExecutor() {
   }
 }
 
-absl::Status GpuExecutor::Init(int device_ordinal) {
-  device_ordinal_ = device_ordinal;
+static std::optional<int> TryToReadNumaNode(const std::string& pci_bus_id,
+                                            int device_ordinal);
 
+absl::Status GpuExecutor::Init() {
   TF_RETURN_IF_ERROR(GpuDriver::Init());
   TF_RETURN_IF_ERROR(GpuDriver::GetDevice(device_ordinal_, &device_));
   TF_RETURN_IF_ERROR(
       GpuDriver::CreateContext(device_ordinal_, device_, &context_));
   TF_RETURN_IF_ERROR(
       GpuDriver::GetComputeCapability(&cc_major_, &cc_minor_, device_));
+  std::optional<int> numa_node = TryToReadNumaNode(
+      absl::AsciiStrToLower(GpuDriver::GetPCIBusID(device_ordinal_)),
+      device_ordinal_);
+  if (!numa_node || *numa_node < 0) {
+    LOG(WARNING) << "NUMA node could not be determined for device "
+                 << device_ordinal_
+                 << ", host memory allocations will not be NUMA-pinned";
+    numa_node_ = tsl::port::kNUMANoAffinity;
+  } else {
+    numa_node_ = *numa_node;
+  }
   return absl::OkStatus();
 }
 
-// Returns the path to the running executable.
-// N.B. Derived from //knowledge/smalltalk/background_kb.cc
-// Arg: strip_exe: if true, remove the name of the executable itself from the
-//                 returned string. Example: calling this from /usr/bin/foo
-//                 would return /usr/bin.
-static std::string GetBinaryDir(bool strip_exe) {
-  std::string exe_path = tsl::Env::Default()->GetExecutablePath();
-  if (strip_exe) {
-    // The exe is the last component of the path, so remove one component.
-    std::vector<std::string> components = absl::StrSplit(exe_path, '/');
-    components.pop_back();
-    return absl::StrJoin(components, "/");
-  }
-  return exe_path;
+absl::StatusOr<bool> GpuExecutor::DelayKernelIsSupported(GpuStream* stream) {
+  // Check the assumption that this device supports unified addressing,
+  // otherwise skip the delay kernel
+  TF_ASSIGN_OR_RETURN(int status,
+                      GpuDriver::GetDeviceAttribute(
+                          CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING, device_));
+
+  return static_cast<bool>(status);
 }
 
 absl::Status GpuExecutor::LoadModuleFromCuBin(const char* cubin,
@@ -207,13 +231,11 @@ absl::Status GpuExecutor::LoadModuleFromHsaco(const char* hsaco,
       "Feature not supported on CUDA platform (LoadModuleFromHsaco)");
 }
 
-absl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
-                                    Kernel* kernel) {
-  GpuKernel* cuda_kernel = AsGpuKernel(kernel);
+absl::StatusOr<std::unique_ptr<Kernel>> GpuExecutor::LoadKernel(
+    const MultiKernelLoaderSpec& spec) {
+  auto cuda_kernel = std::make_unique<GpuKernel>(this);
   CUmodule module;
   const std::string* kernel_name;
-
-  VLOG(3) << "GetKernel on kernel " << kernel << " : " << kernel->name();
 
   if (spec.has_cuda_cubin_in_memory()) {
     absl::MutexLock lock{&in_memory_modules_mu_};
@@ -221,7 +243,7 @@ absl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
     const char* cubin = reinterpret_cast<const char*>(
         spec.cuda_cubin_in_memory().cubin_bytes().data());
     TF_RETURN_IF_ERROR(LoadModuleFromCuBin(cubin, &module));
-    kernel_to_gpu_binary_[kernel] = cubin;
+    kernel_to_gpu_binary_[cuda_kernel.get()] = cubin;
 
   } else if (spec.has_cuda_ptx_in_memory()) {
     kernel_name = &spec.cuda_ptx_in_memory().kernel_name();
@@ -240,7 +262,7 @@ absl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
 
     absl::MutexLock lock{&in_memory_modules_mu_};
     TF_RETURN_IF_ERROR(LoadModuleFromPtx(ptx, &module));
-    kernel_to_gpu_binary_[kernel] = ptx;
+    kernel_to_gpu_binary_[cuda_kernel.get()] = ptx;
 
   } else if (spec.has_in_process_symbol()) {
     kernel_name = &spec.in_process_symbol().kernel_name();
@@ -256,7 +278,7 @@ absl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
   } else {
     return absl::InternalError("No method of loading CUDA kernel provided");
   }
-
+  VLOG(3) << "LoadKernel on kernel : " << *kernel_name;
   // If we resolved kernel from a symbol pointer, there is no need to load it
   // from a module, as CUDA runtime did that automatically for us.
   if (!spec.has_in_process_symbol()) {
@@ -275,11 +297,37 @@ absl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
   cuda_kernel->set_arity(spec.arity());
 
   KernelMetadata kernel_metadata;
-  TF_RETURN_IF_ERROR(GetKernelMetadata(cuda_kernel, &kernel_metadata));
-  kernel->set_metadata(kernel_metadata);
-  kernel->set_name(*kernel_name);
-  kernel->set_args_packing(spec.kernel_args_packing());
-  return absl::OkStatus();
+  TF_RETURN_IF_ERROR(GetKernelMetadata(cuda_kernel.get(), &kernel_metadata));
+  cuda_kernel->set_metadata(kernel_metadata);
+  cuda_kernel->set_name(*kernel_name);
+  cuda_kernel->set_args_packing(spec.kernel_args_packing());
+  return std::move(cuda_kernel);
+}
+
+absl::StatusOr<std::unique_ptr<EventBasedTimer>>
+GpuExecutor::CreateEventBasedTimer(GpuStream* stream, bool use_delay_kernel) {
+  GpuSemaphore semaphore{};
+  if (!use_delay_kernel) {
+    LOG(WARNING)
+        << "Skipping the delay kernel, measurement accuracy will be reduced";
+  }
+
+  if (use_delay_kernel && ShouldLaunchDelayKernel()) {
+    TF_ASSIGN_OR_RETURN(bool is_supported, DelayKernelIsSupported(stream));
+
+    if (is_supported) {
+      TF_ASSIGN_OR_RETURN(semaphore, LaunchDelayKernel(stream));
+    } else {
+      LOG(WARNING) << "Skipping the delay kernel as it's not supported, "
+                      "measurement accuracy will be reduced.";
+    }
+  }
+  TF_ASSIGN_OR_RETURN(auto start_event, CreateGpuEvent(/*allow_timing=*/true));
+  TF_ASSIGN_OR_RETURN(auto stop_event, CreateGpuEvent(/*allow_timing=*/true));
+  TF_RETURN_IF_ERROR(start_event->Record(stream->gpu_stream()));
+  return std::make_unique<GpuTimer>(gpu_context(), std::move(start_event),
+                                    std::move(stop_event), stream,
+                                    std::move(semaphore));
 }
 
 bool GpuExecutor::UnloadGpuBinary(const void* gpu_binary) {
@@ -466,20 +514,6 @@ absl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
   const GpuKernel* cuda_kernel = AsGpuKernel(&kernel);
   CUfunction cufunc = cuda_kernel->AsGpuFunctionHandle();
 
-  // Only perform/print the occupancy check once.  Even just checking to see
-  // whether we've done an occupancy check on this kernel before isn't free
-  // (because we have to synchronize), so we only do this at -v 2+.
-  if (VLOG_IS_ON(2)) {
-    absl::MutexLock lock(&launched_kernels_mu_);
-    if (!launched_kernels_.count(cufunc)) {
-      VlogOccupancyInfo(stream->parent()->GetDeviceDescription(), kernel,
-                        thread_dims, block_dims);
-      // TODO(rspringer): Remove elements from launched_kernels_...if we ever
-      // expose a kernel/module deallocation method.
-      launched_kernels_.insert(cufunc);
-    }
-  }
-
   if (cuda_kernel->cache_config() != KernelCacheConfig::kNoPreference) {
     TF_RETURN_IF_ERROR(GpuDriver::FuncSetCacheConfig(
         cufunc, cuda_kernel->GetGpuCacheConfig()));
@@ -535,95 +569,6 @@ absl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
   return absl::InternalError("Unsupported kernel arguments type");
 }
 
-absl::Status GpuExecutor::Submit(Stream* stream,
-                                 const CommandBuffer& command_buffer) {
-  if (command_buffer.mode() != CommandBuffer::Mode::kPrimary) {
-    return absl::InvalidArgumentError(
-        "Can't submit non-primary command buffer for execution");
-  }
-
-  auto exec = GpuCommandBuffer::Cast(&command_buffer)->executable();
-  VLOG(3) << "Launch command buffer executable graph " << exec
-          << " on a stream: " << stream;
-  return GpuDriver::GraphLaunch(exec, AsGpuStreamValue(stream));
-}
-
-// This is a non-essential operation; if there's a failure, proceed without
-// logging an error. It's nearly certain that in case of failures, we'd never
-// get here in the first place; these are very low-impact routines.
-void GpuExecutor::VlogOccupancyInfo(const DeviceDescription& device_description,
-                                    const Kernel& kernel,
-                                    const ThreadDim& thread_dims,
-                                    const BlockDim& block_dims) {
-  VLOG(2) << "Computing kernel occupancy for kernel "
-          << kernel.demangled_name();
-  VLOG(2) << "Thread dimensions (" << thread_dims.x << ", " << thread_dims.y
-          << ", " << thread_dims.z << ")";
-
-  auto regs_per_thread = kernel.metadata().registers_per_thread();
-  auto smem_per_block = kernel.metadata().shared_memory_bytes();
-
-  if (!regs_per_thread && !smem_per_block) {
-    return;
-  }
-
-  const GpuKernel* cuda_kernel = AsGpuKernel(&kernel);
-  CUfunction cufunc = cuda_kernel->AsGpuFunctionHandle();
-
-  int blocks_per_sm = CalculateOccupancy(device_description, *regs_per_thread,
-                                         *smem_per_block, thread_dims, cufunc);
-  VLOG(2) << "Resident blocks per SM is " << blocks_per_sm;
-
-  int suggested_threads =
-      CompareOccupancy(&blocks_per_sm, device_description, *regs_per_thread,
-                       *smem_per_block, thread_dims, cufunc);
-  if (suggested_threads != 0) {
-    VLOG(2) << "The cuda occupancy calculator recommends using "
-            << suggested_threads
-            << " threads per block to achieve an occupancy of " << blocks_per_sm
-            << " blocks per SM.";
-  }
-}
-
-// Compute and return maximum blocks per core (occupancy) based on the
-// device description, some kernel characteristics and the number of threads per
-// block.  If unable to compute occupancy, zero is returned.
-int GpuExecutor::CalculateOccupancy(const DeviceDescription& device_description,
-                                    uint64_t registers_per_thread,
-                                    uint64_t shared_memory_per_block,
-                                    const ThreadDim& thread_dims,
-                                    CUfunction func) {
-  int suggested_blocks = 0;
-  int suggested_threads = 0;
-  CUresult err = cuOccupancyMaxPotentialBlockSize(
-      &suggested_blocks, &suggested_threads, func, nullptr,
-      shared_memory_per_block, 0);
-  CHECK_EQ(err, CUDA_SUCCESS);
-  return suggested_blocks;
-}
-
-// Compute and return the suggested thread count to achieve ideal occupancy.
-// If the provided thread dimensions match this number, zero is returned.
-int GpuExecutor::CompareOccupancy(int* initial_blocks,
-                                  const DeviceDescription& device_description,
-                                  uint64_t registers_per_thread,
-                                  uint64_t shared_memory_per_block,
-                                  const ThreadDim& thread_dims,
-                                  CUfunction func) {
-  int suggested_blocks = 0;
-  int suggested_threads = 0;
-  CUresult err = cuOccupancyMaxPotentialBlockSize(
-      &suggested_blocks, &suggested_threads, func, nullptr,
-      shared_memory_per_block, 0);
-  CHECK_EQ(err, CUDA_SUCCESS);
-  if (suggested_blocks > *initial_blocks) {
-    *initial_blocks = suggested_blocks;
-    return suggested_threads;
-  } else {
-    return 0;
-  }
-}
-
 DeviceMemoryBase GpuExecutor::Allocate(uint64_t size, int64_t memory_space) {
   if (memory_space == 1) {
     auto result = GpuCollectives::CollectiveMemoryAllocate(context_, size);
@@ -643,18 +588,45 @@ void GpuExecutor::Deallocate(DeviceMemoryBase* mem) {
   GpuDriver::DeviceDeallocate(context_, mem->opaque());
 }
 
-bool GpuExecutor::HostMemoryRegister(void* location, uint64_t size) {
-  if (location == nullptr || size == 0) {
-    LOG(WARNING) << "attempting to register null or zero-sized memory: "
-                 << location << "; size " << size;
+// CUDA allocation/registration functions are necessary because the driver
+// internally sets up buffers for DMA operations (and page locks them). There's
+// no external interface for us to otherwise control these DMA settings.
+absl::StatusOr<std::unique_ptr<MemoryAllocation>>
+GpuExecutor::HostMemoryAllocate(uint64_t size) {
+  if (numa_node_ != tsl::port::kNUMANoAffinity) {
+    auto* buffer =
+        tsl::port::NUMAMalloc(numa_node_, size, /* minimum_alignment=*/16);
+    if (buffer == nullptr && size > 0) {
+      return absl::InternalError(absl::StrFormat(
+          "Failed to allocate host memory of size %d pinned to NUMA node %d",
+          size, numa_node_));
+    }
+    if (size > 0 && !GpuDriver::HostRegister(context_, buffer, size)) {
+      return absl::InternalError(
+          absl::StrFormat("Failed to register host memory of size %d pinned to "
+                          "NUMA node %d with the GPU driver",
+                          size, numa_node_));
+    }
+    return std::make_unique<HostMemoryAllocation>(buffer, size, this);
+  } else {
+    auto* buffer = GpuDriver::HostAllocate(context_, size);
+    if (buffer == nullptr && size > 0) {
+      return absl::InternalError(
+          absl::StrFormat("Failed to allocate HostMemory of size %d", size));
+    }
+    return std::make_unique<HostMemoryAllocation>(buffer, size, this);
   }
-  VLOG(2) << "registering " << location << " size " << size;
-  return GpuDriver::HostRegister(context_, location, size);
 }
 
-bool GpuExecutor::HostMemoryUnregister(void* location) {
-  VLOG(2) << "unregistering " << location;
-  return GpuDriver::HostUnregister(context_, location);
+void GpuExecutor::HostMemoryDeallocate(void* location, uint64_t size) {
+  if (numa_node_ != tsl::port::kNUMANoAffinity) {
+    if (size > 0) {
+      GpuDriver::HostUnregister(context_, location);
+    }
+    tsl::port::NUMAFree(location, size);
+  } else {
+    GpuDriver::HostDeallocate(context_, location);
+  }
 }
 
 bool GpuExecutor::SynchronizeAllActivity() {
@@ -672,21 +644,6 @@ absl::Status GpuExecutor::SynchronousMemZero(DeviceMemoryBase* location,
                                            0x0, size);
 }
 
-absl::Status GpuExecutor::SynchronousMemSet(DeviceMemoryBase* location,
-                                            int value, uint64_t size) {
-  if (reinterpret_cast<uintptr_t>(location->opaque()) % 4 == 0 &&
-      size % 4 == 0) {
-    // cudaMemset reinterprets "value" as a uint8_t.
-    uint8_t byte_value = static_cast<uint8_t>(value);
-    uint32_t pattern = (byte_value << 24) | (byte_value << 16) |
-                       (byte_value << 8) | byte_value;
-    return GpuDriver::SynchronousMemsetUint32(
-        context_, AsCudaDevicePtr(location), pattern, size / 4);
-  }
-  return GpuDriver::SynchronousMemsetUint8(context_, AsCudaDevicePtr(location),
-                                           value, size);
-}
-
 absl::Status GpuExecutor::SynchronousMemcpy(DeviceMemoryBase* gpu_dst,
                                             const void* host_src,
                                             uint64_t size) {
@@ -701,22 +658,6 @@ absl::Status GpuExecutor::SynchronousMemcpy(void* host_dst,
                                          AsCudaDevicePtr(gpu_src), size);
 }
 
-absl::Status GpuExecutor::SynchronousMemcpyDeviceToDevice(
-    DeviceMemoryBase* gpu_dst, const DeviceMemoryBase& gpu_src, uint64_t size) {
-  return GpuDriver::SynchronousMemcpyD2D(context_, AsCudaDevicePtr(gpu_dst),
-                                         AsCudaDevicePtr(gpu_src), size);
-}
-
-absl::Status GpuExecutor::MemZero(Stream* stream, DeviceMemoryBase* location,
-                                  uint64_t size) {
-  if (reinterpret_cast<uintptr_t>(location->opaque()) % 4 == 0 &&
-      size % 4 == 0) {
-    return Memset32(stream, location, 0x0, size);
-  } else {
-    return Memset(stream, location, 0x0, size);
-  }
-}
-
 absl::Status GpuExecutor::Memset(Stream* stream, DeviceMemoryBase* location,
                                  uint8_t pattern, uint64_t size) {
   VLOG(2) << "enqueueing memset8 operation onto stream " << stream
@@ -727,117 +668,13 @@ absl::Status GpuExecutor::Memset(Stream* stream, DeviceMemoryBase* location,
                                             AsGpuStreamValue(stream));
 }
 
-absl::Status GpuExecutor::Memset32(Stream* stream, DeviceMemoryBase* location,
-                                   uint32_t pattern, uint64_t size) {
-  VLOG(2) << "enqueueing memset32 operation onto stream " << stream
-          << " at location " << location << " with size " << size
-          << " and pattern " << std::hex << pattern;
-  CHECK(reinterpret_cast<uintptr_t>(location->opaque()) % 4 == 0 &&
-        size % 4 == 0);
-  return GpuDriver::AsynchronousMemsetUint32(
-      context_, AsCudaDevicePtr(location), pattern, size / 4,
-      AsGpuStreamValue(stream));
-}
-
-absl::Status GpuExecutor::Memcpy(Stream* stream, void* host_dst,
-                                 const DeviceMemoryBase& gpu_src,
-                                 uint64_t size) {
-  bool ok = GpuDriver::AsynchronousMemcpyD2H(context_, host_dst,
-                                             AsCudaDevicePtr(gpu_src), size,
-                                             AsGpuStreamValue(stream));
-  // TODO(b/326130105): Change AsynchronousMemcpyD2H calls to return Status.
-  if (!ok) {
-    return absl::InternalError("Failed to memcpy from device to host.");
-  }
-  return absl::OkStatus();
-}
-
-absl::Status GpuExecutor::Memcpy(Stream* stream, DeviceMemoryBase* gpu_dst,
-                                 const void* host_src, uint64_t size) {
-  bool ok = GpuDriver::AsynchronousMemcpyH2D(context_, AsCudaDevicePtr(gpu_dst),
-                                             host_src, size,
-                                             AsGpuStreamValue(stream));
-  // TODO(b/326130105): Change AsynchronousMemcpyD2H calls to return Status.
-  if (!ok) {
-    return absl::InternalError("Failed to memcpy from device to host.");
-  }
-  return absl::OkStatus();
-}
-
-bool GpuExecutor::MemcpyDeviceToDevice(Stream* stream,
-                                       DeviceMemoryBase* gpu_dst,
-                                       const DeviceMemoryBase& gpu_src,
-                                       uint64_t size) {
-  return GpuDriver::AsynchronousMemcpyD2D(context_, AsCudaDevicePtr(gpu_dst),
-                                          AsCudaDevicePtr(gpu_src), size,
-                                          AsGpuStreamValue(stream));
-}
-
-bool GpuExecutor::HostCallback(Stream* stream,
-                               absl::AnyInvocable<absl::Status() &&> callback) {
-  auto callback_ptr =
-      new absl::AnyInvocable<void() &&>([cb = std::move(callback)]() mutable {
-        absl::Status s = std::move(cb)();
-        if (!s.ok()) {
-          LOG(WARNING) << "Host callback failed: " << s;
-        }
-      });
-  return GpuDriver::AddStreamCallback(context_, AsGpuStreamValue(stream),
-                                      InternalHostCallback, callback_ptr);
-}
-
-/* static */ void GpuExecutor::InternalHostCallback(void* data) {
-  auto* callback = reinterpret_cast<absl::AnyInvocable<void() &&>*>(data);
-  std::move (*callback)();
-  delete callback;
-}
-
-absl::Status GpuExecutor::AllocateEvent(Event* event) {
-  return AsGpuEvent(event)->Init();
-}
-
-absl::Status GpuExecutor::DeallocateEvent(Event* event) {
-  return AsGpuEvent(event)->Destroy();
-}
-
-absl::Status GpuExecutor::RecordEvent(Stream* stream, Event* event) {
-  return AsGpuEvent(event)->Record(AsGpuStream(stream));
-}
-
-absl::Status GpuExecutor::WaitForEvent(Stream* stream, Event* event) {
-  if (GpuDriver::WaitStreamOnEvent(context_, AsGpuStream(stream)->gpu_stream(),
-                                   AsGpuEvent(event)->gpu_event())) {
-    return absl::OkStatus();
-  } else {
-    return absl::InternalError(absl::StrFormat(
-        "error recording waiting for CUDA event on stream %p", stream));
-  }
-}
-
-absl::Status GpuExecutor::WaitForEventOnExternalStream(std::intptr_t stream,
-                                                       Event* event) {
-  if (GpuDriver::WaitStreamOnEvent(context_,
-                                   absl::bit_cast<GpuStreamHandle>(stream),
-                                   AsGpuEvent(event)->gpu_event())) {
-    return absl::OkStatus();
-  } else {
-    return absl::InternalError(
-        "error waiting for CUDA event on external stream");
-  }
-}
-
-Event::Status GpuExecutor::PollForEventStatus(Event* event) {
-  return AsGpuEvent(event)->PollForStatus();
-}
-
-bool GpuExecutor::AllocateStream(Stream* stream) {
-  absl::MutexLock l(&alive_gpu_streams_mu_);
-  bool out = AsGpuStream(stream)->Init();
-  alive_gpu_streams_[stream->platform_specific_handle().stream] = stream;
-  return out;
-}
-
 void GpuExecutor::DeallocateStream(Stream* stream) {
+  {
+    absl::MutexLock lock(&mu_);
+    if (dnn_ != nullptr) {
+      dnn_->NotifyStreamDestroyed(stream);
+    }
+  }
   GpuStream* cuda_stream = AsGpuStream(stream);
   absl::MutexLock l(&alive_gpu_streams_mu_);
   alive_gpu_streams_.erase(cuda_stream->platform_specific_stream());
@@ -847,26 +684,16 @@ void GpuExecutor::DeallocateStream(Stream* stream) {
   cuda_stream->Destroy();
 }
 
-bool GpuExecutor::CreateStreamDependency(Stream* dependent, Stream* other) {
-  CUevent other_completed_event = *AsGpuStream(other)->completed_event();
-  bool ok = GpuDriver::RecordEvent(context_, other_completed_event,
-                                   AsGpuStreamValue(other))
-                .ok();
-  if (!ok) {
-    LOG(ERROR) << "failed to record completion event; "
-                  "therefore, failed to create inter-stream dependency";
-    return false;
-  }
-
-  return GpuDriver::WaitStreamOnEvent(context_, AsGpuStreamValue(dependent),
-                                      other_completed_event);
-}
-
 absl::Status GpuExecutor::BlockHostUntilDone(Stream* stream) {
   return GpuDriver::SynchronizeStream(context_, AsGpuStreamValue(stream));
 }
 
-blas::BlasSupport* GpuExecutor::CreateBlas() {
+blas::BlasSupport* GpuExecutor::AsBlas() {
+  absl::MutexLock lock(&mu_);
+  if (blas_ != nullptr) {
+    return blas_.get();
+  }
+
   PluginRegistry* registry = PluginRegistry::Instance();
   absl::StatusOr<PluginRegistry::BlasFactory> status =
       registry->GetFactory<PluginRegistry::BlasFactory>(cuda::kCudaPlatformId);
@@ -876,10 +703,16 @@ blas::BlasSupport* GpuExecutor::CreateBlas() {
     return nullptr;
   }
 
-  return status.value()(this);
+  auto blas = status.value()(this);
+  blas_.reset(blas);
+  return blas_.get();
 }
 
-dnn::DnnSupport* GpuExecutor::CreateDnn() {
+dnn::DnnSupport* GpuExecutor::AsDnn() {
+  absl::MutexLock lock(&mu_);
+  if (dnn_ != nullptr) {
+    return dnn_.get();
+  }
   PluginRegistry* registry = PluginRegistry::Instance();
   absl::StatusOr<PluginRegistry::DnnFactory> status =
       registry->GetFactory<PluginRegistry::DnnFactory>(cuda::kCudaPlatformId);
@@ -889,10 +722,18 @@ dnn::DnnSupport* GpuExecutor::CreateDnn() {
     return nullptr;
   }
 
-  return status.value()(this);
+  auto dnn = status.value()(this);
+
+  dnn_.reset(dnn);
+
+  return dnn_.get();
 }
 
-fft::FftSupport* GpuExecutor::CreateFft() {
+fft::FftSupport* GpuExecutor::AsFft() {
+  absl::MutexLock lock(&mu_);
+  if (fft_ != nullptr) {
+    return fft_.get();
+  }
   PluginRegistry* registry = PluginRegistry::Instance();
   absl::StatusOr<PluginRegistry::FftFactory> status =
       registry->GetFactory<PluginRegistry::FftFactory>(cuda::kCudaPlatformId);
@@ -902,15 +743,18 @@ fft::FftSupport* GpuExecutor::CreateFft() {
     return nullptr;
   }
 
-  return status.value()(this);
+  auto fft = status.value()(this);
+
+  fft_.reset(fft);
+  return fft_.get();
 }
 
-bool GpuExecutor::CanEnablePeerAccessTo(StreamExecutorInterface* other) {
+bool GpuExecutor::CanEnablePeerAccessTo(StreamExecutor* other) {
   GpuExecutor* cuda_other = static_cast<GpuExecutor*>(other);
   return GpuDriver::CanEnablePeerAccess(context_, cuda_other->context_);
 }
 
-absl::Status GpuExecutor::EnablePeerAccessTo(StreamExecutorInterface* other) {
+absl::Status GpuExecutor::EnablePeerAccessTo(StreamExecutor* other) {
   GpuExecutor* cuda_other = static_cast<GpuExecutor*>(other);
   return GpuDriver::EnablePeerAccess(context_, cuda_other->context_);
 }
@@ -919,27 +763,29 @@ bool GpuExecutor::DeviceMemoryUsage(int64_t* free, int64_t* total) const {
   return GpuDriver::GetDeviceMemoryInfo(context_, free, total);
 }
 
-bool GpuExecutor::GetSymbol(const std::string& symbol_name,
-                            ModuleHandle module_handle, void** mem,
-                            size_t* bytes) {
+absl::StatusOr<DeviceMemoryBase> GpuExecutor::GetSymbol(
+    const std::string& symbol_name, ModuleHandle module_handle) {
+  void* mem = nullptr;
+  size_t bytes = 0;
   CHECK(static_cast<bool>(module_handle));
-
-  auto lookup_in_module = [&](CUmodule module) {
-    CHECK(module != nullptr);
-    return GpuDriver::GetModuleSymbol(context_, module, symbol_name.c_str(),
-                                      reinterpret_cast<CUdeviceptr*>(mem),
-                                      bytes);
-  };
 
   {  // give limited scope to mutex_lock
     absl::MutexLock lock{&in_memory_modules_mu_};
     auto it = gpu_binary_to_module_.find(module_handle.id());
     CHECK(it != gpu_binary_to_module_.end());
-    return lookup_in_module(it->second.first);
+
+    GpuModuleHandle gpu_module_handle = it->second.first;
+    CHECK(gpu_module_handle != nullptr);
+    TF_RETURN_IF_ERROR(GpuDriver::GetModuleSymbol(
+        context_, gpu_module_handle, symbol_name.c_str(),
+        reinterpret_cast<CUdeviceptr*>(&mem), &bytes));
+    return DeviceMemoryBase(mem, bytes);
   }
 
-  LOG(INFO) << "Failed to find symbol: " << symbol_name;
-  return false;
+  return absl::NotFoundError(
+      absl::StrCat("Check if module containing symbol ", symbol_name,
+                   " is loaded (module_handle = ",
+                   reinterpret_cast<uintptr_t>(module_handle.id()), ")"));
 }
 
 absl::Status FillBlockDimLimit(GpuDeviceHandle device,
@@ -956,18 +802,36 @@ absl::Status FillBlockDimLimit(GpuDeviceHandle device,
   return absl::OkStatus();
 }
 
-std::unique_ptr<internal::EventInterface>
-GpuExecutor::CreateEventImplementation() {
-  return std::unique_ptr<internal::EventInterface>(new GpuEvent(this));
+absl::StatusOr<std::unique_ptr<GpuEvent>> GpuExecutor::CreateGpuEvent(
+    bool allow_timing) {
+  auto gpu_event = std::make_unique<CudaEvent>(gpu_context());
+  TF_RETURN_IF_ERROR(gpu_event->Init(allow_timing));
+  return std::move(gpu_event);
 }
 
-std::unique_ptr<internal::StreamInterface>
-GpuExecutor::GetStreamImplementation() {
-  return std::unique_ptr<internal::StreamInterface>(new GpuStream(this));
+absl::StatusOr<std::unique_ptr<Event>> GpuExecutor::CreateEvent() {
+  return CreateGpuEvent(/*allow_timing=*/false);
 }
 
-absl::StatusOr<std::unique_ptr<Kernel>> GpuExecutor::CreateKernel() {
-  return std::make_unique<GpuKernel>(this);
+absl::StatusOr<std::unique_ptr<Stream>> GpuExecutor::CreateStream(
+    std::optional<std::variant<StreamPriority, int>> priority) {
+  auto gpu_stream = std::make_unique<GpuStream>(this);
+  if (priority.has_value()) {
+    if (std::holds_alternative<StreamPriority>(*priority)) {
+      gpu_stream->SetPriority(std::get<StreamPriority>(*priority));
+    } else {
+      gpu_stream->SetPriority(std::get<int>(*priority));
+    }
+  }
+  absl::MutexLock l(&alive_gpu_streams_mu_);
+  bool init_worked = gpu_stream->Init();
+  if (init_worked) {
+    auto platform_specific_stream = gpu_stream->platform_specific_stream();
+    alive_gpu_streams_[platform_specific_stream] = gpu_stream.get();
+    return std::move(gpu_stream);
+  } else {
+    return absl::InvalidArgumentError("Failed to initialize gpu stream");
+  }
 }
 
 absl::StatusOr<std::unique_ptr<CommandBuffer>> GpuExecutor::CreateCommandBuffer(
@@ -989,22 +853,22 @@ std::unique_ptr<GpuCommandBuffer> GpuExecutor::CreateCommandBuffer(
 GpuContext* GpuExecutor::gpu_context() { return context_; }
 
 // Attempts to read the NUMA node corresponding to the GPU device's PCI bus out
-// of SysFS. Returns -1 if it cannot.
+// of SysFS.
 //
 // For anything more complicated/prod-focused than this, you'll likely want to
-// turn to gsys' topology modeling.
-static int TryToReadNumaNode(const std::string& pci_bus_id,
-                             int device_ordinal) {
+// turn to gsys' topology modeling. nvmlDeviceGetMemoryAffinity could also be
+// used.
+static std::optional<int> TryToReadNumaNode(const std::string& pci_bus_id,
+                                            int device_ordinal) {
 #if defined(PLATFORM_WINDOWS)
   // Windows support for NUMA is not currently implemented. Return node 0.
   return 0;
 #else
   VLOG(2) << "trying to read NUMA node for device ordinal: " << device_ordinal;
-  static const int kUnknownNumaNode = -1;
 
   if (pci_bus_id.empty()) {
     LOG(INFO) << "no PCI bus ID for device ordinal: " << device_ordinal;
-    return kUnknownNumaNode;
+    return std::nullopt;
   }
 
   std::string filename =
@@ -1017,7 +881,7 @@ static int TryToReadNumaNode(const std::string& pci_bus_id,
   if (file == nullptr) {
     LOG(INFO) << "could not open file to read NUMA node: " << filename
               << "\nYour kernel may have been built without NUMA support.";
-    return kUnknownNumaNode;
+    return std::nullopt;
   }
 
   std::string content;
@@ -1028,17 +892,6 @@ static int TryToReadNumaNode(const std::string& pci_bus_id,
 
   int32_t value;
   if (absl::SimpleAtoi(content, &value)) {
-    if (value < 0) {  // See http://b/18228951 for details on this path.
-      LOG(INFO) << "successful NUMA node read from SysFS had negative value ("
-                << value
-                << "), but there must be at least one NUMA node"
-                   ", so returning NUMA node zero."
-                   " See more at "
-                   "https://github.com/torvalds/linux/blob/v6.0/Documentation/"
-                   "ABI/testing/sysfs-bus-pci#L344-L355";
-      fclose(file);
-      return 0;
-    }
     fclose(file);
     return value;
   }
@@ -1048,7 +901,7 @@ static int TryToReadNumaNode(const std::string& pci_bus_id,
       << content;
 
   fclose(file);
-  return kUnknownNumaNode;
+  return std::nullopt;
 #endif
 }
 
@@ -1080,8 +933,24 @@ GpuExecutor::CreateDeviceDescription(int device_ordinal) {
     builder.set_pci_bus_id(pci_bus_id);
 
     // Read the NUMA node corresponding to the PCI bus ID out of sysfs.
-    int numa_node = TryToReadNumaNode(pci_bus_id, device_ordinal);
-    builder.set_numa_node(numa_node);
+    std::optional<int> numa_node =
+        TryToReadNumaNode(pci_bus_id, device_ordinal);
+    if (numa_node.has_value()) {
+      if (*numa_node < 0) {  // See http://b/18228951 for details on this path.
+        LOG(INFO)
+            << "successful NUMA node read from SysFS had negative value ("
+            << *numa_node
+            << "), but there must be at least one NUMA node"
+               ", so returning NUMA node zero."
+               " See more at "
+               "https://github.com/torvalds/linux/blob/v6.0/Documentation/"
+               "ABI/testing/sysfs-bus-pci#L344-L355";
+        numa_node = 0;
+      }
+    } else {
+      numa_node = -1;
+    }
+    builder.set_numa_node(*numa_node);
   }
 
   {

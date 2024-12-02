@@ -1709,21 +1709,10 @@ func AssignVariableXlaConcatNDPaddings(value []int64) AssignVariableXlaConcatNDA
 //
 // Arguments:
 //
-//		resource: Resource variable for concatenated input tensors across all dimensions.
-//	  }
-//	  in_arg {
-//	    name: "inputs"
-//	    description: <<END
+//	resource: Resource variable for concatenated input tensors across all dimensions.
+//	inputs: Input tensor slices in row-major order to merge across all dimensions. All
 //
-// Input tensor slices in row-major order to merge across all dimensions. All
 // inputs must have the same shape.
-//
-//	}
-//	out_arg {
-//	  name: "output"
-//	  description: <<END
-//
-// Output tensor formed from merging input slices based on num_concats defined.
 //
 //	num_concats: Number of ways to merge per dimension.
 //
@@ -17247,6 +17236,42 @@ func FakeQuantWithMinMaxArgsGradientNarrowRange(value bool) FakeQuantWithMinMaxA
 //
 // Returns Backpropagated gradients below the FakeQuantWithMinMaxArgs operation:
 // `gradients * (inputs >= min && inputs <= max)`.
+//
+// ```
+// import tensorflow as tf
+//
+// # Define some sample data
+// gradients = tf.random.uniform((2, 3), minval=-5.0, maxval=5.0, dtype=tf.float32)
+// inputs = tf.random.uniform((2, 3), minval=-10.0, maxval=10.0, dtype=tf.float32)
+//
+// # Define quantization parameters (adjust as needed)
+// min_val = -2.0
+// max_val = 8.0
+// num_bits = 4  # Number of bits for quantization
+//
+// # Calculate gradients for fake quantization with specified parameters
+// output_gradients = tf.quantization.fake_quant_with_min_max_args_gradient(
+//
+//	gradients=gradients, inputs=inputs, min=min_val, max=max_val, num_bits=num_bits, narrow_range = False, name=None
+//
+// )
+//
+// # Print the original gradients and the gradients after the fake-quant operation
+// print("Original Gradients:")
+// print(gradients)
+// print("\nGradients after Fake-Quantization:")
+// print(output_gradients)
+//
+// ```
+// #Original Gradients:
+// #tf.Tensor(
+// #[[ 1.242547    3.217492    3.568469  ]
+// #[-0.55371046  0.23130894  2.608243  ]], shape=(2, 3), dtype=float32)
+//
+// #Gradients after Fake-Quantization:
+// #tf.Tensor(
+// #[[ 0.          3.217492    3.568469  ]
+// # [-0.55371046  0.23130894  2.608243  ]], shape=(2, 3), dtype=float32)
 func FakeQuantWithMinMaxArgsGradient(scope *Scope, gradients tf.Output, inputs tf.Output, optional ...FakeQuantWithMinMaxArgsGradientAttr) (backprops tf.Output) {
 	if scope.Err() != nil {
 		return
@@ -17311,6 +17336,26 @@ func FakeQuantWithMinMaxVarsNarrowRange(value bool) FakeQuantWithMinMaxVarsAttr 
 //
 // This operation has a gradient and thus allows for training `min` and `max`
 // values.
+//
+// >>> constant_input = tf.constant([[1.2, -0.3, 0.7], [2.1, 0.5, -1.0]], dtype=tf.float32)
+// >>>
+// >>> min_val = -0.5
+// >>> max_val = 0.8
+// >>> num_bits = 8
+// >>> narrow_range = False #False:for the quantization range [0; 2^num_bits - 1]
+// >>>
+// >>> quantized_data = tf.quantization.fake_quant_with_min_max_vars(
+// ...   inputs=constant_input, min=min_val, max=max_val, num_bits=num_bits, narrow_range=narrow_range
+// ... )
+// >>>
+// >>> print("Input:\n", constant_input.numpy())
+// Input:
+// [[ 1.2 -0.3  0.7]
+// [ 2.1  0.5 -1. ]]
+// >>> print("Output:\n", quantized_data.numpy())
+// Output:
+// [[ 0.8003921 -0.3007843  0.6984313]
+// [ 0.8003921  0.4996078 -0.4996078]]
 func FakeQuantWithMinMaxVars(scope *Scope, inputs tf.Output, min tf.Output, max tf.Output, optional ...FakeQuantWithMinMaxVarsAttr) (outputs tf.Output) {
 	if scope.Err() != nil {
 		return
@@ -19393,6 +19438,17 @@ func Gather(scope *Scope, params tf.Output, indices tf.Output, optional ...Gathe
 	return op.Output(0)
 }
 
+// GatherNdAttr is an optional argument to GatherNd.
+type GatherNdAttr func(optionalAttr)
+
+// GatherNdBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func GatherNdBadIndicesPolicy(value string) GatherNdAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
+}
+
 // Gather slices from `params` into a Tensor with shape specified by `indices`.
 //
 // `indices` is a K-dimensional integer tensor, best thought of as a
@@ -19417,9 +19473,15 @@ func Gather(scope *Scope, params tf.Output, indices tf.Output, optional ...Gathe
 //
 //	indices.shape[:-1] + params.shape[indices.shape[-1]:]
 //
-// Note that on CPU, if an out of bound index is found, an error is returned.
-// On GPU, if an out of bound index is found, a 0 is stored in the
-// corresponding output value.
+// If `indices` contains any out-of-bound indices, depending on
+// `bad_indices_policy`, the op will either return an error or ignore the
+// out-of-bound indices. `bad_indices_policy` can be one of the following values:
+//  1. "" or "DEFAULT": raises on CPU and ignore on GPU. This is because
+//     historically on CPU and GPU we handle errors in different ways, and for
+//     backward compatibility we keep the default behavior.
+//  2. "ERROR": raises error; GPU does not support this value.
+//  3. "IGNORE": ignore error and set the corresponding output to 0;
+//     supported on both CPU and GPU.
 //
 // Some examples below.
 //
@@ -19519,15 +19581,20 @@ func Gather(scope *Scope, params tf.Output, indices tf.Output, optional ...Gathe
 //
 // Returns Values from `params` gathered from indices given by `indices`, with
 // shape `indices.shape[:-1] + params.shape[indices.shape[-1]:]`.
-func GatherNd(scope *Scope, params tf.Output, indices tf.Output) (output tf.Output) {
+func GatherNd(scope *Scope, params tf.Output, indices tf.Output, optional ...GatherNdAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "GatherNd",
 		Input: []tf.Input{
 			params, indices,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -19573,6 +19640,10 @@ func GatherV2BatchDims(value int64) GatherV2Attr {
 // Note that on CPU, if an out of bound index is found, an error is returned.
 // On GPU, if an out of bound index is found, a 0 is stored in the
 // corresponding output value.
+//
+// Note that on TPU, if any dimension of `params` is of size 0 then the output will
+// be the expected shape filled with zeros. On CPU and GPU an error will be
+// returned.
 //
 // See also `tf.batch_gather` and `tf.gather_nd`.
 //
@@ -19865,6 +19936,22 @@ func GetSessionTensor(scope *Scope, handle tf.Output, dtype tf.DataType) (value 
 			handle,
 		},
 		Attrs: attrs,
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
+// An op returns the TPU task ID from TPU topology.
+//
+// This op is to return the TPU task ID from TPU topology.
+//
+// Returns The TPU task ID from TPU topology.
+func GetTpuTaskId(scope *Scope) (tpu_task_id tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "GetTpuTaskId",
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -36784,17 +36871,14 @@ func ReadVariableXlaSplitNDPaddings(value []int64) ReadVariableXlaSplitNDAttr {
 //
 // Arguments:
 //
-//		resource: Resource variable of input tensor to split across all dimensions.
-//	  }
-//	  out_arg {
-//	    name: "outputs"
-//	    description: <<END
+//	resource: Resource variable of input tensor to split across all dimensions.
 //
-// Output slices based on input and num_splits defined, in row-major order.
 //
 //	num_splits: Number of ways to split per dimension. Shape dimensions must be evenly
 //
 // divisible.
+//
+// Returns Output slices based on input and num_splits defined, in row-major order.
 func ReadVariableXlaSplitND(scope *Scope, resource tf.Output, T tf.DataType, N int64, num_splits []int64, optional ...ReadVariableXlaSplitNDAttr) (outputs []tf.Output) {
 	if scope.Err() != nil {
 		return
@@ -39772,6 +39856,14 @@ func ResourceScatterNdAddUseLocking(value bool) ResourceScatterNdAddAttr {
 	}
 }
 
+// ResourceScatterNdAddBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func ResourceScatterNdAddBadIndicesPolicy(value string) ResourceScatterNdAddAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
+}
+
 // Applies sparse addition to individual values or slices in a Variable.
 //
 // `ref` is a `Tensor` with rank `P` and `indices` is a `Tensor` of rank `Q`.
@@ -39855,6 +39947,14 @@ func ResourceScatterNdSubUseLocking(value bool) ResourceScatterNdSubAttr {
 	}
 }
 
+// ResourceScatterNdSubBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func ResourceScatterNdSubBadIndicesPolicy(value string) ResourceScatterNdSubAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
+}
+
 // Applies sparse subtraction to individual values or slices in a Variable.
 //
 // `ref` is a `Tensor` with rank `P` and `indices` is a `Tensor` of rank `Q`.
@@ -39935,6 +40035,14 @@ type ResourceScatterNdUpdateAttr func(optionalAttr)
 func ResourceScatterNdUpdateUseLocking(value bool) ResourceScatterNdUpdateAttr {
 	return func(m optionalAttr) {
 		m["use_locking"] = value
+	}
+}
+
+// ResourceScatterNdUpdateBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func ResourceScatterNdUpdateBadIndicesPolicy(value string) ResourceScatterNdUpdateAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
 	}
 }
 
@@ -42826,6 +42934,17 @@ func ScalarSummary(scope *Scope, tags tf.Output, values tf.Output) (summary tf.O
 	return op.Output(0)
 }
 
+// ScatterNdAttr is an optional argument to ScatterNd.
+type ScatterNdAttr func(optionalAttr)
+
+// ScatterNdBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func ScatterNdBadIndicesPolicy(value string) ScatterNdAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
+}
+
 // Scatters `updates` into a tensor of shape `shape` according to `indices`.
 //
 // Scatter sparse `updates` according to individual values at the specified
@@ -42916,8 +43035,14 @@ func ScalarSummary(scope *Scope, tags tf.Output, values tf.Output) (summary tf.O
 //	 [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
 //	 [[5, 5, 5, 5], [6, 6, 6, 6], [7, 7, 7, 7], [8, 8, 8, 8]]]
 //
-// Note that on CPU, if an out of bound index is found, an error is returned.
-// On GPU, if an out of bound index is found, the index is ignored.
+// If `indices` contains any out-of-bound indices, depending on
+// `bad_indices_policy`, the op will either return an error or ignore the
+// out-of-bound indices. `bad_indices_policy` can be one of the following values:
+//  1. "" or "DEFAULT": raises on CPU and ignore on GPU. This is because
+//     historically on CPU and GPU we handle errors in different ways, and for
+//     backward compatibility we keep the default behavior.
+//  2. "ERROR": raises error; GPU does not support this value.
+//  3. "IGNORE": ignore the bad indices; supported on both CPU and GPU.
 //
 // Arguments:
 //
@@ -42927,18 +43052,34 @@ func ScalarSummary(scope *Scope, tags tf.Output, values tf.Output) (summary tf.O
 //
 // Returns A new tensor with the given shape and updates applied according
 // to the indices.
-func ScatterNd(scope *Scope, indices tf.Output, updates tf.Output, shape tf.Output) (output tf.Output) {
+func ScatterNd(scope *Scope, indices tf.Output, updates tf.Output, shape tf.Output, optional ...ScatterNdAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "ScatterNd",
 		Input: []tf.Input{
 			indices, updates, shape,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
+}
+
+// ScatterNdNonAliasingAddAttr is an optional argument to ScatterNdNonAliasingAdd.
+type ScatterNdNonAliasingAddAttr func(optionalAttr)
+
+// ScatterNdNonAliasingAddBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func ScatterNdNonAliasingAddBadIndicesPolicy(value string) ScatterNdNonAliasingAddAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
 }
 
 // Applies sparse addition to `input` using individual values or slices
@@ -42990,15 +43131,20 @@ func ScatterNd(scope *Scope, indices tf.Output, updates tf.Output, shape tf.Outp
 //
 // Returns A `Tensor` with the same shape as `input`, containing values of `input`
 // updated with `updates`.
-func ScatterNdNonAliasingAdd(scope *Scope, input tf.Output, indices tf.Output, updates tf.Output) (output tf.Output) {
+func ScatterNdNonAliasingAdd(scope *Scope, input tf.Output, indices tf.Output, updates tf.Output, optional ...ScatterNdNonAliasingAddAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "ScatterNdNonAliasingAdd",
 		Input: []tf.Input{
 			input, indices, updates,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -54020,6 +54166,17 @@ func TensorMapStackKeys(scope *Scope, input_handle tf.Output, key_dtype tf.DataT
 	return op.Output(0)
 }
 
+// TensorScatterAddAttr is an optional argument to TensorScatterAdd.
+type TensorScatterAddAttr func(optionalAttr)
+
+// TensorScatterAddBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func TensorScatterAddBadIndicesPolicy(value string) TensorScatterAddAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
+}
+
 // Adds sparse `updates` to an existing tensor according to `indices`.
 //
 // This operation creates a new tensor by adding sparse `updates` to the passed
@@ -54080,8 +54237,14 @@ func TensorMapStackKeys(scope *Scope, input_handle tf.Output, key_dtype tf.DataT
 //	[[6, 6, 6, 6], [7, 7, 7, 7], [8, 8, 8, 8], [9, 9, 9, 9]],
 //	[[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]], dtype=int32)>
 //
-// Note: on CPU, if an out of bound index is found, an error is returned.
-// On GPU, if an out of bound index is found, the index is ignored.
+// If `indices` contains any out-of-bound indices, depending on
+// `bad_indices_policy`, the op will either return an error or ignore the
+// out-of-bound indices. `bad_indices_policy` can be one of the following values:
+//  1. "" or "DEFAULT": raises on CPU and ignore on GPU. This is because
+//     historically on CPU and GPU we handle errors in different ways, and for
+//     backward compatibility we keep the default behavior.
+//  2. "ERROR": raises error; GPU does not support this value.
+//  3. "IGNORE": ignore the bad indices; supported on both CPU and GPU.
 //
 // Arguments:
 //
@@ -54090,18 +54253,34 @@ func TensorMapStackKeys(scope *Scope, input_handle tf.Output, key_dtype tf.DataT
 //	updates: Updates to scatter into output.
 //
 // Returns A new tensor copied from tensor and updates added according to the indices.
-func TensorScatterAdd(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output) (output tf.Output) {
+func TensorScatterAdd(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output, optional ...TensorScatterAddAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "TensorScatterAdd",
 		Input: []tf.Input{
 			tensor, indices, updates,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
+}
+
+// TensorScatterMaxAttr is an optional argument to TensorScatterMax.
+type TensorScatterMaxAttr func(optionalAttr)
+
+// TensorScatterMaxBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func TensorScatterMaxBadIndicesPolicy(value string) TensorScatterMaxAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
 }
 
 // Apply a sparse update to a tensor taking the element-wise maximum.
@@ -54124,18 +54303,34 @@ func TensorScatterAdd(scope *Scope, tensor tf.Output, indices tf.Output, updates
 //	updates: Updates to scatter into output.
 //
 // Returns A new tensor copied from tensor whose values are element-wise maximum between tensor and updates according to the indices.
-func TensorScatterMax(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output) (output tf.Output) {
+func TensorScatterMax(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output, optional ...TensorScatterMaxAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "TensorScatterMax",
 		Input: []tf.Input{
 			tensor, indices, updates,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
+}
+
+// TensorScatterSubAttr is an optional argument to TensorScatterSub.
+type TensorScatterSubAttr func(optionalAttr)
+
+// TensorScatterSubBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func TensorScatterSubBadIndicesPolicy(value string) TensorScatterSubAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
 }
 
 // Subtracts sparse `updates` from an existing tensor according to `indices`.
@@ -54214,18 +54409,34 @@ func TensorScatterMax(scope *Scope, tensor tf.Output, indices tf.Output, updates
 //	updates: Updates to scatter into output.
 //
 // Returns A new tensor copied from tensor and updates subtracted according to the indices.
-func TensorScatterSub(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output) (output tf.Output) {
+func TensorScatterSub(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output, optional ...TensorScatterSubAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "TensorScatterSub",
 		Input: []tf.Input{
 			tensor, indices, updates,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
+}
+
+// TensorScatterUpdateAttr is an optional argument to TensorScatterUpdate.
+type TensorScatterUpdateAttr func(optionalAttr)
+
+// TensorScatterUpdateBadIndicesPolicy sets the optional bad_indices_policy attribute to value.
+// If not specified, defaults to ""
+func TensorScatterUpdateBadIndicesPolicy(value string) TensorScatterUpdateAttr {
+	return func(m optionalAttr) {
+		m["bad_indices_policy"] = value
+	}
 }
 
 // Scatter `updates` into an existing tensor according to `indices`.
@@ -54237,8 +54448,6 @@ func TensorScatterSub(scope *Scope, tensor tf.Output, indices tf.Output, updates
 // for the existing tensor cannot be re-used, a copy is made and updated.
 //
 // If `indices` contains duplicates, then we pick the last update for the index.
-//
-// If an out of bound index is found on CPU, an error is returned.
 //
 // **WARNING**: There are some GPU specific semantics for this operation.
 // - If an out of bound index is found, the index is ignored.
@@ -54263,6 +54472,15 @@ func TensorScatterSub(scope *Scope, tensor tf.Output, indices tf.Output, updates
 // indices.shape[:-1] + tensor.shape[indices.shape[-1]:]
 // ```
 //
+// If `indices` contains any out-of-bound indices, depending on
+// `bad_indices_policy`, the op will either return an error or ignore the
+// out-of-bound indices. `bad_indices_policy` can be one of the following values:
+//  1. "" or "DEFAULT": raises on CPU and ignore on GPU. This is because
+//     historically on CPU and GPU we handle errors in different ways, and for
+//     backward compatibility we keep the default behavior.
+//  2. "ERROR": raises error; GPU does not support this value.
+//  3. "IGNORE": ignore the bad indices; supported on both CPU and GPU.
+//
 // For usage examples see the python [tf.tensor_scatter_nd_update](
 // https://www.tensorflow.org/api_docs/python/tf/tensor_scatter_nd_update) function
 //
@@ -54274,15 +54492,20 @@ func TensorScatterSub(scope *Scope, tensor tf.Output, indices tf.Output, updates
 //
 // Returns A new tensor with the given shape and updates applied according
 // to the indices.
-func TensorScatterUpdate(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output) (output tf.Output) {
+func TensorScatterUpdate(scope *Scope, tensor tf.Output, indices tf.Output, updates tf.Output, optional ...TensorScatterUpdateAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "TensorScatterUpdate",
 		Input: []tf.Input{
 			tensor, indices, updates,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -57792,6 +58015,28 @@ func Unstage(scope *Scope, dtypes []tf.DataType, optional ...UnstageAttr) (value
 	return values
 }
 
+// An op to update the task ID and global core array.
+//
+// This op is to update the task ID and global core array.
+//
+// Arguments:
+//
+//	tpu_task_id_to_shard_id: An array of int32 that maps TPU task ID to shard ID.
+//
+// Returns the created operation.
+func UpdateTaskIdAndGlobalCoreArray(scope *Scope, tpu_task_id_to_shard_id []tf.Output) (o *tf.Operation) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "UpdateTaskIdAndGlobalCoreArray",
+		Input: []tf.Input{
+			tf.OutputList(tpu_task_id_to_shard_id),
+		},
+	}
+	return scope.AddOperation(opspec)
+}
+
 // UpperBoundAttr is an optional argument to UpperBound.
 type UpperBoundAttr func(optionalAttr)
 
@@ -58561,14 +58806,9 @@ func XlaConcatNDPaddings(value []int64) XlaConcatNDAttr {
 //
 // inputs must have the same shape.
 //
-//	}
-//	out_arg {
-//	  name: "output"
-//	  description: <<END
-//
-// Output tensor formed from merging input slices based on num_concats defined.
-//
 //	num_concats: Number of ways to merge per dimension.
+//
+// Returns Output tensor formed from merging input slices based on num_concats defined.
 func XlaConcatND(scope *Scope, inputs []tf.Output, num_concats []int64, optional ...XlaConcatNDAttr) (output tf.Output) {
 	if scope.Err() != nil {
 		return
@@ -59743,17 +59983,13 @@ func XlaSplitNDPaddings(value []int64) XlaSplitNDAttr {
 //
 // Arguments:
 //
-//		input: Input tensor to split across all dimensions.
-//	  }
-//	  out_arg {
-//	    name: "outputs"
-//	    description: <<END
-//
-// Output slices based on input and num_splits defined, in row-major order.
+//	input: Input tensor to split across all dimensions.
 //
 //	num_splits: Number of ways to split per dimension. Shape dimensions must be evenly
 //
 // divisible.
+//
+// Returns Output slices based on input and num_splits defined, in row-major order.
 func XlaSplitND(scope *Scope, input tf.Output, N int64, num_splits []int64, optional ...XlaSplitNDAttr) (outputs []tf.Output) {
 	if scope.Err() != nil {
 		return

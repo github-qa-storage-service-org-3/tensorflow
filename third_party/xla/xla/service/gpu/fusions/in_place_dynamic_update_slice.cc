@@ -21,23 +21,43 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/IRBuilder.h"
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/elemental_ir_emitter.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/launch_dimensions.h"
+#include "xla/service/gpu/model/indexing_map.h"
 #include "xla/service/llvm_ir/dynamic_update_slice_util.h"
 #include "xla/service/llvm_ir/fused_ir_emitter.h"
 #include "xla/service/llvm_ir/ir_array.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
 
 namespace xla {
 namespace gpu {
+namespace {
+
+constexpr int kDUSUpdateIndex = 1;
+
+}  // namespace
 
 LaunchDimensions InPlaceDynamicUpdateSliceFusion::launch_dimensions() const {
-  const auto& update_shape = dus_ops_.front()->operand(1)->shape();
+  const auto& update_shape = dus_ops_.front().GetOperand(1).shape();
   return CalculateLaunchDimensions(update_shape, analysis_.device_info());
+}
+
+std::optional<IndexingMap>
+InPlaceDynamicUpdateSliceFusion::ComputeThreadIdToInputIndexing(
+    int64_t root_index, int64_t hero_operand_index,
+    mlir::MLIRContext* mlir_context) const {
+  if (hero_operand_index != kDUSUpdateIndex) {
+    return std::nullopt;
+  }
+  auto launch_dims = launch_dimensions();
+  // It is guaranteed that all DUS ops have the same output shape at this point.
+  const auto& update_shape =
+      dus_ops_.front().GetOperand(kDUSUpdateIndex).shape();
+  return GetDefaultThreadIdIndexingMap(launch_dims, /*unroll_factor=*/1,
+                                       update_shape, mlir_context);
 }
 
 absl::Status InPlaceDynamicUpdateSliceFusion::EmitKernel(
@@ -52,7 +72,7 @@ absl::Status InPlaceDynamicUpdateSliceFusion::EmitKernel(
   // This condition should be enforced explicitly in the
   // 'CanEmitFusedDynamicUpdateSliceInPlaceForGpu' matcher.
   for (auto [op, output] : llvm::zip(dus_ops_, outputs)) {
-    output = output.CastToShape(op->shape(), builder);
+    output = output.CastToShape(op.shape(), builder);
   }
 
   auto* fused_computation = fusion.fused_instructions_computation();
@@ -73,7 +93,7 @@ absl::Status InPlaceDynamicUpdateSliceFusion::EmitKernel(
   dus_and_output_array.reserve(dus_ops_.size());
 
   for (auto [op, output] : llvm::zip(dus_ops_, outputs)) {
-    dus_and_output_array.push_back(std::make_pair(op, output));
+    dus_and_output_array.push_back(std::make_pair(&op.instruction(), output));
   }
 
   return llvm_ir::EmitParallelFusedDynamicUpdateSliceInPlace(

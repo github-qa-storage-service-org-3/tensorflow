@@ -19,12 +19,21 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_GPU_GPU_STREAM_H_
 #define XLA_STREAM_EXECUTOR_GPU_GPU_STREAM_H_
 
+#include <cstdint>
+#include <memory>
 #include <variant>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/log/check.h"
+#include "absl/strings/string_view.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/event.h"
+#include "xla/stream_executor/event_based_timer.h"
+#include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
 #include "xla/stream_executor/platform.h"
-#include "xla/stream_executor/stream_executor_internal.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_common.h"
 
 namespace stream_executor {
 namespace gpu {
@@ -35,29 +44,37 @@ class GpuExecutor;
 // StreamInterface.
 //
 // Thread-safe post-initialization.
-class GpuStream : public internal::StreamInterface {
+class GpuStream : public StreamCommon {
  public:
   explicit GpuStream(GpuExecutor* parent)
-      : parent_(parent), gpu_stream_(nullptr), completed_event_(nullptr) {}
+      : StreamCommon(parent),
+        parent_(parent),
+        gpu_stream_(nullptr),
+        completed_event_(nullptr) {}
 
   // Note: teardown is handled by a parent's call to DeallocateStream.
-  ~GpuStream() override = default;
-
-  void* platform_specific_stream() override { return gpu_stream_; }
-
-  // Explicitly initialize the CUDA resources associated with this stream, used
-  // by StreamExecutor::AllocateStream().
-  bool Init();
-
-  void SetPriority(StreamPriority priority) override {
-    stream_priority_ = priority;
+  ~GpuStream() override {
+    BlockHostUntilDone().IgnoreError();
+    parent()->DeallocateStream(this);
   }
 
-  void SetPriority(int priority) override { stream_priority_ = priority; }
+  // Returns a pointer to a platform specific stream associated with this object
+  // if it exists, or nullptr otherwise. This is available via Stream public API
+  // as Stream::PlatformSpecificHandle, and should not be accessed directly
+  // outside of a StreamExecutor package.
+  void* platform_specific_stream() const { return gpu_stream_; }
+
+  // Explicitly initialize the CUDA resources associated with this stream.
+  bool Init();
+
+  // Sets the priority of this stream.
+  void SetPriority(StreamPriority priority) { stream_priority_ = priority; }
+  void SetPriority(int priority) { stream_priority_ = priority; }
 
   std::variant<StreamPriority, int> priority() const override {
     return stream_priority_;
   }
+  PlatformSpecificHandle platform_specific_handle() const override;
 
   // Explicitly destroy the CUDA resources associated with this stream, used by
   // StreamExecutor::DeallocateStream().
@@ -77,13 +94,27 @@ class GpuStream : public internal::StreamInterface {
   // into the NVIDIA library causes difficult-to-understand faults).
   GpuStreamHandle gpu_stream() const {
     DCHECK(gpu_stream_ != nullptr);
-    return const_cast<GpuStreamHandle>(gpu_stream_);
+    return gpu_stream_;
   }
 
-  // TODO(timshen): Migrate away and remove this function.
-  GpuStreamHandle cuda_stream() const { return gpu_stream(); }
+  absl::Status WaitFor(Stream* other) override;
+  absl::Status WaitFor(Event* event) override;
+  absl::Status RecordEvent(Event* event) override;
+  absl::Status MemZero(DeviceMemoryBase* location, uint64_t size) override;
+  absl::Status Memset32(DeviceMemoryBase* location, uint32_t pattern,
+                        uint64_t size) override;
+  absl::Status Memcpy(DeviceMemoryBase* gpu_dst, const void* host_src,
+                      uint64_t size) override;
+  absl::Status Memcpy(void* host_dst, const DeviceMemoryBase& gpu_src,
+                      uint64_t size) override;
+  absl::Status Memcpy(DeviceMemoryBase* gpu_dst,
+                      const DeviceMemoryBase& gpu_src, uint64_t size) override;
+  absl::Status DoHostCallbackWithStatus(
+      absl::AnyInvocable<absl::Status() &&> callback) override;
 
-  GpuExecutor* parent() const { return parent_; }
+  void set_name(absl::string_view name) override;
+  absl::StatusOr<std::unique_ptr<EventBasedTimer>> CreateEventBasedTimer(
+      bool use_delay_kernel) override;
 
  private:
   GpuExecutor* parent_;         // Executor that spawned this stream.

@@ -22,20 +22,15 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "ruy/denormal.h"  // from @ruy
-#include "tensorflow/lite/allocation.h"
 #include "tensorflow/lite/c/common_internal.h"
-#include "tensorflow/lite/core/api/error_reporter.h"
 #include "tensorflow/lite/core/api/profiler.h"
 #include "tensorflow/lite/core/async/async_signature_runner.h"
 #include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/core/subgraph.h"
-#include "tensorflow/lite/external_cpu_backend_context.h"
-#include "tensorflow/lite/minimal_logging.h"
-#include "tensorflow/lite/stderr_reporter.h"
-#include "tensorflow/lite/util.h"
+#include "tensorflow/lite/interpreter_options.h"
+#include "tensorflow/lite/profiling/root_profiler.h"
 
 namespace tflite {
 
@@ -96,24 +91,15 @@ TfLiteStatus Interpreter::SetBufferHandle(int tensor_index,
                                           TfLiteBufferHandle buffer_handle,
                                           TfLiteDelegate* delegate) {
   TF_LITE_ENSURE(context_, tensor_index < tensors_size());
-  TfLiteTensor* tensor = primary_subgraph().tensor(tensor_index);
-  return SetBufferHandle(tensor, buffer_handle, delegate);
+  return primary_subgraph().SetBufferHandle(tensor_index, buffer_handle,
+                                            delegate);
 }
 
 TfLiteStatus Interpreter::SetBufferHandle(TfLiteTensor* tensor,
                                           TfLiteBufferHandle buffer_handle,
                                           TfLiteDelegate* delegate) {
-  TF_LITE_ENSURE(context_, tensor != nullptr);
-  TF_LITE_ENSURE(context_,
-                 tensor->delegate == nullptr || tensor->delegate == delegate);
-  tensor->delegate = delegate;
-  if (tensor->buffer_handle != kTfLiteNullBufferHandle) {
-    TF_LITE_ENSURE_STATUS(TfLiteDelegateFreeBufferHandleInternal(
-        context_, tensor->delegate, &(tensor->buffer_handle)));
-  }
-  tensor->buffer_handle = buffer_handle;
-
-  return kTfLiteOk;
+  return Subgraph::SetBufferHandleImpl(context_, tensor, buffer_handle,
+                                       delegate);
 }
 
 TfLiteStatus Interpreter::GetBufferHandle(int tensor_index,
