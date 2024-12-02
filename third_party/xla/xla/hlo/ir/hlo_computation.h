@@ -102,7 +102,7 @@ class HloComputation {
       return AddInstruction(std::move(instruction));
     }
 
-    StatusOr<HloInstruction*> AddParameter(
+    absl::StatusOr<HloInstruction*> AddParameter(
         std::unique_ptr<HloInstruction> parameter) {
       if (!parameter_numbers_.insert(parameter->parameter_number()).second) {
         return Internal("Duplicate parameter number %d",
@@ -357,7 +357,7 @@ class HloComputation {
   //   computation_map: a map from computation id to HloComputation*. This map
   //     must contain all computations which the newly constructed computation
   //     calls.
-  static StatusOr<std::unique_ptr<HloComputation>> CreateFromProto(
+  static absl::StatusOr<std::unique_ptr<HloComputation>> CreateFromProto(
       const HloComputationProto& proto,
       const absl::flat_hash_map<int64_t, HloComputation*>& computation_map,
       bool prohibit_empty_literal = true);
@@ -439,7 +439,7 @@ class HloComputation {
   void ForEachInstructionPostOrder(
       absl::FunctionRef<void(HloInstruction*)> func) const;
 
-  int64_t instruction_count() const { return instruction_indices_.size(); }
+  int64_t instruction_count() const { return instruction_count_; }
 
   // Creates and returns a list of the embedded computations called by this
   // computation. This includes all embedded computations called directly or
@@ -477,7 +477,7 @@ class HloComputation {
   // If `replace` is true, replace instruction with the async done instruction.
   // If `override_names` is true, the clone on `instruction` and the async op
   // created will get non-default names.
-  StatusOr<HloInstruction*> CreateAsyncInstructions(
+  absl::StatusOr<HloInstruction*> CreateAsyncInstructions(
       HloInstruction* instruction, absl::Span<const Shape> context_shapes,
       absl::string_view async_execution_thread =
           HloInstruction::kMainExecutionThread,
@@ -493,14 +493,14 @@ class HloComputation {
   // transparently. If copies_added is non-null, then the added kCopy
   // instructions will be inserted in the respective index in the given
   // ShapeTree.
-  StatusOr<HloInstruction*> DeepCopyInstruction(
+  absl::StatusOr<HloInstruction*> DeepCopyInstruction(
       HloInstruction* instruction,
       const ShapeTree<bool>* indices_to_copy = nullptr,
       ShapeTree<HloInstruction*>* copies_added = nullptr);
 
   // As above, but uses a custom function to copy the leaf nodes, which could
   // create alternative HLOs other than kCopy, or even pass-throughs.
-  StatusOr<HloInstruction*> DeepCopyInstructionWithCustomCopier(
+  absl::StatusOr<HloInstruction*> DeepCopyInstructionWithCustomCopier(
       HloInstruction* instruction,
       absl::FunctionRef<HloInstruction*(HloInstruction* leaf,
                                         const ShapeIndex& leaf_index,
@@ -577,10 +577,9 @@ class HloComputation {
   // return false. Otherwise, when the replacement happens, if |new_instruction|
   // doesn't have any sharding information it will receive the sharding
   // information of |old_instruction|, and function will return true.
-  StatusOr<bool> ReplaceInstruction(HloInstruction* old_instruction,
-                                    HloInstruction* new_instruction,
-                                    bool preserve_sharding,
-                                    bool relay_control_dependency = false);
+  absl::StatusOr<bool> ReplaceInstruction(
+      HloInstruction* old_instruction, HloInstruction* new_instruction,
+      bool preserve_sharding, bool relay_control_dependency = false);
 
   // Same as above, with preserve_sharding=false. Since this replacement always
   // happens, it returns just a Status as opposed to StatusOr<bool>
@@ -589,7 +588,7 @@ class HloComputation {
 
   // Same as ReplaceInstruction, but the new instruction can have a different
   // shape.
-  StatusOr<bool> ReplaceInstructionWithDifferentShape(
+  absl::StatusOr<bool> ReplaceInstructionWithDifferentShape(
       HloInstruction* old_instruction, HloInstruction* new_instruction,
       bool preserve_sharding, bool relay_control_dependency = false,
       bool remove_unused_operands = true);
@@ -884,7 +883,7 @@ class HloComputation {
 
   // Internal helper for recursive copying of an instruction. Creates and
   // returns a deep copy of the given instruction.
-  StatusOr<HloInstruction*> DeepCopyHelper(
+  absl::StatusOr<HloInstruction*> DeepCopyHelper(
       HloInstruction* instruction, ShapeIndex* index,
       absl::FunctionRef<HloInstruction*(HloInstruction* leaf,
                                         const ShapeIndex& leaf_index,
@@ -962,17 +961,19 @@ class HloComputation {
   HloInstruction::InstructionVector param_instructions_;
 
   // Store instructions in std::vector as they can be added and removed
-  // arbitrarily and we want a stable iteration order. Keep a map from
-  // instruction pointer to index in the vector for fast lookup.
+  // arbitrarily and we want a stable iteration order.
+  // For the reverse mapping we use HloInstruction::index_in_parent_.
   HloInstructionList instructions_;
-  absl::flat_hash_map<const HloInstruction*, int> instruction_indices_;
 
-  // Execution thread of this computation. By default, it's main thread.
-  std::string execution_thread_ = HloInstruction::kMainExecutionThread;
+  // Number of not-marked-for-deletion entries in instructions_.
+  int64_t instruction_count_;
 
   // Removed instructions are moved into to_be_deleted_ first and then
   // deallocated when Cleanup is called.
   PtrVec<HloInstruction*> to_be_deleted_;
+
+  // Execution thread of this computation. By default, it's main thread.
+  std::string execution_thread_ = HloInstruction::kMainExecutionThread;
 
   std::string name_;
 
@@ -1011,9 +1012,6 @@ Status HloComputation::AcceptOrdered(
   absl::flat_hash_set<const HloInstruction*> visited;
   for (const HloInstruction* instruction : order) {
     VLOG(3) << "Visiting ordered: " << instruction->ToString();
-    TF_RET_CHECK(instruction_indices_.contains(instruction))
-        << "Instruction " << instruction->name() << " is not in computation "
-        << name();
     TF_RET_CHECK(!visited.contains(instruction))
         << "Instruction " << instruction->name()
         << " appears more than once in order";

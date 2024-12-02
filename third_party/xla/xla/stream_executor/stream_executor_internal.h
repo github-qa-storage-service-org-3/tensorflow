@@ -121,10 +121,6 @@ class StreamExecutorInterface {
   // Default destructor for the abstract interface.
   virtual ~StreamExecutorInterface() = default;
 
-  // Returns the (transitively) wrapped executor if this executor is
-  // wrapping another executor; otherwise, returns this.
-  virtual StreamExecutorInterface* GetUnderlyingExecutor() { return this; }
-
   // See the StreamExecutor interface for comments on the same-named methods.
   virtual absl::Status Init(int device_ordinal) = 0;
 
@@ -274,22 +270,32 @@ class StreamExecutorInterface {
   virtual absl::StatusOr<std::unique_ptr<DeviceDescription>>
   CreateDeviceDescription() const = 0;
 
-  // Creates a new BlasSupport object, ownership is transferred to the caller.
+  // Gets-or-creates (creates with memoization) a BlasSupport datatype that can
+  // be used to execute BLAS routines on the current platform. This is typically
+  // not user-facing, as users will use the Stream::ThenBlas* family of routines
+  // to entrain BLAS operations. See blas.h for additional details.
   //
-  // This may return null if the BLAS initialization fails or this object does
-  // not support BLAS.
-  virtual blas::BlasSupport* CreateBlas() { return nullptr; }
+  // Ownership is not transferred to the caller -- ownership is retained by this
+  // object for memoization. This BLAS interface is also only expected to be
+  // used by a Stream for entraining calls to BLAS functionality.
+  //
+  // Returns null if there was an error initializing the BLAS support for the
+  // underlying platform.
+  virtual blas::BlasSupport* AsBlas() { return nullptr; }
 
-  // Creates a new fft::FftSupport object, ownership is transferred to the
-  // caller.
-  // This may return null if the FFT initialization fails or this object does
-  // not support FFT.
-  virtual fft::FftSupport* CreateFft() { return nullptr; }
+  // Gets-or-creates (creates with memoization) a FftSupport datatype that can
+  // be used to execute FFT routines on the current platform.
+  //
+  // Returns null if there was an error initializing the FFT support for the
+  // underlying platform.
+  virtual fft::FftSupport* AsFft() { return nullptr; }
 
-  // Creates a new DnnSupport object, ownership is transferred to the caller.
-  // This may return null if the DNN initialization fails or this object does
-  // not support Dnns.
-  virtual dnn::DnnSupport* CreateDnn() { return nullptr; }
+  // Gets-or-creates (creates with memoization) a DnnSupport datatype that can
+  // be used for neural network routines on the current platform.
+  //
+  // Returns null if there was an error initializing the DNN support for the
+  // underlying platform.
+  virtual dnn::DnnSupport* AsDnn() { return nullptr; }
 
   // Each call creates a new instance of the platform-specific implementation of
   // the corresponding interface type.
