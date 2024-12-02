@@ -24,6 +24,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
@@ -66,7 +67,7 @@ class MockArray final : public llvm::RTTIExtends<MockArray, Array> {
               (const, final));
   MOCK_METHOD(absl::StatusOr<std::unique_ptr<PjRtLayout>>, layout, (),
               (const, final));
-  MOCK_METHOD(StatusOr<std::vector<tsl::RCReference<Array>>>,
+  MOCK_METHOD(absl::StatusOr<std::vector<tsl::RCReference<Array>>>,
               DisassembleIntoSingleDeviceArrays, (ArrayCopySemantics semantics),
               (final));
   MOCK_METHOD(absl::StatusOr<tsl::RCReference<Array>>, FullyReplicatedShard,
@@ -136,6 +137,11 @@ class MockClient final : public llvm::RTTIExtends<MockClient, Client> {
       absl::StatusOr<std::shared_ptr<const xla::PjRtTopologyDescription>>,
       GetTopologyForDevices, (absl::Span<xla::ifrt::Device* const> devices),
       (const, final));
+  MOCK_METHOD(absl::StatusOr<std::unique_ptr<xla::PjRtLayout>>,
+              GetDefaultLayoutForDevice,
+              (xla::ifrt::DType dtype, absl::Span<const int64_t> dims,
+               xla::ifrt::Device* device),
+              (const, final));
   // LINT.ThenChange(mock.cc:MockClientDelegation)
 
   xla::ifrt::Client* delegated() const { return delegated_.get(); }
@@ -236,10 +242,10 @@ class MockExecutable final
               (const, final));
   MOCK_METHOD(std::optional<std::vector<OpSharding>>, GetOutputShardings, (),
               (const, final));
-  MOCK_METHOD(absl::StatusOr<std::vector<Layout>>, GetParameterLayouts, (),
-              (const, final));
-  MOCK_METHOD(absl::StatusOr<std::vector<Layout>>, GetOutputLayouts, (),
-              (const, final));
+  MOCK_METHOD(absl::StatusOr<std::vector<std::unique_ptr<Layout>>>,
+              GetParameterLayouts, (), (const, final));
+  MOCK_METHOD(absl::StatusOr<std::vector<std::unique_ptr<Layout>>>,
+              GetOutputLayouts, (), (const, final));
   MOCK_METHOD(absl::StatusOr<std::vector<std::shared_ptr<HloModule>>>,
               GetHloModules, (), (const, final));
   MOCK_METHOD(
@@ -266,10 +272,10 @@ class MockLoadedExecutable final
               (const, final));
   MOCK_METHOD(std::optional<std::vector<OpSharding>>, GetOutputShardings, (),
               (const, final));
-  MOCK_METHOD(absl::StatusOr<std::vector<Layout>>, GetParameterLayouts, (),
-              (const, final));
-  MOCK_METHOD(absl::StatusOr<std::vector<Layout>>, GetOutputLayouts, (),
-              (const, final));
+  MOCK_METHOD(absl::StatusOr<std::vector<std::unique_ptr<Layout>>>,
+              GetParameterLayouts, (), (const, final));
+  MOCK_METHOD(absl::StatusOr<std::vector<std::unique_ptr<Layout>>>,
+              GetOutputLayouts, (), (const, final));
   MOCK_METHOD(absl::StatusOr<std::vector<std::vector<absl::string_view>>>,
               GetOutputMemoryKinds, (), (const, final));
   MOCK_METHOD(absl::StatusOr<std::vector<std::shared_ptr<HloModule>>>,
