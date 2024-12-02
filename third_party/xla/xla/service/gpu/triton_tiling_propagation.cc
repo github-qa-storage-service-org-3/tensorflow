@@ -79,6 +79,15 @@ const TensorIterationSpec::DimIterationSpec* TensorIterationSpec::Find(
   return nullptr;
 }
 
+std::vector<int> TensorIterationSpec::GetDimensions() const {
+  std::vector<int> result;
+  result.reserve(dim_iteration_specs_.size());
+  for (const auto& [dim, _] : dim_iteration_specs_) {
+    result.push_back(dim);
+  }
+  return result;
+}
+
 bool TensorIterationSpec::IsPhysicallyEquivalent(
     const TensorIterationSpec& other) const {
   // Filter out trivial dims since they don't affect physical representation.
@@ -202,12 +211,6 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
   TensorIterationSpec tensor_spec;
   int64_t accumulated_stride = 1;
   int last_dim = -1;
-  auto remove_last_fragment_if_degenerate = [&tensor_spec](const int dim_idx) {
-    if (dim_idx >= 0 && !tensor_spec[dim_idx].empty() &&
-        tensor_spec[dim_idx].back().count == 1) {
-      tensor_spec[dim_idx].pop_back();
-    }
-  };
   for (int dim_order_index = 0; dim_order_index < dim_fragments.size();
        ++dim_order_index) {
     const DimensionOrder::Fragment& fragment = dim_fragments[dim_order_index];
@@ -234,7 +237,6 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
         dim_spec.back().subfragments.push_back(fragment.sliced_count());
       }
     } else {
-      remove_last_fragment_if_degenerate(last_dim);
       // Add part of the dimension.
       dim_spec.push_back(TensorIterationSpec::IterationSpecFragment{
           accumulated_stride,
@@ -247,7 +249,23 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
     accumulated_stride *= fragment.full_count();
     last_dim = fragment.dst_dim_number();
   }
-  remove_last_fragment_if_degenerate(last_dim);
+
+  // Remove degenerate fragments.
+  for (int dim_idx : tensor_spec.GetDimensions()) {
+    TensorIterationSpec::DimIterationSpec& dim_spec = tensor_spec[dim_idx];
+
+    // We should not remove the only fragment in a dimension, because if it is
+    // removed, the dimension will be removed from the TensorIterationSpec.
+    if (dim_spec.size() <= 1) continue;
+
+    TensorIterationSpec::DimIterationSpec filtered_dim_spec;
+    absl::c_copy_if(dim_spec, std::back_inserter(filtered_dim_spec),
+                    [](const TensorIterationSpec::IterationSpecFragment& f) {
+                      return f.count != 1;
+                    });
+    tensor_spec[dim_idx] = filtered_dim_spec;
+  }
+
   tensor_spec.RemoveEmptyDimensions();
   return tensor_spec;
 }
@@ -925,9 +943,24 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
     if (!std::holds_alternative<DotProperties>(properties)) {
       return "Concatenations for now are only supported in GEMM fusions.";
     }
-    auto dim = LogicalIndexOfLabeledDimension(
-        hlo.shape(), src_dim_order,
-        std::get<DotProperties>(properties).noncontracting_dimension);
+
+    int64_t noncontracting_dim_label =
+        std::get<DotProperties>(properties).noncontracting_dimension;
+    const FragmentOrders& src_dim_fragments_orders =
+        src_dim_order.DimFragmentsOrders();
+
+    auto noncontracting_dim_fragment_order_it =
+        src_dim_fragments_orders.find(noncontracting_dim_label);
+    if (noncontracting_dim_fragment_order_it !=
+        src_dim_fragments_orders.end()) {
+      if (noncontracting_dim_fragment_order_it->second.size() > 1) {
+        return "Concatenations on split non-contracting dimensions are "
+               "unsupported.";
+      }
+    }
+
+    auto dim = LogicalIndexOfLabeledDimension(hlo.shape(), src_dim_order,
+                                              noncontracting_dim_label);
     if (!dim.has_value() || dim.value() != hlo.concatenate_dimension()) {
       return "Unsupported concatenation.";
     }
@@ -1067,10 +1100,7 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
       std::move(std::get<DimOrdersAndReqs>(result_or_error));
   int fusion_level =
       hlo.GetModule()->config().debug_options().xla_gpu_triton_fusion_level();
-  if (!std::get<se::CudaComputeCapability>(gpu_version)
-           .IsAtLeast(se::CudaComputeCapability::AMPERE)) {
-    fusion_level = std::min(fusion_level, 1);
-  }
+  // TODO(ROCm): Check fusion level for ROCm.
   if (transform_direction == TransformDirection::kOutputToInput) {
     if (fusion_level < 2) {
       if (hlo.opcode() == HloOpcode::kConvert) {

@@ -1,5 +1,6 @@
 """Provides build configuration for TensorFlow."""
 
+load("@rules_java//java:defs.bzl", "java_test")
 load(
     "//tensorflow:py.default.bzl",
     _plain_py_binary = "py_binary",
@@ -68,7 +69,7 @@ load(
     "rocm_copts",
 )
 load(
-    "@local_tsl//tsl:tsl.bzl",
+    "@local_xla//xla/tsl:tsl.bzl",
     "tsl_gpu_library",
     _cc_header_only_library = "cc_header_only_library",
     _if_cuda_or_rocm = "if_cuda_or_rocm",
@@ -1883,7 +1884,7 @@ def tf_java_test(
         name = cc_library_name,
         srcs = tf_binary_additional_srcs(fullversion = True) + tf_binary_dynamic_kernel_dsos() + tf_binary_dynamic_kernel_deps(kernels),
     )
-    native.java_test(
+    java_test(
         name = name,
         srcs = srcs,
         deps = deps + [cc_library_name],
@@ -3294,7 +3295,6 @@ def tf_python_pybind_static_deps(testonly = False):
         "@local_config_cuda//:__subpackages__",
         "@local_config_git//:__subpackages__",
         "@local_config_nccl//:__subpackages__",
-        "@local_config_python//:__subpackages__",
         "@local_config_rocm//:__subpackages__",
         "@local_config_tensorrt//:__subpackages__",
         "@local_execution_config_platform//:__subpackages__",

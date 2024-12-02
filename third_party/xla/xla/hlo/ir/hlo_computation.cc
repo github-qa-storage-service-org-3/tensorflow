@@ -136,6 +136,7 @@ HloComputation::HloComputation(
     HloInstruction* root_instruction)
     : unique_id_(-1),
       root_instruction_(root_instruction),
+      instruction_count_(0),
       name_(NameUniquer::GetSanitizedName(name)) {
   param_instructions_.resize(parameter_count, nullptr);
   bool root_found = false;
@@ -228,7 +229,7 @@ HloInstruction* HloComputation::AddInstructionInternal(
   VLOG(2) << "Adding instruction " << pinst << " " << pinst->name()
           << " from computation " << name() << " opcode " << info.opcode();
   uint32_t index = instructions_.size();
-  instruction_indices_[pinst] = index;
+  instruction_count_++;
   pinst->index_in_parent_ = index;
   instructions_.push_back(info);
   return pinst;
@@ -453,9 +454,8 @@ Status HloComputation::RemoveInstructionImpl(HloInstruction* instruction,
       << "instruction " << instruction->name()
       << " has control successors and cannot be removed";
 
-  auto inst_it = instruction_indices_.find(instruction);
-  TF_RET_CHECK(inst_it != instruction_indices_.end());
-  HloInstructionInfo* info = &instructions_[inst_it->second];
+  HloInstructionInfo* info = &instructions_[instruction->index_in_parent_];
+  DCHECK_EQ(info->inst(), instruction);
   info->inst()->set_parent(nullptr);
   to_be_deleted_.push_back(info->inst());  // Takes ownership
   to_be_deleted_.back()->DetachFromOperandsAndUsers();
@@ -471,8 +471,8 @@ Status HloComputation::RemoveInstructionImpl(HloInstruction* instruction,
   // TODO(jeff): should we set info->opcode to something?
   info->inst_ =
       nullptr;  // Leave a hole: this is no longer part of "instructions()"
-  instruction_indices_.erase(inst_it);
   instruction->index_in_parent_ = ~0u;
+  instruction_count_--;
   return OkStatus();
 }
 
@@ -647,7 +647,7 @@ std::vector<HloInstruction*> HloComputation::MakeInstructionPostOrder(
                                   post_order, &dfs_stack_scratch);
     }
   }
-  CHECK_EQ(instruction_indices_.size(), post_order.size())
+  CHECK_EQ(instruction_count(), post_order.size())
       << "number of instructions does not match post order size";
   return post_order;
 }
@@ -917,7 +917,7 @@ HloComputationProto HloComputation::ToProto() const {
   return proto;
 }
 
-/* static */ StatusOr<std::unique_ptr<HloComputation>>
+/* static */ absl::StatusOr<std::unique_ptr<HloComputation>>
 HloComputation::CreateFromProto(
     const HloComputationProto& proto,
     const absl::flat_hash_map<int64_t, HloComputation*>& computation_map,
@@ -1026,7 +1026,7 @@ HloInstruction* HloComputation::CreateCallInstruction(
   return call_instruction;
 }
 
-StatusOr<HloInstruction*> HloComputation::CreateAsyncInstructions(
+absl::StatusOr<HloInstruction*> HloComputation::CreateAsyncInstructions(
     HloInstruction* instruction, absl::Span<const Shape> context_shapes,
     absl::string_view async_execution_thread, bool replace,
     bool override_names) {
@@ -1103,7 +1103,7 @@ StatusOr<HloInstruction*> HloComputation::CreateAsyncInstructions(
   return async_done;
 }
 
-StatusOr<HloInstruction*> HloComputation::DeepCopyHelper(
+absl::StatusOr<HloInstruction*> HloComputation::DeepCopyHelper(
     HloInstruction* instruction, ShapeIndex* index,
     absl::FunctionRef<HloInstruction*(HloInstruction* leaf,
                                       const ShapeIndex& leaf_index,
@@ -1137,7 +1137,7 @@ StatusOr<HloInstruction*> HloComputation::DeepCopyHelper(
   return copy_leaf(instruction, *index, this);
 }
 
-StatusOr<HloInstruction*> HloComputation::DeepCopyInstruction(
+absl::StatusOr<HloInstruction*> HloComputation::DeepCopyInstruction(
     HloInstruction* instruction, const ShapeTree<bool>* indices_to_copy,
     ShapeTree<HloInstruction*>* copies_added) {
   if (instruction->parent() != this) {
@@ -1173,7 +1173,8 @@ StatusOr<HloInstruction*> HloComputation::DeepCopyInstruction(
   return DeepCopyHelper(instruction, &index, copy_leaf);
 }
 
-StatusOr<HloInstruction*> HloComputation::DeepCopyInstructionWithCustomCopier(
+absl::StatusOr<HloInstruction*>
+HloComputation::DeepCopyInstructionWithCustomCopier(
     HloInstruction* instruction,
     absl::FunctionRef<HloInstruction*(HloInstruction* leaf,
                                       const ShapeIndex& leaf_index,
@@ -1276,7 +1277,7 @@ Status HloComputation::ReplaceWithNewEntryComputationParameter(
                                                  std::move(new_instruction)));
 }
 
-StatusOr<bool> HloComputation::ReplaceInstruction(
+absl::StatusOr<bool> HloComputation::ReplaceInstruction(
     HloInstruction* old_instruction, HloInstruction* new_instruction,
     bool preserve_sharding, bool relay_control_dependency) {
   TF_RET_CHECK(
@@ -1297,7 +1298,7 @@ Status HloComputation::ReplaceInstruction(HloInstruction* old_instruction,
   return OkStatus();
 }
 
-StatusOr<bool> HloComputation::ReplaceInstructionWithDifferentShape(
+absl::StatusOr<bool> HloComputation::ReplaceInstructionWithDifferentShape(
     HloInstruction* old_instruction, HloInstruction* new_instruction,
     bool preserve_sharding, bool relay_control_dependency,
     bool remove_unused_operands) {
