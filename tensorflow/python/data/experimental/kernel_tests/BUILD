@@ -65,6 +65,7 @@ tf_py_strict_test(
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/data/experimental/ops:cardinality",
         "//tensorflow/python/data/experimental/ops:distribute",
+        "//tensorflow/python/data/experimental/ops:global_shuffle_op",
         "//tensorflow/python/data/experimental/ops:interleave_ops",
         "//tensorflow/python/data/experimental/ops:readers",
         "//tensorflow/python/data/experimental/ops:testing",
@@ -174,9 +175,12 @@ tf_py_strict_test(
 tf_py_strict_test(
     name = "from_list_test",
     size = "small",
+    timeout = "moderate",
     srcs = ["from_list_test.py"],
+    shard_count = 4,
     deps = [
         "//tensorflow/python/data/experimental/ops:from_list",
+        "//tensorflow/python/data/experimental/ops:global_shuffle_op",
         "//tensorflow/python/data/experimental/ops:random_access",
         "//tensorflow/python/data/kernel_tests:checkpoint_test_base",
         "//tensorflow/python/data/kernel_tests:test_base",
