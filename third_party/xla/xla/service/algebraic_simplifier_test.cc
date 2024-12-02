@@ -3100,7 +3100,6 @@ TEST_F(AlgebraicSimplifierTest, DoNotRemoveUnaryConcatenateWithCtrlDep) {
 
   EXPECT_THAT(computation->root_instruction(),
               GmockMatch(m::Concatenate(m::Parameter(0))));
-  LOG(ERROR) << "module: " << m->ToString();
 
   AlgebraicSimplifier simplifier(default_options_);
   ASSERT_FALSE(simplifier.Run(m.get()).value());
@@ -5663,7 +5662,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeToConcatSlice) {
 HloModule TransposeReshapeDepthToSpace
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,2,64] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,1,3,2,4}
   ROOT %reshape.2 = f32[8,28,14,64] reshape(%transpose)
@@ -5690,7 +5689,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeTooLarge) {
 HloModule TransposeReshapeDepthToSpaceBig
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,8,16] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,1,3,2,4}
   ROOT %reshape.2 = f32[8,112,14,16] reshape(%transpose)
@@ -5710,7 +5709,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeNotDepthToSpace) {
 HloModule TransposeReshapeDepthToSpace
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,2,64] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,3,1,2,4}
   ROOT %reshape.2 = f32[8,28,14,64] reshape(%transpose)
@@ -6434,6 +6433,11 @@ TEST_F(AlgebraicSimplifierTest, TransposeOfNonCanonicalBatchDotCantSimplify) {
 }
 
 TEST_F(AlgebraicSimplifierTest, DynamicSliceOfTranspose) {
+  // This test is without layouts so we have to set the verifier to be layout
+  // insensitive.
+  verifier_layout_sensitive_ = false;
+  instruction_can_change_layout_func_ = {};
+
   const char* hlo_string = R"(
     HloModule module
 
@@ -7959,6 +7963,7 @@ TEST_F(AlgebraicSimplifierTest, DividedByConstantInstructionWithoutLayout) {
   // This test is without layouts so we have to set the verifier to be layout
   // insensitive.
   verifier_layout_sensitive_ = false;
+  instruction_can_change_layout_func_ = {};
 
   Shape shape = ShapeUtil::MakeShape(F32, {});
   shape.clear_layout();
@@ -10811,6 +10816,36 @@ TEST_F(AlgebraicSimplifierTest, SparseDotTranspose) {
   auto descriptor = dot->sparsity().front();
   EXPECT_EQ(descriptor.index(), 1);
   EXPECT_EQ(descriptor.dimension(), 1);
+}
+
+TEST_F(AlgebraicSimplifierTest, BroadcastToTranspose) {
+  const std::string hlo_string = R"(
+  HloModule broadcast_module
+    ENTRY %main {
+      input = f32[6,4,3] parameter(0)
+      ROOT output = f32[4,3,6] broadcast(input), dimensions={2,0,1}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(hlo_string));
+  EXPECT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  HloInstruction* root = m->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Transpose(m::Parameter(0))));
+  EXPECT_EQ(root->dimensions(), std::vector<int64_t>({1, 2, 0}));
+}
+
+TEST_F(AlgebraicSimplifierTest, BroadcastToTranspose2) {
+  const std::string hlo_string = R"(
+  HloModule broadcast_module
+    ENTRY %main {
+      input = f32[6,4,3] parameter(0)
+      ROOT output = f32[4,6,3] broadcast(input), dimensions={1,0,2}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(hlo_string));
+  EXPECT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  HloInstruction* root = m->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Transpose(m::Parameter(0))));
+  EXPECT_EQ(root->dimensions(), std::vector<int64_t>({1, 0, 2}));
 }
 
 }  // namespace

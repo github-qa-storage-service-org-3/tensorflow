@@ -1186,7 +1186,6 @@ Status AlgebraicSimplifierVisitor::HandleBitcast(HloInstruction* bitcast) {
     VLOG(3) << bitcast->ToString() << " has control predecessors, skipping.";
     return OkStatus();
   }
-
   // If a bitcast feeds a bitcast, make it a single bitcast.
   // Make sure the whole chain of bitcasts is optimized.
   if (bitcast->operand(0)->opcode() == HloOpcode::kBitcast) {
@@ -1201,8 +1200,13 @@ Status AlgebraicSimplifierVisitor::HandleBitcast(HloInstruction* bitcast) {
     bitcast = new_bitcast_ptr;
   }
 
-  // All bitcasts can be eliminated (assuming layout constraints are satisfied).
   HloInstruction* new_bitcast = bitcast->mutable_operand(0);
+  // Below this point avoid bitcast optimizations with mismatched data types.
+  if (!ShapeUtil::SameElementType(bitcast->shape(), new_bitcast->shape())) {
+    return OkStatus();
+  }
+
+  // All bitcasts can be eliminated (assuming layout constraints are satisfied).
   if (ReplaceInstructionIfCompatible(bitcast, new_bitcast)) {
     bitcast = new_bitcast;
   }
@@ -4562,16 +4566,15 @@ Status AlgebraicSimplifierVisitor::HandleBroadcast(HloInstruction* broadcast) {
         broadcast, HloInstruction::CreateReshape(broadcast->shape(), operand));
   }
 
-  // A degenerate broadcast that has the same input and output rank can be
-  // converted into a transpose.
+  // A broadcast that has the same input and output rank can be converted into a
+  // transpose with the inverse of broadcast's dimensions.
   if (broadcast->shape().rank() == operand->shape().rank() &&
       ShapeUtil::ElementsIn(broadcast->shape()) ==
           ShapeUtil::ElementsIn(operand->shape())) {
-    VLOG(10) << "transform broadcast(X) -> transpose(X) where "
-                "n(broadcast(X)) == n(X)";
     return ReplaceWithNewInstruction(
-        broadcast,
-        HloInstruction::CreateTranspose(broadcast->shape(), operand, dims));
+        broadcast, HloInstruction::CreateTranspose(
+                       broadcast->shape(), operand,
+                       InversePermutation(broadcast->dimensions())));
   }
 
   // A broadcast of a reshape which merely inserts 1-sized dimensions can
@@ -8082,7 +8085,8 @@ Status AlgebraicSimplifierVisitor::HandleTranspose(HloInstruction* transpose) {
   // Replace reshape of a transpose of a reshape with concatenated slicing if
   // the reshape/transpose combination can be interpreted as a space-to-depth
   // transformation.
-  if (operand->opcode() == HloOpcode::kReshape &&
+  if (!options_.is_layout_sensitive() &&
+      operand->opcode() == HloOpcode::kReshape &&
       transpose->user_count() == 1 &&
       HloOpcode::kReshape == transpose->users()[0]->opcode()) {
     VLOG(2) << "trying depth-to-space transform";
