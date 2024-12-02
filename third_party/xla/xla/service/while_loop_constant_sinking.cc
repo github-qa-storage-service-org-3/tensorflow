@@ -28,10 +28,9 @@ namespace {
 // `while_body_root` (which must be a tuple instruction) at index `tuple_index`.
 // This utility helps us replace an instruction in the while body with a
 // constant while still keeping it trivially loop invariant.
-Status ReplaceUsesWhileKeepingLoopInvariance(HloInstruction* old_instr,
-                                             HloInstruction* new_instr,
-                                             HloInstruction* while_body_root,
-                                             int64_t tuple_index) {
+absl::Status ReplaceUsesWhileKeepingLoopInvariance(
+    HloInstruction* old_instr, HloInstruction* new_instr,
+    HloInstruction* while_body_root, int64_t tuple_index) {
   CHECK_EQ(while_body_root->opcode(), HloOpcode::kTuple);
 
   std::vector<HloInstruction*> users;
@@ -47,7 +46,7 @@ Status ReplaceUsesWhileKeepingLoopInvariance(HloInstruction* old_instr,
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 HloInstruction* CloneHelper(const HloInstruction* instruction,
@@ -65,7 +64,7 @@ HloInstruction* CloneHelper(const HloInstruction* instruction,
 
 }  // namespace
 
-StatusOr<bool> WhileLoopConstantSinking::TrySinkingConstantsIntoWhileLoop(
+absl::StatusOr<bool> WhileLoopConstantSinking::TrySinkingConstantsIntoWhileLoop(
     HloInstruction* while_instr) {
   HloComputation* while_cond = while_instr->while_condition();
   HloComputation* while_body = while_instr->while_body();
@@ -133,7 +132,7 @@ StatusOr<bool> WhileLoopConstantSinking::TrySinkingConstantsIntoWhileLoop(
   return changed;
 }
 
-StatusOr<bool> WhileLoopConstantSinking::Run(
+absl::StatusOr<bool> WhileLoopConstantSinking::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   VLOG(2) << "HLO module before WhileLoopConstantSinking:";

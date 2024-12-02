@@ -41,6 +41,8 @@ TF_CONST_INIT extern const absl::string_view kGpuPlanePrefix;
 TF_CONST_INIT extern const absl::string_view kTpuPlanePrefix;
 // Regex for XPlanes that contain TensorCore planes.
 TF_CONST_INIT extern const char kTpuPlaneRegex[];
+// Regex for XPlanes that contain TPU Core planes.
+TF_CONST_INIT extern const char kSparseCorePlaneRegex[];
 // Name prefix of XPlane that contains custom device events.
 TF_CONST_INIT extern const absl::string_view kCustomPlanePrefix;
 // Name prefix of XPlane that contains TPU non-core events such as HBM, ICI etc.
@@ -72,6 +74,7 @@ TF_CONST_INIT extern const absl::string_view kXlaAsyncOpLineName;
 TF_CONST_INIT extern const absl::string_view kKernelLaunchLineName;
 TF_CONST_INIT extern const absl::string_view kSourceLineName;
 TF_CONST_INIT extern const absl::string_view kCounterEventsLineName;
+TF_CONST_INIT extern const absl::string_view kHostOffloadOpLineName;
 
 // GPU device vendors.
 TF_CONST_INIT extern const absl::string_view kDeviceVendorNvidia;
@@ -319,7 +322,9 @@ enum StatType {
   kEdgeTpuModelProfileInfo,
   kEdgeTpuMlir,
   kDroppedTraces,
-  kLastStatType = kDroppedTraces,
+  kCudaGraphId,
+  kCudaGraphDetails,
+  kLastStatType = kCudaGraphDetails,
 };
 
 enum MegaScaleStatType : uint8_t {
@@ -343,7 +348,8 @@ enum MegaScaleStatType : uint8_t {
   kMegaScaleLaunchId,
   kMegaScaleLoopIteration,
   kMegaScaleGraphProtos,
-  kLastMegaScaleStatType = kMegaScaleGraphProtos,
+  kMegaScaleNetworkTransportLatency,
+  kLastMegaScaleStatType = kMegaScaleNetworkTransportLatency,
 };
 
 enum TaskEnvStatType {
@@ -502,10 +508,20 @@ TF_CONST_INIT extern const absl::string_view kMegaScaleH2DTransferStart;
 TF_CONST_INIT extern const absl::string_view kMegaScaleH2DTransferFinished;
 TF_CONST_INIT extern const absl::string_view kMegaScaleReductionStart;
 TF_CONST_INIT extern const absl::string_view kMegaScaleReductionFinished;
+TF_CONST_INIT extern const absl::string_view kMegaScaleCompressionStart;
+TF_CONST_INIT extern const absl::string_view kMegaScaleCompressionFinished;
+TF_CONST_INIT extern const absl::string_view kMegaScaleDecompressionStart;
+TF_CONST_INIT extern const absl::string_view kMegaScaleDecompressionFinished;
 TF_CONST_INIT extern const char kXProfMetadataKey[];
 TF_CONST_INIT extern const char kXProfMetadataFlow[];
 TF_CONST_INIT extern const char kXProfMetadataTransfers[];
 TF_CONST_INIT extern const char kXProfMetadataBufferSize[];
+
+// String constants for threadpool_listener events
+TF_CONST_INIT extern const absl::string_view kThreadpoolListenerRecord;
+TF_CONST_INIT extern const absl::string_view kThreadpoolListenerStartRegion;
+TF_CONST_INIT extern const absl::string_view kThreadpoolListenerStopRegion;
+TF_CONST_INIT extern const absl::string_view kThreadpoolListenerRegion;
 
 }  // namespace profiler
 }  // namespace tsl

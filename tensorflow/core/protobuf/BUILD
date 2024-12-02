@@ -1,6 +1,6 @@
 # copybara:uncomment_begin(oss-unused)
-# load("//net/grpc/go/build_defs:go_grpc_library.bzl", "go_grpc_library")
 # load("//net/grpc:cc_grpc_library.bzl", "cc_grpc_library")
+# load("//net/grpc/go/build_defs:go_grpc_library.bzl", "go_grpc_library")
 # copybara:uncomment_end
 
 # For platform specific build config
@@ -210,16 +210,17 @@ tf_proto_library(
     protodeps = [
         ":error_codes_proto_impl",
         "//tensorflow/core/framework:protos_all",
-        "@local_tsl//tsl/protobuf:bfc_memory_map_proto",
+        "@local_xla//xla/tsl/protobuf:bfc_memory_map_proto",
         "@local_tsl//tsl/protobuf:coordination_config_proto",
         "@local_tsl//tsl/protobuf:rpc_options_proto",
         "@local_tsl//tsl/protobuf:status_proto",
     ],
     tags = ["alt_dep=//third_party/tensorflow/core:protos_all"],
+    visibility = ["//visibility:public"],
     exports = [
-        "@local_tsl//tsl/protobuf:bfc_memory_map_proto",
         "@local_tsl//tsl/protobuf:rpc_options_proto",
         "@local_tsl//tsl/protobuf:status_proto",
+        "@local_xla//xla/tsl/protobuf:bfc_memory_map_proto",
     ],
 )
 
