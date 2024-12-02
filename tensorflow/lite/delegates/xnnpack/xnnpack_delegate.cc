@@ -24,6 +24,7 @@ limitations under the License.
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -708,6 +709,7 @@ class Delegate {
 
   TfLiteXNNPackDelegateOptions options_{};
   VariableHolder variable_holder_;
+  std::mutex workspace_mutex_;
 };
 
 class Subgraph {
@@ -1116,7 +1118,8 @@ class Subgraph {
   }
 
   TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node,
-                       bool enable_subgraph_reshaping) {
+                       bool enable_subgraph_reshaping, Delegate* delegate) {
+    std::lock_guard<std::mutex> lock(delegate->workspace_mutex_);
     if (enable_subgraph_reshaping) {
       xnn_status status = xnn_status_invalid_state;
       for (int i = 0; i < inputs_.size(); ++i) {
@@ -1172,7 +1175,9 @@ class Subgraph {
     }
   }
 
-  TfLiteStatus Invoke(TfLiteContext* context, bool enable_subgraph_reshaping) {
+  TfLiteStatus Invoke(TfLiteContext* context, bool enable_subgraph_reshaping,
+                      Delegate* delegate) {
+    std::lock_guard<std::mutex> lock(delegate->workspace_mutex_);
     bool any_pointers_changed = false;
     for (std::pair<int, void*> io_info : externals_) {
       const TfLiteTensor& tensor = context->tensors[io_info.first];
@@ -2789,6 +2794,9 @@ class Subgraph {
       }
       case kTfLiteBuiltinRound:
         return VisitRoundNode(subgraph, delegate, logging_context, node_index,
+                              node, context->tensors, input_output_tensors);
+      case kTfLiteBuiltinRsqrt:
+        return VisitRsqrtNode(subgraph, delegate, logging_context, node_index,
                               node, context->tensors, input_output_tensors);
       case kTfLiteBuiltinSlice:
         return VisitSliceNode(subgraph, delegate, logging_context, node_index,
@@ -6127,6 +6135,38 @@ class Subgraph {
     return kTfLiteOk;
   }
 
+  static TfLiteStatus VisitRsqrtNode(
+      xnn_subgraph_t subgraph, const Delegate& delegate,
+      TfLiteContext* logging_context, int node_index, TfLiteNode* node,
+      const TfLiteTensor* tensors,
+      const std::unordered_map<int, uint32_t>& input_output_tensors) {
+    TF_LITE_ENSURE_STATUS(CheckNumInputsAndOutputs(
+        logging_context, node, 1, 1, BuiltinOperator_RSQRT, node_index));
+
+    const TfLiteTensor& input_tensor = tensors[node->inputs->data[0]];
+    TF_LITE_ENSURE_STATUS(CheckTensorFloat32Type(
+        logging_context, input_tensor, node->inputs->data[0], node_index));
+
+    const TfLiteTensor& output_tensor = tensors[node->outputs->data[0]];
+    TF_LITE_ENSURE_STATUS(CheckTensorFloat32Type(
+        logging_context, output_tensor, node->outputs->data[0], node_index));
+
+    if (subgraph != nullptr) {
+      const xnn_status status = xnn_define_reciprocal_square_root(
+          subgraph, /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+          /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
+          /*flags=*/0);
+      if (status != xnn_status_success) {
+        TF_LITE_KERNEL_LOG(logging_context, "failed to delegate %s node #%d",
+                           EnumNameBuiltinOperator(BuiltinOperator_RSQRT),
+                           node_index);
+        return kTfLiteError;
+      }
+    }
+
+    return kTfLiteOk;
+  }
+
   static TfLiteStatus VisitSquaredDifferenceNode(
       xnn_subgraph_t subgraph, const Delegate& delegate,
       TfLiteContext* logging_context, int node_index, TfLiteNode* node,
@@ -6625,8 +6665,10 @@ class Subgraph {
     return enable_subgraph_reshaping_;
   }
 
+  inline Delegate* GetDelegate() const { return delegate_; }
+
  private:
-  Subgraph(const Delegate& delegate, xnn_runtime_t runtime,
+  Subgraph(Delegate& delegate, xnn_runtime_t runtime,
            const std::unordered_set<int>& externals, std::vector<int>& inputs,
            std::vector<int>& outputs,
            std::unordered_map<int, uint32_t>& tflite_tensor_to_xnnpack)
@@ -6639,6 +6681,7 @@ class Subgraph {
     outputs_ = outputs;
     has_variables_ = !delegate.GetAllVariableTensors().empty();
     enable_subgraph_reshaping_ = delegate.enable_subgraph_reshaping();
+    delegate_ = &delegate;
   }
 
   // XNNPACK Runtime (subgraph + workspace) with smart-pointer for lifetime
@@ -6666,6 +6709,7 @@ class Subgraph {
   bool has_variables_ = false;
   bool variables_set_up_ = false;
   bool enable_subgraph_reshaping_ = false;
+  Delegate* delegate_;
 };
 
 TfLiteIntArray* Delegate::PrepareOpsToDelegate(TfLiteContext* context) {
@@ -7074,7 +7118,8 @@ TfLiteStatus SubgraphPrepare(TfLiteContext* context, TfLiteNode* node) {
 
   Subgraph* subgraph = static_cast<Subgraph*>(node->user_data);
   return static_cast<Subgraph*>(node->user_data)
-      ->Prepare(context, node, subgraph->EnableSubgraphReshaping());
+      ->Prepare(context, node, subgraph->EnableSubgraphReshaping(),
+                subgraph->GetDelegate());
 }
 
 TfLiteStatus SubgraphInvoke(TfLiteContext* context, TfLiteNode* node) {
@@ -7084,7 +7129,8 @@ TfLiteStatus SubgraphInvoke(TfLiteContext* context, TfLiteNode* node) {
 
   Subgraph* subgraph = static_cast<Subgraph*>(node->user_data);
   return static_cast<Subgraph*>(node->user_data)
-      ->Invoke(context, subgraph->EnableSubgraphReshaping());
+      ->Invoke(context, subgraph->EnableSubgraphReshaping(),
+               subgraph->GetDelegate());
 }
 
 void SubgraphFree(TfLiteContext* context, void* buffer) {
