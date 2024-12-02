@@ -60,6 +60,8 @@ class CuptiInterface {
       CUpti_BuffersCallbackRequestFunc func_buffer_requested,
       CUpti_BuffersCallbackCompleteFunc func_buffer_completed) = 0;
 
+  virtual CUptiResult ActivityUsePerThreadBuffer() = 0;
+
   virtual CUptiResult GetDeviceId(CUcontext context, uint32_t* deviceId) = 0;
 
   virtual CUptiResult GetTimestamp(uint64_t* timestamp) = 0;
@@ -89,6 +91,11 @@ class CuptiInterface {
   virtual CUptiResult GetStreamIdEx(CUcontext context, CUstream stream,
                                     uint8_t per_thread_stream,
                                     uint32_t* stream_id) = 0;
+
+  virtual CUptiResult GetGraphId(CUgraph graph, uint32_t* graph_id) = 0;
+
+  virtual CUptiResult GetGraphExecId(CUgraphExec graph_exec,
+                                     uint32_t* graph_id) = 0;
 
   // Interface maintenance functions. Not directly related to CUPTI, but
   // required for implementing an error resilient layer over CUPTI API.

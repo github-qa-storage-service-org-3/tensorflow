@@ -49,8 +49,7 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-MlirEmitterTestBaseImpl::MlirEmitterTestBaseImpl()
-    : indexing_context_(&mlir_context_) {
+MlirEmitterTestBaseImpl::MlirEmitterTestBaseImpl() {
   // clang-format off
   mlir_context_.loadDialect<
       mlir::affine::AffineDialect,
@@ -74,7 +73,7 @@ MlirEmitterTestBaseImpl::MlirEmitterTestBaseImpl()
 
 DebugOptions MlirEmitterTestBaseImpl::GetDebugOptionsForTest() {
   auto debug_options = HloTestBase::GetDebugOptionsForTest();
-  debug_options.set_xla_gpu_enable_mlir_emitters(true);
+  debug_options.set_xla_gpu_mlir_emitter_level(4);
   return debug_options;
 }
 

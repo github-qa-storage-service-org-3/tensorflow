@@ -22,13 +22,12 @@ limitations under the License.
 #include "xla/client/xla_builder.h"
 #include "xla/shape.h"
 #include "xla/xla_data.pb.h"
-#include "tensorflow/core/platform/statusor.h"
 #include "tsl/platform/logging.h"  // IWYU pragma: keep
 
 namespace tensorflow {
 namespace tpu {
 
-StatusOr<xla::OpSharding> SpmdShardingAnnotationOnFirstDim(
+absl::StatusOr<xla::OpSharding> SpmdShardingAnnotationOnFirstDim(
     const xla::Shape& shape, int core_count_per_replica,
     xla::XlaBuilder* builder) {
   if (!shape.IsArray()) {

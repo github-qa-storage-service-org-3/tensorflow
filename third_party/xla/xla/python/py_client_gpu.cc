@@ -13,10 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <string_view>
 #include <vector>
 
 #include "absl/base/casts.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
+#include "xla/service/custom_call_status.h"
 #include "tsl/platform/errors.h"
 #if TENSORFLOW_USE_ROCM
 #include "rocm/include/hip/hip_runtime.h"
@@ -26,6 +29,7 @@ limitations under the License.
 #endif
 #include "third_party/nanobind/include/nanobind/nanobind.h"
 #include "xla/pjrt/exceptions.h"
+#include "xla/pjrt/host_callback.h"
 #include "xla/primitive_util.h"
 #include "xla/python/callback.h"
 #include "xla/python/nb_numpy.h"
@@ -97,9 +101,13 @@ void XlaPythonGpuCallback(gpuStreamHandle stream, void** buffers,
     array.attr("flags").attr("writeable") = nb::bool_(false);
     PyTuple_SET_ITEM(host_input_arrays.ptr(), i, array.inc_ref().ptr());
   }
-  std::optional<nb::tuple> maybe_result_tuple =
-      callback->Call(host_input_arrays, status);
-  if (!maybe_result_tuple) {
+  EnterHostCallback();
+  absl::StatusOr<nb::tuple> maybe_result_tuple =
+      callback->Call(host_input_arrays);
+  LeaveHostCallback();
+  if (!maybe_result_tuple.ok()) {
+    std::string_view msg = maybe_result_tuple.status().message();
+    XlaCustomCallStatusSetFailure(status, msg.data(), msg.length());
     return;
   }
   nb::tuple result_tuple = maybe_result_tuple.value();
@@ -129,7 +137,7 @@ void XlaPythonGpuCallback(gpuStreamHandle stream, void** buffers,
       options.dims = dims;
       options.permutation = result.reversed_layout;
       options.input_layout = xla::TransposePlan::Striding{strides};
-      xla::StatusOr<std::shared_ptr<xla::TransposePlan>> plan =
+      absl::StatusOr<std::shared_ptr<xla::TransposePlan>> plan =
           callback->transpose_cache().GetOrCreate(options);
       if (!plan.ok()) {
         throw xla::XlaRuntimeError(plan.status().ToString());

@@ -8,6 +8,13 @@ load("@bazel_skylib//lib:versions.bzl", "versions")
 load("@bazel_tools//tools/build_defs/repo:java.bzl", "java_import_external")
 load("@rules_jvm_external//:defs.bzl", "maven_install")
 load("@tf_runtime//:dependencies.bzl", "tfrt_dependencies")
+load("//tensorflow/tools/def_file_filter:def_file_filter_configure.bzl", "def_file_filter_configure")
+load("//tensorflow/tools/toolchains:cpus/aarch64/aarch64_compiler_configure.bzl", "aarch64_compiler_configure")
+load("//tensorflow/tools/toolchains:cpus/arm/arm_compiler_configure.bzl", "arm_compiler_configure")
+load("//tensorflow/tools/toolchains/clang6:repo.bzl", "clang6_configure")
+load("//tensorflow/tools/toolchains/embedded/arm-linux:arm_linux_toolchain_configure.bzl", "arm_linux_toolchain_configure")
+load("//tensorflow/tools/toolchains/remote:configure.bzl", "remote_execution_configure")
+load("//tensorflow/tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 load("//third_party/absl:workspace.bzl", absl = "repo")
 load("//third_party/benchmark:workspace.bzl", benchmark = "repo")
@@ -42,16 +49,10 @@ load("//third_party/py/ml_dtypes:workspace.bzl", ml_dtypes = "repo")
 load("//third_party/pybind11_abseil:workspace.bzl", pybind11_abseil = "repo")
 load("//third_party/pybind11_bazel:workspace.bzl", pybind11_bazel = "repo")
 load("//third_party/ruy:workspace.bzl", ruy = "repo")
+load("//third_party/shardy:workspace.bzl", shardy = "repo")
 load("//third_party/sobol_data:workspace.bzl", sobol_data = "repo")
 load("//third_party/stablehlo:workspace.bzl", stablehlo = "repo")
 load("//third_party/systemlibs:syslibs_configure.bzl", "syslibs_configure")
-load("//tensorflow/tools/def_file_filter:def_file_filter_configure.bzl", "def_file_filter_configure")
-load("//tensorflow/tools/toolchains:cpus/aarch64/aarch64_compiler_configure.bzl", "aarch64_compiler_configure")
-load("//tensorflow/tools/toolchains:cpus/arm/arm_compiler_configure.bzl", "arm_compiler_configure")
-load("//tensorflow/tools/toolchains/clang6:repo.bzl", "clang6_configure")
-load("//tensorflow/tools/toolchains/embedded/arm-linux:arm_linux_toolchain_configure.bzl", "arm_linux_toolchain_configure")
-load("//tensorflow/tools/toolchains/remote:configure.bzl", "remote_execution_configure")
-load("//tensorflow/tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")
 load("//third_party/tensorrt:tensorrt_configure.bzl", "tensorrt_configure")
 load("//third_party/tensorrt:workspace.bzl", tensorrt = "repo")
 load("//third_party/triton:workspace.bzl", triton = "repo")
@@ -84,6 +85,7 @@ def _initialize_third_party():
     pybind11_abseil()
     pybind11_bazel()
     ruy()
+    shardy()
     sobol_data()
     stablehlo()
     vulkan_headers()
@@ -150,9 +152,9 @@ def _tf_repositories():
     # LINT.IfChange
     tf_http_archive(
         name = "XNNPACK",
-        sha256 = "eba4410af9f455f484b425a80196ff3c3b8cf6f650616a281a815a3bd45bae5f",
-        strip_prefix = "XNNPACK-db84c8c822a70183e10ef6b7402c6730f5d54da5",
-        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/db84c8c822a70183e10ef6b7402c6730f5d54da5.zip"),
+        sha256 = "bdd80688631851c6d3e5be31ce302c7f6a200301867494bcde62549b74fddf16",
+        strip_prefix = "XNNPACK-6346dbfe3f9ce02d750619b340680a1cc209dd07",
+        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/6346dbfe3f9ce02d750619b340680a1cc209dd07.zip"),
     )
     # LINT.ThenChange(//tensorflow/lite/tools/cmake/modules/xnnpack.cmake)
 
@@ -172,18 +174,18 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "cpuinfo",
-        strip_prefix = "cpuinfo-ef634603954d88d2643d5809011288b890ac126e",
-        sha256 = "e07512a11e1c71687359a133f49d60583d7465b737fe5dbe11f461c9aaa72a2b",
-        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/ef634603954d88d2643d5809011288b890ac126e.zip"),
+        strip_prefix = "cpuinfo-3c8b1533ac03dd6531ab6e7b9245d488f13a82a5",
+        sha256 = "5d7f00693e97bd7525753de94be63f99b0490ae6855df168f5a6b2cfc452e49e",
+        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/3c8b1533ac03dd6531ab6e7b9245d488f13a82a5.zip"),
     )
 
     tf_http_archive(
         name = "cudnn_frontend_archive",
         build_file = "//third_party:cudnn_frontend.BUILD",
         patch_file = ["//third_party:cudnn_frontend_header_fix.patch"],
-        sha256 = "c2f5373ddf84e33d289dad5766667f52de652dfbbb1dccb2fada9cfcf2d774cf",
-        strip_prefix = "cudnn-frontend-1.1.0",
-        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.1.0.zip"),
+        sha256 = "281789777ac296f5f8215a7c4bd066de8816d240eb44c760788beebf8d25a99f",
+        strip_prefix = "cudnn-frontend-1.5.1",
+        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.5.1.zip"),
     )
 
     tf_http_archive(
@@ -205,9 +207,9 @@ def _tf_repositories():
     tf_http_archive(
         name = "onednn",
         build_file = "//third_party/mkl_dnn:mkldnn_v1.BUILD",
-        sha256 = "e291fa4702f4bcfa6c8c23cb5b6599f0fefa8f23bc08edb9e15ddc5254ab7843",
-        strip_prefix = "oneDNN-3.3.4",
-        urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.3.4.tar.gz"),
+        sha256 = "8356aa9befde4d4ff93f1b016ac4310730b2de0cc0b8c6c7ce306690bc0d7b43",
+        strip_prefix = "oneDNN-3.5",
+        urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.5.tar.gz"),
     )
 
     tf_http_archive(
@@ -322,10 +324,10 @@ def _tf_repositories():
         name = "png",
         build_file = "//third_party:png.BUILD",
         patch_file = ["//third_party:png_fix_rpi.patch"],
-        sha256 = "a00e9d2f2f664186e4202db9299397f851aea71b36a35e74910b8820e380d441",
-        strip_prefix = "libpng-1.6.39",
+        sha256 = "fecc95b46cf05e8e3fc8a414750e0ba5aad00d89e9fdf175e94ff041caf1a03a",
+        strip_prefix = "libpng-1.6.43",
         system_build_file = "//third_party/systemlibs:png.BUILD",
-        urls = tf_mirror_urls("https://github.com/glennrp/libpng/archive/v1.6.39.tar.gz"),
+        urls = tf_mirror_urls("https://github.com/glennrp/libpng/archive/v1.6.43.tar.gz"),
     )
 
     tf_http_archive(
@@ -389,10 +391,10 @@ def _tf_repositories():
     tf_http_archive(
         name = "nsync",
         patch_file = ["//third_party:nsync.patch"],
-        sha256 = "2be9dbfcce417c7abcc2aa6fee351cd4d292518d692577e74a2c6c05b049e442",
-        strip_prefix = "nsync-1.25.0",
+        sha256 = "1d63e967973733d2c97e841e3c05fac4d3fa299f01d14c86f2695594c7a4a2ec",
+        strip_prefix = "nsync-1.29.2",
         system_build_file = "//third_party/systemlibs:nsync.BUILD",
-        urls = tf_mirror_urls("https://github.com/google/nsync/archive/1.25.0.tar.gz"),
+        urls = tf_mirror_urls("https://github.com/google/nsync/archive/1.29.2.tar.gz"),
     )
 
     tf_http_archive(
@@ -419,10 +421,10 @@ def _tf_repositories():
     tf_http_archive(
         name = "curl",
         build_file = "//third_party:curl.BUILD",
-        sha256 = "816e41809c043ff285e8c0f06a75a1fa250211bbfb2dc0a037eeef39f1a9e427",
-        strip_prefix = "curl-8.4.0",
+        sha256 = "9c6db808160015f30f3c656c0dec125feb9dc00753596bf858a272b5dd8dc398",
+        strip_prefix = "curl-8.6.0",
         system_build_file = "//third_party/systemlibs:curl.BUILD",
-        urls = tf_mirror_urls("https://curl.se/download/curl-8.4.0.tar.gz"),
+        urls = tf_mirror_urls("https://curl.se/download/curl-8.6.0.tar.gz"),
     )
 
     # WARNING: make sure ncteisen@ and vpai@ are cc-ed on any CL to change the below rule
@@ -487,10 +489,10 @@ def _tf_repositories():
     tf_http_archive(
         name = "zlib",
         build_file = "//third_party:zlib.BUILD",
-        sha256 = "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30",
-        strip_prefix = "zlib-1.2.13",
+        sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+        strip_prefix = "zlib-1.3.1",
         system_build_file = "//third_party/systemlibs:zlib.BUILD",
-        urls = tf_mirror_urls("https://zlib.net/fossils/zlib-1.2.13.tar.gz"),
+        urls = tf_mirror_urls("https://zlib.net/fossils/zlib-1.3.1.tar.gz"),
     )
 
     # LINT.IfChange
@@ -506,19 +508,19 @@ def _tf_repositories():
     tf_http_archive(
         name = "snappy",
         build_file = "//third_party:snappy.BUILD",
-        sha256 = "2e458b7017cd58dcf1469ab315389e85e7f445bd035188f2983f81fb19ecfb29",
-        strip_prefix = "snappy-984b191f0fefdeb17050b42a90b7625999c13b8d",
+        sha256 = "7ee7540b23ae04df961af24309a55484e7016106e979f83323536a1322cedf1b",
+        strip_prefix = "snappy-1.2.0",
         system_build_file = "//third_party/systemlibs:snappy.BUILD",
-        urls = tf_mirror_urls("https://github.com/google/snappy/archive/984b191f0fefdeb17050b42a90b7625999c13b8d.tar.gz"),
+        urls = tf_mirror_urls("https://github.com/google/snappy/archive/1.2.0.zip"),
     )
 
     tf_http_archive(
         name = "nccl_archive",
         build_file = "//third_party:nccl/archive.BUILD",
         patch_file = ["//third_party/nccl:archive.patch"],
-        sha256 = "1c5474553afedb88e878c772f13d6f90b9226b3f2971dfa6f873adb9443100c2",
-        strip_prefix = "nccl-2.19.3-1",
-        urls = tf_mirror_urls("https://github.com/nvidia/nccl/archive/v2.19.3-1.tar.gz"),
+        sha256 = "1923596984d85e310b5b6c52b2c72a1b93da57218f2bc5a5c7ac3d59297a3303",
+        strip_prefix = "nccl-2.21.5-1",
+        urls = tf_mirror_urls("https://github.com/nvidia/nccl/archive/v2.21.5-1.tar.gz"),
     )
 
     java_import_external(
@@ -867,17 +869,17 @@ def _tf_repositories():
     # third_party/py/riegeli) that are used in TF.
     tf_http_archive(
         name = "riegeli",
-        sha256 = "870ca080cdfc5eba696a72ccc3a54cbf0f2271befc0d459eafa8f065edfaadb2",
-        strip_prefix = "riegeli-264ef7b4a1314d97265b37544b27cd3923ea72d2",
-        urls = tf_mirror_urls("https://github.com/google/riegeli/archive/264ef7b4a1314d97265b37544b27cd3923ea72d2.zip"),
+        sha256 = "1d216d5c97fa60632143d209a1bb48c2a83788efdb876902e7bbc06396d5ee1f",
+        strip_prefix = "riegeli-5d75119232cd4f6db8dfa69a1503289f050e9643",
+        urls = tf_mirror_urls("https://github.com/google/riegeli/archive/5d75119232cd4f6db8dfa69a1503289f050e9643.zip"),
     )
 
     tf_http_archive(
         name = "riegeli_py",
-        sha256 = "870ca080cdfc5eba696a72ccc3a54cbf0f2271befc0d459eafa8f065edfaadb2",
+        sha256 = "1d216d5c97fa60632143d209a1bb48c2a83788efdb876902e7bbc06396d5ee1f",
         patch_file = ["//third_party:riegeli_fix.patch"],
-        strip_prefix = "riegeli-264ef7b4a1314d97265b37544b27cd3923ea72d2",
-        urls = tf_mirror_urls("https://github.com/google/riegeli/archive/264ef7b4a1314d97265b37544b27cd3923ea72d2.zip"),
+        strip_prefix = "riegeli-5d75119232cd4f6db8dfa69a1503289f050e9643",
+        urls = tf_mirror_urls("https://github.com/google/riegeli/archive/5d75119232cd4f6db8dfa69a1503289f050e9643.zip"),
     )
 
     # Required by riegeli.

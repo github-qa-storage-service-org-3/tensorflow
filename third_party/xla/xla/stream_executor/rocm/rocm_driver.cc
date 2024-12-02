@@ -78,7 +78,7 @@ namespace gpu {
 
 // Formats hipError_t to output prettified values into a log stream.
 // Error summaries taken from:
-string ToString(hipError_t result) {
+std::string ToString(hipError_t result) {
 #define OSTREAM_ROCM_ERROR(__name) \
   case hipError##__name:           \
     return "HIP_ERROR_" #__name;
@@ -110,9 +110,45 @@ string ToString(hipError_t result) {
       OSTREAM_ROCM_ERROR(ContextAlreadyInUse)
       OSTREAM_ROCM_ERROR(PeerAccessUnsupported)
       OSTREAM_ROCM_ERROR(Unknown)  // Unknown internal error to ROCM.
+#if TF_ROCM_VERSION >= 60200
+      OSTREAM_ROCM_ERROR(LaunchTimeOut)
+      OSTREAM_ROCM_ERROR(PeerAccessAlreadyEnabled)
+      OSTREAM_ROCM_ERROR(PeerAccessNotEnabled)
+      OSTREAM_ROCM_ERROR(SetOnActiveProcess)
+      OSTREAM_ROCM_ERROR(ContextIsDestroyed)
+      OSTREAM_ROCM_ERROR(Assert)
+      OSTREAM_ROCM_ERROR(HostMemoryAlreadyRegistered)
+      OSTREAM_ROCM_ERROR(HostMemoryNotRegistered)
+      OSTREAM_ROCM_ERROR(LaunchFailure)
+      OSTREAM_ROCM_ERROR(CooperativeLaunchTooLarge)
+      OSTREAM_ROCM_ERROR(NotSupported)
+      OSTREAM_ROCM_ERROR(StreamCaptureUnsupported)
+      OSTREAM_ROCM_ERROR(StreamCaptureInvalidated)
+      OSTREAM_ROCM_ERROR(StreamCaptureMerge)
+      OSTREAM_ROCM_ERROR(StreamCaptureUnmatched)
+      OSTREAM_ROCM_ERROR(StreamCaptureUnjoined)
+      OSTREAM_ROCM_ERROR(StreamCaptureIsolation)
+      OSTREAM_ROCM_ERROR(StreamCaptureImplicit)
+      OSTREAM_ROCM_ERROR(CapturedEvent)
+      OSTREAM_ROCM_ERROR(StreamCaptureWrongThread)
+      OSTREAM_ROCM_ERROR(GraphExecUpdateFailure)
+      OSTREAM_ROCM_ERROR(RuntimeMemory)
+      OSTREAM_ROCM_ERROR(RuntimeOther)
+#endif  // TF_ROCM_VERSION >= 60200
     default:
       return absl::StrCat("hipError_t(", static_cast<int>(result), ")");
   }
+}
+
+absl::StatusOr<hipError_t> QueryEvent(GpuContext* context, hipEvent_t event) {
+  ScopedActivateContext activated{context};
+  hipError_t res = wrap::hipEventQuery(event);
+  if (res != hipSuccess && res != hipErrorNotReady) {
+    return absl::Status{
+        absl::StatusCode::kInternal,
+        absl::StrFormat("failed to query event: %s", ToString(res).c_str())};
+  }
+  return res;
 }
 
 namespace {
@@ -145,7 +181,7 @@ tsl::thread::ThreadPool* GetDriverExecutor() {
 
 }  // namespace
 
-string MemorySpaceString(MemorySpace memory_space) {
+std::string MemorySpaceString(MemorySpace memory_space) {
   switch (memory_space) {
     case MemorySpace::kHost:
       return "host";
@@ -240,7 +276,7 @@ namespace {
 // Returns a stringified device number associated with pointer, primarily for
 // logging purposes. Returns "?" if the device could not be successfully
 // queried.
-string ROCMPointerToDeviceString(hipDeviceptr_t pointer) {
+std::string ROCMPointerToDeviceString(hipDeviceptr_t pointer) {
   auto value = GpuDriver::GetPointerDevice(pointer);
   if (value.ok()) {
     return absl::StrCat(value.value());
@@ -252,7 +288,7 @@ string ROCMPointerToDeviceString(hipDeviceptr_t pointer) {
 // Returns a stringified memory space associated with pointer, primarily for
 // logging purposes. Returns "?" if the memory space could not be successfully
 // queried.
-string ROCMPointerToMemorySpaceString(hipDeviceptr_t pointer) {
+std::string ROCMPointerToMemorySpaceString(hipDeviceptr_t pointer) {
   auto value = GpuDriver::GetPointerMemorySpace(pointer);
   if (value.ok()) {
     return MemorySpaceString(value.value());
@@ -265,7 +301,8 @@ string ROCMPointerToMemorySpaceString(hipDeviceptr_t pointer) {
 // permitted between the "from" and "to" pointers' associated contexts,
 // primarily for logging purposes. Returns "error" if an error is encountered
 // in the process of querying.
-string ROCMPointersToCanAccessString(hipDeviceptr_t from, hipDeviceptr_t to) {
+std::string ROCMPointersToCanAccessString(hipDeviceptr_t from,
+                                          hipDeviceptr_t to) {
   auto from_context = GpuDriver::GetPointerContext(from);
   if (!from_context.ok()) {
     LOG(ERROR) << "could not retrieve source pointer's context: "
@@ -328,7 +365,7 @@ static absl::Status InternalInit() {
 }
 
 /* static */ absl::Status GpuDriver::GetDeviceName(hipDevice_t device,
-                                                   string* device_name) {
+                                                   std::string* device_name) {
   static const size_t kCharLimit = 64;
   absl::InlinedVector<char, 4> chars(kCharLimit);
   RETURN_IF_ROCM_ERROR(
@@ -431,10 +468,6 @@ static absl::Status InternalInit() {
   }
 
   CreatedContexts::Remove(context->context());
-}
-
-/* static */ hipCtx_t GpuDriver::GetContextHandle(GpuContext* context) {
-  return context->context();
 }
 
 /* static */ absl::Status GpuDriver::FuncGetAttribute(
@@ -1098,19 +1131,22 @@ struct BitPatternToValue {
   VLOG(2) << "launching kernel: " << kernel_name << "; gdx: " << grid_dim_x
           << " gdy: " << grid_dim_y << " gdz: " << grid_dim_z
           << " bdx: " << block_dim_x << " bdy: " << block_dim_y
-          << " bdz: " << block_dim_z << " smem: " << shared_mem_bytes;
+          << " bdz: " << block_dim_z << " smem: " << shared_mem_bytes
+          << " func: " << (const void*)function;
 
+  auto res = hipSuccess;
+#if TF_ROCM_VERSION < 60200
   // for in-process kernel this function returns mangled kernel function name,
   // and null otherwise
   auto name = wrap::hipKernelNameRefByPtr((const void*)function, stream);
-
-  auto res = hipSuccess;
   if (name != nullptr) {
     res = wrap::hipLaunchKernel((const void*)function,
                                 dim3(grid_dim_x, grid_dim_y, grid_dim_z),
                                 dim3(block_dim_x, block_dim_y, block_dim_z),
                                 kernel_params, shared_mem_bytes, stream);
-  } else {
+  } else  // NOLINT(readability/braces)
+#endif    // TF_ROCM_VERSION < 60200
+  {
     res = wrap::hipModuleLaunchKernel(
         function, grid_dim_x, grid_dim_y, grid_dim_z, block_dim_x, block_dim_y,
         block_dim_z, shared_mem_bytes, stream, kernel_params, extra);
@@ -1226,24 +1262,18 @@ struct BitPatternToValue {
   return absl::OkStatus();
 }
 
-/* static */ bool GpuDriver::GetModuleSymbol(GpuContext* context,
-                                             hipModule_t module,
-                                             const char* symbol_name,
-                                             hipDeviceptr_t* dptr,
-                                             size_t* bytes) {
+/* static */ absl::Status GpuDriver::GetModuleSymbol(GpuContext* context,
+                                                     hipModule_t module,
+                                                     const char* symbol_name,
+                                                     hipDeviceptr_t* dptr,
+                                                     size_t* bytes) {
   ScopedActivateContext activated{context};
   CHECK(module != nullptr && symbol_name != nullptr &&
         (dptr != nullptr || bytes != nullptr));
-  hipError_t res = wrap::hipModuleGetGlobal(dptr, bytes, module, symbol_name);
-  if (res != hipSuccess) {
-    // symbol may not be found in the current module, but it may reside in
-    // another module.
-    VLOG(2) << "failed to get symbol \"" << symbol_name
-            << "\" from module: " << ToString(res);
-    return false;
-  }
-
-  return true;
+  RETURN_IF_ROCM_ERROR(
+      wrap::hipModuleGetGlobal(dptr, bytes, module, symbol_name),
+      absl::StrCat("Failed to get symbol '", symbol_name, "'"));
+  return absl::OkStatus();
 }
 
 /* static */ void GpuDriver::UnloadModule(GpuContext* context,
@@ -1310,13 +1340,19 @@ struct BitPatternToValue {
 
 /* static */ void* GpuDriver::DeviceAllocate(GpuContext* context,
                                              uint64_t bytes) {
+  if (bytes == 0) {
+    return nullptr;
+  }
+
   ScopedActivateContext activated{context};
   hipDeviceptr_t result = 0;
   hipError_t res = wrap::hipMalloc(&result, bytes);
   if (res != hipSuccess) {
-    LOG(ERROR) << "failed to allocate "
-               << tsl::strings::HumanReadableNumBytes(bytes) << " (" << bytes
-               << " bytes) from device: " << ToString(res);
+    // LOG(INFO) because this isn't always important to users (e.g. BFCAllocator
+    // implements a retry if the first allocation fails).
+    LOG(INFO) << "failed to allocate "
+              << tsl::strings::HumanReadableNumBytes(bytes) << " (" << bytes
+              << " bytes) from device: " << ToString(res);
     return nullptr;
   }
   void* ptr = reinterpret_cast<void*>(result);
@@ -1468,19 +1504,6 @@ struct BitPatternToValue {
           absl::StrFormat("error recording ROCM event on stream %p: %s", stream,
                           ToString(res).c_str())};
   }
-}
-
-/* static */ absl::StatusOr<hipError_t> GpuDriver::QueryEvent(
-    GpuContext* context, GpuEventHandle event) {
-  ScopedActivateContext activated{context};
-  hipError_t res = wrap::hipEventQuery(event);
-  if (res != hipSuccess && res != hipErrorNotReady) {
-    return absl::Status{
-        absl::StatusCode::kInternal,
-        absl::StrFormat("failed to query event: %s", ToString(res).c_str())};
-  }
-
-  return res;
 }
 
 /* static */ bool GpuDriver::GetEventElapsedTime(GpuContext* context,
@@ -1769,7 +1792,8 @@ struct BitPatternToValue {
 /* static */ absl::StatusOr<MemorySpace> GpuDriver::GetPointerMemorySpace(
     hipDeviceptr_t pointer) {
   unsigned int value;
-  hipError_t result = hipSuccess;
+  hipError_t result = wrap::hipPointerGetAttribute(
+      &value, HIP_POINTER_ATTRIBUTE_MEMORY_TYPE, pointer);
   if (result == hipSuccess) {
     switch (value) {
       case hipMemoryTypeDevice:
@@ -1866,7 +1890,7 @@ struct BitPatternToValue {
 }
 
 // Helper function that turns the integer output of hipDeviceGetAttribute to
-// type T and wraps it in a StatusOr.
+// type T and wraps it in a absl::StatusOr.
 template <typename T>
 static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
                                             hipDeviceAttribute_t attribute) {
@@ -2063,8 +2087,8 @@ static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
   return true;
 }
 
-/* static */ string GpuDriver::GetPCIBusID(hipDevice_t device) {
-  string pci_bus_id;
+/* static */ std::string GpuDriver::GetPCIBusID(hipDevice_t device) {
+  std::string pci_bus_id;
   static const int kBufferSize = 64;
   absl::InlinedVector<char, 4> chars(kBufferSize);
   chars[kBufferSize - 1] = '\0';
