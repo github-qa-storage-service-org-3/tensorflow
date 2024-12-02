@@ -41,7 +41,6 @@ namespace mlir::quant::stablehlo {
 
 namespace {
 
-using QuantMethod = tensorflow::quantization::QuantizationMethod::PresetMethod;
 using ::tensorflow::quantization::RunPassesOnModuleOp;
 
 class QuantizeCompositeFunctionsPass
@@ -80,7 +79,7 @@ void QuantizeCompositeFunctionsPass::runOnOperation() {
   options.bit_width_ = 8;
 
   if (enable_weight_only_) {
-    pm.addNestedPass<func::FuncOp>(createPrepareQuantizeHybridPass());
+    pm.addNestedPass<func::FuncOp>(createInsertWeightParamPass());
   }
   // PrepareQuantizePass uses SymbolTable to fetch relevant GEMM ops for
   // determining quantization attributes. This requires module-level context.
@@ -94,6 +93,17 @@ void QuantizeCompositeFunctionsPass::runOnOperation() {
   // and therefore requires a module-level context.
   pm.addPass(createQuantizePass(quantize_options));
   pm.addNestedPass<func::FuncOp>(createPostQuantizePass());
+
+  // Convert XlaCallModuleOps lifted but not quantized to func.call op.
+  // The reasons these ops are not quantized may be:
+  // 1. Disabled due to selective quantization.
+  // 2. Not supported, e.g. add op for server.
+  pm.addPass(createXlaCallModuleToCallPass());
+
+  // TODO: b/321729008 - move this implementation to quantization_patterns.cc.
+  if (merge_fusion_with_dequantize_) {
+    pm.addPass(createMergeFusionWithDequantizePass());
+  }
 
   ModuleOp module_op = getOperation();
   if (const absl::Status pm_run_status =

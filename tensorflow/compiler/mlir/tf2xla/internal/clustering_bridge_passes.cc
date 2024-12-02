@@ -25,7 +25,10 @@ limitations under the License.
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/sparsecore/sparsecore_passes.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/passes/clustering_passes.h"
+#include "tensorflow/core/config/flag_defs.h"
+#include "tensorflow/core/config/flags.h"
 
 namespace tensorflow {
 namespace tf2xla {
@@ -143,10 +146,12 @@ void AddReplicatedBridgeClusteringPipelinePasses(OpPassManager& pm,
 
   pm.addNestedPass<FuncOp>(mlir::TFDevice::CreateClusterConstantSinkingPass());
   pm.addPass(mlir::TF::CreateResourceDeviceInferencePass());
-  pm.addNestedPass<FuncOp>(
-      tensorflow::tf2xla::internal::CreateHoistBroadcastReadPass());
-  pm.addNestedPass<FuncOp>(
-      tensorflow::tf2xla::internal::CreateXlaBroadcastPass());
+  if (flags::Global().enable_tf2min_ici_weight.value()) {
+    pm.addNestedPass<FuncOp>(
+        tensorflow::tf2xla::internal::CreateHoistBroadcastReadPass());
+    pm.addNestedPass<FuncOp>(
+        tensorflow::tf2xla::internal::CreateXlaBroadcastPass());
+  }
   pm.addPass(mlir::TFDevice::CreateClusterOutliningPass());
   pm.addPass(mlir::TFTPU::CreateTPUResourceReadForWritePass());
   pm.addPass(mlir::TFDevice::CreateMarkInputOutputAliasesPass());
@@ -188,8 +193,6 @@ void AddNonReplicatedBridgeClusteringPipelinePasses(OpPassManager& pm) {
   // inference.
   pm.addPass(mlir::TF::CreateGuaranteeAllFuncsOneUsePass());
   pm.addPass(mlir::TF::CreateTFShapeInferencePass());
-  pm.addPass(
-      tensorflow::tf2xla::internal::CreateXlaOutlineEntryFunctionsPass());
   // Encapsulate PartitionedCall ops within a cluster so that the composite
   // resource ops can be decomposed.
   pm.addPass(tensorflow::tf2xla::internal::CreateXlaClusterFormationPass());
