@@ -92,7 +92,12 @@ class PjRtMemorySpace {
 
   // A platform-dependent string that uniquely identifies the kind of the
   // memory space.
-  virtual absl::string_view memory_space_kind() const = 0;
+  virtual absl::string_view kind() const = 0;
+
+  // An ID uniquely identifies the kind of the memory space among those attached
+  // to the same `PjRtClient`. The IDs assigned to a kind is implementation
+  // specific.
+  virtual int kind_id() const = 0;
 
   // Debug string suitable for logging when errors occur. Should be verbose
   // enough to describe the current memory space unambiguously.
@@ -441,6 +446,7 @@ class PjRtLoadedExecutable;
 struct PjRtPluginAttributes {
   int64_t pjrt_c_api_major_version;
   int64_t pjrt_c_api_minor_version;
+  absl::flat_hash_map<std::string, PjRtValueType> attributes;
 };
 
 // Encapsulates the state of Python session with XLA.
@@ -812,13 +818,14 @@ class PjRtClient {
     kImmutableUntilTransferCompletes,
 
     // The PjRtBuffer may alias `data` internally and the runtime may use the
-    // `data` contents as long as the buffer is alive. The caller promises to
-    // keep `data` alive and not to mutate its contents as long as the buffer is
-    // alive; to notify the caller that the buffer may be freed, the runtime
-    // will call `on_done_with_host_buffer` when the PjRtBuffer is freed. On
-    // non-CPU platforms this acts identically to
-    // kImmutableUntilTransferCompletes.
-    kZeroCopy,
+    // `data` contents as long as the buffer is alive. The runtime promises not
+    // to mutate contents of the buffer (i.e. it will not use it for aliased
+    // output buffers). The caller promises to keep `data` alive and also not to
+    // mutate its contents as long as the buffer is alive; to notify the caller
+    // that the buffer may be freed, the runtime will call
+    // `on_done_with_host_buffer` when the PjRtBuffer is freed. On non-CPU
+    // platforms this acts identically to kImmutableUntilTransferCompletes.
+    kImmutableZeroCopy,
   };
 
   // on_done_with_host_buffer is optional and may be null.
@@ -1304,8 +1311,23 @@ class PjRtBuffer {
   // If either 'this' or 'dependency' transitions to error, then the returned
   // buffer will transition to error.
   virtual StatusOr<std::unique_ptr<PjRtBuffer>> DonateWithControlDependency(
-      PjRtFuture<Status> dependency) {
+      PjRtFuture<> dependency) {
     return Unimplemented("DonateWithControlDependency is not supported.");
+  }
+
+  // TODO(b/333538339): Delete this adaptor once all users migrate from
+  // PjRtFuture<Status> to PjRtFuture<>.
+  StatusOr<std::unique_ptr<PjRtBuffer>> DonateWithControlDependency(
+      PjRtFuture<Status> dependency) {
+    PjRtFuture<>::Promise promise = PjRtFuture<>::CreatePromise();
+    dependency.OnReady([promise](Status status) mutable {
+      if (status.ok()) {
+        promise.Set();
+      } else {
+        promise.SetError(std::move(status));
+      }
+    });
+    return DonateWithControlDependency(PjRtFuture<>(std::move(promise)));
   }
 
   // Helper to allow a caller to indicate that it is going to do some "sends"
