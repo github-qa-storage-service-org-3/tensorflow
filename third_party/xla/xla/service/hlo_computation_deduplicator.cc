@@ -36,7 +36,7 @@ bool HloComputationDeduplicator::ContainsLargeConstants(HloComputation* comp) {
   }
   return false;
 }
-StatusOr<bool> HloComputationDeduplicator::Run(
+absl::StatusOr<bool> HloComputationDeduplicator::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   absl::flat_hash_map<std::string, HloComputation*> unique_comps;
@@ -84,7 +84,8 @@ StatusOr<bool> HloComputationDeduplicator::Run(
     // with large number of instructions or large-size constants due to increase
     // in time taken to stringify.
     if (comp->IsEntryComputation() || comp->instruction_count() > 128 ||
-        ContainsLargeConstants(comp) || comp->IsCollectiveCalledComputation()) {
+        ContainsLargeConstants(comp) || comp->IsCollectiveCalledComputation() ||
+        comp->WhileCallInstruction() != nullptr) {
       continue;
     }
     std::string comp_str = comp->ToString(options);

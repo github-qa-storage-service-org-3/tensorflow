@@ -51,11 +51,11 @@ limitations under the License.
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_constants.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
-#include "xla/service/gpu/nccl_clique.h"
 #include "xla/service/gpu/nccl_clique_key.h"
 #include "xla/service/gpu/runtime/annotation.h"
+#include "xla/service/gpu/runtime/nccl_clique.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/gpu/stream_executor_util.h"
-#include "xla/service/gpu/thunk.h"
 #include "xla/service/hlo_execution_profile.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_parser.h"
@@ -167,6 +167,7 @@ GpuExecutable::GpuExecutable(GpuExecutable::Params params)
     : Executable(std::move(params.debug_module)),
       text_(std::move(params.asm_text)),
       binary_(std::move(params.binary)),
+      dnn_compiled_graphs_(std::move(params.dnn_compiled_graphs)),
       gpu_version_(params.gpu_version),
       thunks_(std::move(params.executable)),
       execution_stream_ids_(has_module()
@@ -354,8 +355,8 @@ class ResourceRequests : public Thunk::ResourceRequests {
       if (b.key.devices().size() > a.key.devices().size()) return false;
 
       // If cliques have the same size prefer cliques with smaller stream id.
-      if (a.key.stream_id() < b.key.stream_id()) return true;
-      if (b.key.stream_id() < a.key.stream_id()) return false;
+      if (a.key.stream_id().value() < b.key.stream_id().value()) return true;
+      if (b.key.stream_id().value() < a.key.stream_id().value()) return false;
 
       // Prefer cliques with smaller id (comes earlier in execution order).
       return a.id < b.id;
@@ -438,8 +439,9 @@ absl::Status ExecuteThunks(
   if (ExecutionProfile* profile =
           run_options->run_options().execution_profile();
       profile) {
-    TF_ASSIGN_OR_RETURN(execution_timer,
-                        se::gpu::GpuTimer::Create(main_stream));
+    TF_ASSIGN_OR_RETURN(
+        execution_timer,
+        se::gpu::GpuTimer::Create(main_stream, profile->warmup_run_executed()));
   }
 #endif
 
@@ -1015,7 +1017,8 @@ absl::Status GpuExecutable::ExecuteThunksOrXlaRuntime(
   ModuleIdentifier unique_id = has_module() ? module().unique_id() : -1;
 
   if (thunks_) {
-    Thunk::ExecutableSource executable_source = {text_, binary_};
+    Thunk::ExecutableSource executable_source = {text_, binary_,
+                                                 dnn_compiled_graphs_};
     int64_t collective_max_nchannels =
         has_module() ? module_config()
                            .debug_options()

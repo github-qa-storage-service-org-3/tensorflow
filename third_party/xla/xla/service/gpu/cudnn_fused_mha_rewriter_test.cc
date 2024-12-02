@@ -24,6 +24,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include "absl/algorithm/container.h"
 #include "absl/strings/string_view.h"
+#include "xla/error_spec.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/algebraic_simplifier.h"
 #include "xla/service/computation_layout.h"
@@ -90,13 +91,6 @@ class CudnnFusedMhaRewriterTestHloTest : public HloTestBase {
   }
 
   se::dnn::VersionInfo GetCudnnVersionWithFlashAttentionSupport() {
-    // Fake a supported compute capability to run tests,
-    // we don't run any kernels in these tests so they should be safe
-    // to run anywhere.
-    return se::dnn::VersionInfo(8, 9, 3);
-  }
-
-  se::dnn::VersionInfo GetCudnnVersionWithFlashCrossAttentionSupport() {
     // Fake a supported compute capability to run tests,
     // we don't run any kernels in these tests so they should be safe
     // to run anywhere.
@@ -754,7 +748,7 @@ ENTRY main.41 {
   convert.40 = bf16[16,16,256,256]{3,2,1,0} convert(add.15)
   constant.4 = bf16[] constant(0)
   broadcast.5 = bf16[16,16,256,256]{3,2,1,0} broadcast(constant.4), dimensions={}
-  compare = pred[16,16,256,256]{3,2,1,0} compare(convert.40, broadcast.5), direction=GT 
+  compare = pred[16,16,256,256]{3,2,1,0} compare(convert.40, broadcast.5), direction=GT
   select.13 = bf16[16,16,256,256]{3,2,1,0} select(compare, convert.40, broadcast.5)
   convert.36 = f32[16,16,256,256]{3,2,1,0} convert(select.13)
   constant.9 = f32[] constant(-inf)
@@ -4361,73 +4355,6 @@ ENTRY main.82 {
   EXPECT_EQ(config.is_causal_mask(), false);
 }
 
-TEST_F(CudnnFusedMhaRewriterTestHloTest,
-       FlashAttentionF16Bmm1BiasSoftmaxBmm2PatternCrossAttention) {
-  if (skip_reason_) GTEST_SKIP() << *skip_reason_;
-  const char* module_str = R"(
-HloModule jit__unnamed_wrapped_function_, entry_computation_layout={(f16[2,6,2048,64]{3,2,1,0},f16[2,6,64,1024]{3,2,1,0},f16[2,6,1024,64]{3,2,1,0},f16[2,6,2048,1024]{3,2,1,0})->f16[2,6,2048,64]{3,2,1,0}}
-
-region_0.7 {
-  Arg_0.8 = f16[] parameter(0)
-  Arg_1.9 = f16[] parameter(1)
-  ROOT maximum = f16[] maximum(Arg_0.8, Arg_1.9)
-}
-
-region_1.19 {
-  Arg_0.20 = f32[] parameter(0)
-  Arg_1.21 = f32[] parameter(1)
-  ROOT add = f32[] add(Arg_0.20, Arg_1.21)
-}
-
-ENTRY main.31 {
-  Arg_0.1 = f16[2,6,2048,64]{3,2,1,0} parameter(0), sharding={replicated}
-  Arg_1.2 = f16[2,6,64,1024]{3,2,1,0} parameter(1), sharding={replicated}
-  dot = f16[2,6,2048,1024]{3,2,1,0} dot(Arg_0.1, Arg_1.2), lhs_contracting_dims={3}, rhs_contracting_dims={2}, lhs_batch_dims={0,1}, rhs_batch_dims={0,1}
-  Arg_3.4 = f16[2,6,2048,1024]{3,2,1,0} parameter(3), sharding={replicated}
-  add.1 = f16[2,6,2048,1024]{3,2,1,0} add(dot, Arg_3.4)
-  constant = f16[] constant(-inf)
-  reduce.11 = f16[2,6,2048]{2,1,0} reduce(add.1, constant), dimensions={3}, to_apply=region_0.7
-  broadcast.3 = f16[2,6,2048,1024]{3,2,1,0} broadcast(reduce.11), dimensions={0,1,2}
-  subtract.1 = f16[2,6,2048,1024]{3,2,1,0} subtract(add.1, broadcast.3)
-  exponential.1 = f16[2,6,2048,1024]{3,2,1,0} exponential(subtract.1)
-  convert.1 = f32[2,6,2048,1024]{3,2,1,0} convert(exponential.1)
-  constant.1 = f32[] constant(0)
-  reduce.23 = f32[2,6,2048]{2,1,0} reduce(convert.1, constant.1), dimensions={3}, to_apply=region_1.19
-  convert.2 = f16[2,6,2048]{2,1,0} convert(reduce.23)
-  broadcast.4 = f16[2,6,2048,1024]{3,2,1,0} broadcast(convert.2), dimensions={0,1,2}
-  divide = f16[2,6,2048,1024]{3,2,1,0} divide(exponential.1, broadcast.4)
-  Arg_2.3 = f16[2,6,1024,64]{3,2,1,0} parameter(2), sharding={replicated}
-  ROOT dot.1 = f16[2,6,2048,64]{3,2,1,0} dot(divide, Arg_2.3), lhs_contracting_dims={3}, rhs_contracting_dims={2}, lhs_batch_dims={0,1}, rhs_batch_dims={0,1}
-})";
-
-  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(module_str));
-  CudnnFusedMHARewriter fusedMhaRewriter{
-      GetCudaComputeCapability(), GetCudnnVersionWithFlashAttentionSupport()};
-  TF_ASSERT_OK(RunHloPass(&fusedMhaRewriter, m.get()).status());
-
-  SCOPED_TRACE(m->ToString());
-  EXPECT_THAT(m->entry_computation()->root_instruction(), GmockMatch(m::Dot()));
-
-  CudnnFusedMHARewriter fusedMhaRewriterWithCrossAttention{
-      GetCudaComputeCapability(),
-      GetCudnnVersionWithFlashCrossAttentionSupport()};
-  TF_ASSERT_OK(
-      RunHloPass(&fusedMhaRewriterWithCrossAttention, m.get()).status());
-  SCOPED_TRACE(m->ToString());
-  const HloInstruction* fmha;
-  EXPECT_THAT(
-      m->entry_computation()->root_instruction(),
-      GmockMatch(
-          m::GetTupleElement(
-              m::CustomCall(&fmha, {kCudnnfMHAScaleBiasSoftmaxCallTarget}), 0)
-              .WithShape(F16, {2, 6, 2048, 64})));
-  TF_ASSERT_OK_AND_ASSIGN(auto gpu_config,
-                          fmha->backend_config<GpuBackendConfig>());
-  const CudnnfMHABackendConfig& config = gpu_config.cudnn_fmha_backend_config();
-  EXPECT_EQ(config.is_flash_attention(), true);
-  EXPECT_EQ(config.is_causal_mask(), false);
-}
-
 // GPT3 pattern
 TEST_F(CudnnFusedMhaRewriterTestHloTest, FlashAttentionBF16TrainingGPT3_5B) {
   if (skip_reason_) GTEST_SKIP() << *skip_reason_;
@@ -5194,6 +5121,199 @@ ENTRY main.164_spmd {
               }))))));
 }
 
+constexpr absl::string_view hlo_should_lower_to_flash_attention = R"(
+HloModule fmha_test, entry_computation_layout={(bf16[16,16,128,64]{3,2,1,0},bf16[16,16,1024,64]{3,2,1,0},bf16[16,16,1024,64]{3,2,1,0})->bf16[16,16,128,64]{3,2,1,0}}
+ENTRY main.6 {
+  Arg_0.1 = bf16[16,16,128,64]{3,2,1,0} parameter(0)
+  Arg_1.2 = bf16[16,16,1024,64]{3,2,1,0} parameter(1)
+  Arg_2.3 = bf16[16,16,1024,64]{3,2,1,0} parameter(2)
+  dot.0 = bf16[16,16,128,1024]{3,2,1,0} dot(Arg_0.1, Arg_1.2), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={3}, metadata={}
+  ROOT dot.1 = bf16[16,16,128,64]{3,2,1,0} dot(dot.0, Arg_2.3), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={2}, metadata={}
+})";
+
+TEST_F(CudnnFusedMhaRewriterTestHloTest, ShouldLowerToFlashAttention) {
+  if (skip_reason_) GTEST_SKIP() << *skip_reason_;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto m, ParseAndReturnVerifiedModule(hlo_should_lower_to_flash_attention,
+                                           GetModuleConfig()));
+  CudnnFusedMHARewriter fusedMhaRewriter{
+      GetCudaComputeCapability(), GetCudnnVersionWithFlashAttentionSupport()};
+  TF_ASSERT_OK(RunHloPass(&fusedMhaRewriter, m.get()).status());
+  const HloInstruction* fmha;
+
+  SCOPED_TRACE(m->ToString());
+  EXPECT_THAT(
+      m->entry_computation()->root_instruction(),
+      GmockMatch(m::GetTupleElement(
+                     m::CustomCall(&fmha, {kCudnnfMHABmmBmmCallTarget}), 0)
+                     .WithShape(BF16, {16, 16, 128, 64})));
+  TF_ASSERT_OK_AND_ASSIGN(auto gpu_config,
+                          fmha->backend_config<GpuBackendConfig>());
+  const CudnnfMHABackendConfig& config = gpu_config.cudnn_fmha_backend_config();
+  EXPECT_EQ(config.fmha_scale(), 1.0);
+  EXPECT_EQ(config.dropout_rate(), 0.0);
+  EXPECT_EQ(config.is_flash_attention(), true);
+}
+
+constexpr absl::string_view hlo_head_dim_not_multiple_of_64 = R"(
+HloModule jit__reference, entry_computation_layout={(f16[4,48,1024,16]{3,2,1,0}, f16[4,48,1024,16]{3,2,1,0}, f16[4,48,1024,16]{3,2,1,0})->f16[4,48,1024,16]{3,2,1,0}}
+
+region_0.26 {
+  Arg_0.27 = f32[] parameter(0)
+  Arg_1.28 = f32[] parameter(1)
+  ROOT maximum = f32[] maximum(Arg_0.27, Arg_1.28)
+}
+
+region_1.37 {
+  Arg_0.38 = f32[] parameter(0)
+  Arg_1.39 = f32[] parameter(1)
+  ROOT add = f32[] add(Arg_0.38, Arg_1.39)
+}
+
+ENTRY main.49 {
+  iota.2 = s32[1024,1024]{1,0} iota(), iota_dimension=0
+  iota.3 = s32[1024,1024]{1,0} iota(), iota_dimension=1
+  compare = pred[1024,1024]{1,0} compare(iota.2, iota.3), direction=GE
+  broadcast.4 = pred[4,48,1024,1024]{3,2,1,0} broadcast(compare), dimensions={2,3}
+  Arg_0.1 = f16[4,48,1024,16]{3,2,1,0} parameter(0)
+  Arg_1.2 = f16[4,48,1024,16]{3,2,1,0} parameter(1)
+  dot.9 = f16[4,48,1024,1024]{3,2,1,0} dot(Arg_0.1, Arg_1.2), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={3}
+  constant.4 = f16[] constant(0.5)
+  broadcast.6 = f16[4,48,1024,1024]{3,2,1,0} broadcast(constant.4), dimensions={}
+  multiply = f16[4,48,1024,1024]{3,2,1,0} multiply(dot.9, broadcast.6)
+  constant = f16[] constant(-inf)
+  broadcast.7 = f16[4,48,1024,1024]{3,2,1,0} broadcast(constant), dimensions={}
+  select.1 = f16[4,48,1024,1024]{3,2,1,0} select(broadcast.4, multiply, broadcast.7)
+  convert.1 = f32[4,48,1024,1024]{3,2,1,0} convert(select.1)
+  constant.7 = f32[] constant(-inf)
+  reduce.30 = f32[4,48,1024]{2,1,0} reduce(convert.1, constant.7), dimensions={3}, to_apply=region_0.26
+  broadcast.8 = f32[4,48,1024,1024]{3,2,1,0} broadcast(reduce.30), dimensions={0,1,2}
+  subtract = f32[4,48,1024,1024]{3,2,1,0} subtract(convert.1, broadcast.8)
+  exponential = f32[4,48,1024,1024]{3,2,1,0} exponential(subtract)
+  constant.6 = f32[] constant(0)
+  reduce.41 = f32[4,48,1024]{2,1,0} reduce(exponential, constant.6), dimensions={3}, to_apply=region_1.37
+  broadcast.9 = f32[4,48,1024,1024]{3,2,1,0} broadcast(reduce.41), dimensions={0,1,2}
+  divide = f32[4,48,1024,1024]{3,2,1,0} divide(exponential, broadcast.9)
+  convert.2 = f16[4,48,1024,1024]{3,2,1,0} convert(divide)
+  Arg_2.3 = f16[4,48,1024,16]{3,2,1,0} parameter(2)
+  ROOT dot.48 = f16[4,48,1024,16]{3,2,1,0} dot(convert.2, Arg_2.3), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={2}
+} // main.49
+)";
+
+TEST_F(CudnnFusedMhaRewriterTestHloTest, HeadDimNotMultipleOf64) {
+  // TODO(hebecker): Remove this skip instruction once the mis-compile with
+  // cuDNN 8.9.6+ is fixed.
+  GTEST_SKIP() << "cuDNN 8.9.6+ features are currently disabled.";
+
+  if (skip_reason_) GTEST_SKIP() << *skip_reason_;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto m, ParseAndReturnVerifiedModule(hlo_head_dim_not_multiple_of_64,
+                                           GetModuleConfig()));
+  CudnnFusedMHARewriter fusedMhaRewriter{
+      GetCudaComputeCapability(), GetCudnnVersionWithFlashAttentionSupport()};
+  TF_ASSERT_OK(RunHloPass(&fusedMhaRewriter, m.get()).status());
+
+  // head dim not a multiple of 64 should not be lowered with cuDNN < 8.9.6
+  SCOPED_TRACE(m->ToString());
+  EXPECT_THAT(m->entry_computation()->root_instruction(), GmockMatch(m::Dot()));
+
+  // should be lowered with cuDNN >= 8.9.6
+  CudnnFusedMHARewriter fusedMhaRewriterWithcuDNN8907{
+      GetCudaComputeCapability(), se::dnn::VersionInfo(8, 9, 7)};
+  TF_ASSERT_OK(RunHloPass(&fusedMhaRewriterWithcuDNN8907, m.get()).status());
+  const HloInstruction* fmha;
+
+  SCOPED_TRACE(m->ToString());
+  EXPECT_THAT(
+      m->entry_computation()->root_instruction(),
+      GmockMatch(
+          m::GetTupleElement(
+              m::CustomCall(&fmha, {kCudnnfMHAScaleMaskSoftmaxCallTarget}), 0)
+              .WithShape(F16, {4, 48, 1024, 16})));
+  TF_ASSERT_OK_AND_ASSIGN(auto gpu_config,
+                          fmha->backend_config<GpuBackendConfig>());
+  const CudnnfMHABackendConfig& config = gpu_config.cudnn_fmha_backend_config();
+  EXPECT_EQ(config.fmha_scale(), 0.5);
+  EXPECT_EQ(config.dropout_rate(), 0.0);
+  EXPECT_EQ(config.is_flash_attention(), true);
+}
+
+// TODO(hebecker): Remove this test (or convert it into a proper unit test)
+// once the mis-compile with cuDNN 8.9.6+ is fixed.
+TEST_F(CudnnFusedMhaRewriterTestHloTest, Miscompile) {
+  auto hlo_text = R"hlo(
+    HloModule jit__reference, entry_computation_layout={(f16[4,48,1024,16]{3,2,1,0}, f16[4,48,1024,16]{3,2,1,0}, f16[4,48,1024,16]{3,2,1,0})->f16[4,48,1024,16]{3,2,1,0}}, allow_spmd_sharding_propagation_to_parameters={true,true,true}, allow_spmd_sharding_propagation_to_output={true}
+
+    _where.18 {
+      Arg_0.19 = pred[1024,1024]{1,0} parameter(0)
+      broadcast.23 = pred[4,48,1024,1024]{3,2,1,0} broadcast(Arg_0.19), dimensions={2,3}
+      Arg_1.20 = f16[4,48,1024,1024]{3,2,1,0} parameter(1)
+      Arg_2.21 = f32[] parameter(2)
+      convert.22 = f16[] convert(Arg_2.21)
+      broadcast.24 = f16[4,48,1024,1024]{3,2,1,0} broadcast(convert.22), dimensions={}
+      ROOT select.25 = f16[4,48,1024,1024]{3,2,1,0} select(broadcast.23, Arg_1.20, broadcast.24)
+    } // _where.18
+
+    region_0.28 {
+      Arg_0.29 = f32[] parameter(0)
+      Arg_1.30 = f32[] parameter(1)
+      ROOT maximum.31 = f32[] maximum(Arg_0.29, Arg_1.30)
+    }
+
+    region_1.40 {
+      Arg_0.41 = f32[] parameter(0)
+      Arg_1.42 = f32[] parameter(1)
+      ROOT add.43 = f32[] add(Arg_0.41, Arg_1.42)
+    }
+
+    ENTRY main.52 {
+      iota.13 = s32[1024]{0} iota(), iota_dimension=0
+      broadcast.14 = s32[1024,1024]{1,0} broadcast(iota.13), dimensions={0}
+      iota.15 = s32[1024]{0} iota(), iota_dimension=0
+      broadcast.16 = s32[1024,1024]{1,0} broadcast(iota.15), dimensions={1}
+      compare.17 = pred[1024,1024]{1,0} compare(broadcast.14, broadcast.16), direction=GE
+      Arg_0.1 = f16[4,48,1024,16]{3,2,1,0} parameter(0)
+      Arg_1.2 = f16[4,48,1024,16]{3,2,1,0} parameter(1)
+      transpose.10 = f16[4,48,16,1024]{2,3,1,0} transpose(Arg_1.2), dimensions={0,1,3,2}
+      dot.11 = f16[4,48,1024,1024]{3,2,1,0} dot(Arg_0.1, transpose.10), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={2}
+      constant.6 = f16[] constant(0.5)
+      broadcast.7 = f16[4,48,1024,1024]{3,2,1,0} broadcast(constant.6), dimensions={}
+      multiply.12 = f16[4,48,1024,1024]{3,2,1,0} multiply(dot.11, broadcast.7)
+      constant.9 = f32[] constant(-inf)
+      call.26 = f16[4,48,1024,1024]{3,2,1,0} call(compare.17, multiply.12, constant.9), to_apply=_where.18
+      convert.27 = f32[4,48,1024,1024]{3,2,1,0} convert(call.26)
+      reduce.32 = f32[4,48,1024]{2,1,0} reduce(convert.27, constant.9), dimensions={3}, to_apply=region_0.28
+      constant.4 = f32[] constant(-inf)
+      broadcast.5 = f32[4,48,1024]{2,1,0} broadcast(constant.4), dimensions={}
+      maximum.33 = f32[4,48,1024]{2,1,0} maximum(reduce.32, broadcast.5)
+      reshape.34 = f32[4,48,1024,1]{3,2,1,0} reshape(maximum.33)
+      broadcast.35 = f32[4,48,1024,1]{3,2,1,0} broadcast(reshape.34), dimensions={0,1,2,3}
+      reshape.36 = f32[4,48,1024]{2,1,0} reshape(broadcast.35)
+      broadcast.37 = f32[4,48,1024,1024]{3,2,1,0} broadcast(reshape.36), dimensions={0,1,2}
+      subtract.38 = f32[4,48,1024,1024]{3,2,1,0} subtract(convert.27, broadcast.37)
+      exponential.39 = f32[4,48,1024,1024]{3,2,1,0} exponential(subtract.38)
+      constant.8 = f32[] constant(0)
+      reduce.44 = f32[4,48,1024]{2,1,0} reduce(exponential.39, constant.8), dimensions={3}, to_apply=region_1.40
+      reshape.45 = f32[4,48,1024,1]{3,2,1,0} reshape(reduce.44)
+      broadcast.46 = f32[4,48,1024,1]{3,2,1,0} broadcast(reshape.45), dimensions={0,1,2,3}
+      reshape.47 = f32[4,48,1024]{2,1,0} reshape(broadcast.46)
+      broadcast.48 = f32[4,48,1024,1024]{3,2,1,0} broadcast(reshape.47), dimensions={0,1,2}
+      divide.49 = f32[4,48,1024,1024]{3,2,1,0} divide(exponential.39, broadcast.48)
+      convert.50 = f16[4,48,1024,1024]{3,2,1,0} convert(divide.49)
+      Arg_2.3 = f16[4,48,1024,16]{3,2,1,0} parameter(2)
+      ROOT dot.51 = f16[4,48,1024,16]{3,2,1,0} dot(convert.50, Arg_2.3), lhs_batch_dims={0,1}, lhs_contracting_dims={3}, rhs_batch_dims={0,1}, rhs_contracting_dims={2}
+    } // main.52
+  )hlo";
+
+  HloModuleConfig with_fmha{};
+  HloModuleConfig without_fmha{};
+  DebugOptions debug_options = GetDebugOptionsForTest();
+  debug_options.set_xla_gpu_enable_cudnn_fmha(false);
+  without_fmha.set_debug_options(debug_options);
+
+  EXPECT_TRUE(RunAndCompareTwoModules(hlo_text, hlo_text, with_fmha,
+                                      without_fmha, ErrorSpec{1e-3, 1e-3}));
+}
 }  // anonymous namespace
 }  // namespace gpu
 }  // namespace xla

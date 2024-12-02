@@ -234,7 +234,7 @@ HloInstruction* HloInstruction::AddInstruction(
 }
 
 /* static */
-StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
+absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
     const HloInstructionProto& proto,
     const absl::flat_hash_map<int64_t, HloInstruction*>& instruction_map,
     const absl::flat_hash_map<int64_t, HloComputation*>& computation_map,
@@ -507,6 +507,21 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
       instruction =
           CreateConditional(shape, cond_operands[0], all_computations(),
                             absl::MakeSpan(cond_operands).subspan(1));
+      break;
+    }
+    case HloOpcode::kWhile: {
+      TF_RET_CHECK(proto.called_computation_ids_size() == 2)
+          << "While should have 2 called computation but has "
+          << proto.called_computation_ids_size();
+      auto body_computation =
+          computation_map.at(proto.called_computation_ids()[0]);
+      auto cond_computation =
+          computation_map.at(proto.called_computation_ids()[1]);
+      TF_RET_CHECK(proto.operand_ids_size() == 1)
+          << "While should have 1 operand but has " << proto.operand_ids_size();
+      auto while_init = all_operands()[0];
+      instruction =
+          CreateWhile(shape, cond_computation, body_computation, while_init);
       break;
     }
     case HloOpcode::kReduce:
@@ -1180,12 +1195,6 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
     }
     default: {
       instruction = absl::WrapUnique(new HloInstruction(opcode, shape));
-      if (instruction->opcode() == HloOpcode::kWhile) {
-        TF_RET_CHECK(proto.called_computation_ids_size() == 2)
-            << "While should have 2 called computation but has "
-            << proto.called_computation_ids_size();
-      }
-
       for (const int64_t operand_id : proto.operand_ids()) {
         instruction->AppendOperand(instruction_map.at(operand_id));
       }
@@ -1718,15 +1727,14 @@ HloInstruction::CreateAddDependency(HloInstruction* data_operand,
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateWhile(
     const Shape& shape, HloComputation* condition, HloComputation* body,
     HloInstruction* init) {
-  auto instruction =
-      absl::WrapUnique(new HloInstruction(HloOpcode::kWhile, shape));
-  instruction->AppendOperand(init);
-  // Body comes before condition computation in the vector.
-  instruction->AppendComputation(body);
-  instruction->AppendComputation(condition);
-  // Set back pointer from body computation to the while call instruction.
-  body->SetWhileCallInstruction(instruction.get());
-  return instruction;
+  if (body->WhileCallInstruction() != nullptr && body->parent() != nullptr) {
+    body = body->parent()->AddEmbeddedComputation(body->Clone());
+  }
+  if ((condition->WhileCallInstruction() != nullptr || condition == body) &&
+      condition->parent() != nullptr) {
+    condition = condition->parent()->AddEmbeddedComputation(condition->Clone());
+  }
+  return std::make_unique<HloWhileInstruction>(shape, body, condition, init);
 }
 
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateConditional(
@@ -2384,6 +2392,7 @@ std::unique_ptr<HloInstruction> HloInstruction::CloneWithNewOperands(
     case HloOpcode::kTriangularSolve:
     case HloOpcode::kCholesky:
     case HloOpcode::kTopK:
+    case HloOpcode::kWhile:
       clone = CloneWithNewOperandsImpl(shape, new_operands, context);
       break;
     // Unary ops.
@@ -2473,11 +2482,6 @@ std::unique_ptr<HloInstruction> HloInstruction::CloneWithNewOperands(
     case HloOpcode::kTuple:
       clone = CreateTuple(new_operands);
       *clone->mutable_shape() = shape;
-      break;
-    case HloOpcode::kWhile:
-      CHECK_EQ(new_operands.size(), 1);
-      clone =
-          CreateWhile(shape, while_condition(), while_body(), new_operands[0]);
       break;
     case HloOpcode::kConditional:
       CHECK_EQ(new_operands.size(), branch_count() + 1);
@@ -3223,11 +3227,19 @@ HloComputation* HloInstruction::while_body() const {
 
 void HloInstruction::set_while_condition(HloComputation* computation) {
   CHECK_EQ(HloOpcode::kWhile, opcode_);
+  if (while_condition()->WhileCallInstruction() == this) {
+    while_condition()->SetWhileCallInstruction(nullptr);
+  }
+  computation->SetWhileCallInstruction(this);
   rare_->called_computations[kConditionComputationIndex] = computation;
 }
 
 void HloInstruction::set_while_body(HloComputation* computation) {
   CHECK_EQ(HloOpcode::kWhile, opcode_);
+  if (while_body()->WhileCallInstruction() == this) {
+    while_body()->SetWhileCallInstruction(nullptr);
+  }
+  computation->SetWhileCallInstruction(this);
   rare_->called_computations[kBodyComputationIndex] = computation;
 }
 
@@ -3268,6 +3280,7 @@ HloComputation* HloInstruction::branch_computation(int b) const {
 void HloInstruction::set_branch_computation(int b,
                                             HloComputation* computation) {
   CHECK_EQ(HloOpcode::kConditional, opcode_);
+  computation->SetConditionalCallInstruction(this);
   rare_->called_computations[b] = computation;
 }
 
@@ -4585,7 +4598,7 @@ absl::string_view ToString(HloInstruction::FusionKind kind) {
   }
 }
 
-StatusOr<HloInstruction::FusionKind> StringToFusionKind(
+absl::StatusOr<HloInstruction::FusionKind> StringToFusionKind(
     absl::string_view kind_name) {
   if (kind_name == "kLoop") {
     return HloInstruction::FusionKind::kLoop;
@@ -4744,7 +4757,8 @@ std::string ReplicaGroupsToString(
   return StrCat("{", StrJoin(replica_group_str, ","), "}");
 }
 
-StatusOr<RandomAlgorithm> StringToRandomAlgorithm(const std::string& name) {
+absl::StatusOr<RandomAlgorithm> StringToRandomAlgorithm(
+    const std::string& name) {
   static absl::flat_hash_map<std::string, RandomAlgorithm>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, RandomAlgorithm>;
     for (int i = 0; i < RandomAlgorithm_ARRAYSIZE; i++) {
@@ -4762,7 +4776,7 @@ StatusOr<RandomAlgorithm> StringToRandomAlgorithm(const std::string& name) {
   return found->second;
 }
 
-StatusOr<RandomDistribution> StringToRandomDistribution(
+absl::StatusOr<RandomDistribution> StringToRandomDistribution(
     const std::string& name) {
   static absl::flat_hash_map<std::string, RandomDistribution>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, RandomDistribution>;
@@ -4781,7 +4795,7 @@ StatusOr<RandomDistribution> StringToRandomDistribution(
   return found->second;
 }
 
-StatusOr<PrecisionConfig::Precision> StringToPrecision(
+absl::StatusOr<PrecisionConfig::Precision> StringToPrecision(
     const std::string& name) {
   static absl::flat_hash_map<std::string, PrecisionConfig::Precision>* map =
       [] {
@@ -4823,7 +4837,7 @@ absl::StatusOr<PrecisionConfig::Algorithm> StringToAlgorithm(
   return found->second;
 }
 
-StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
+absl::StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
     absl::string_view name) {
   static const absl::flat_hash_map<std::string, CustomCallSchedule>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, CustomCallSchedule>;
@@ -4842,7 +4856,7 @@ StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
   return found->second;
 }
 
-StatusOr<CustomCallApiVersion> StringToCustomCallApiVersion(
+absl::StatusOr<CustomCallApiVersion> StringToCustomCallApiVersion(
     absl::string_view name) {
   static const absl::flat_hash_map<std::string, CustomCallApiVersion>* map =
       [] {
@@ -4965,8 +4979,8 @@ bool HloInstruction::BackendConfigRep::operator==(
   return GetRawString() == other.GetRawString();
 }
 
-/* static */ StatusOr<std::string> HloInstruction::BackendConfigToRawString(
-    const tsl::protobuf::Message& proto) {
+/* static */ absl::StatusOr<std::string>
+HloInstruction::BackendConfigToRawString(const tsl::protobuf::Message& proto) {
   std::string ret;
   // Pass ignore_accuracy_loss = true because estimated_cycles field can be
   // INT64_MAX. If ignore_accuracy_loss = false and estimated_cycles =

@@ -67,7 +67,6 @@ class HloDimensionsInstruction : public HloInstruction {
       case HloOpcode::kReduce:
       case HloOpcode::kReverse:
       case HloOpcode::kSort:
-      case HloOpcode::kTopK:
       case HloOpcode::kTranspose:
         return true;
       default:
@@ -300,6 +299,7 @@ class HloAsyncStartInstruction : public HloAsyncInstruction {
       absl::string_view async_execution_thread = kMainExecutionThread);
 
   ~HloAsyncStartInstruction() override;
+  void ClearCalledComputations() override;
   // When an async instruction is being destructed, remove it from the vector of
   // pointers of its called computation, to avoid referencing freed memory.
   void ClearAsyncComputationInstruction();
@@ -1323,7 +1323,8 @@ class HloCallableInstruction : public HloInstruction {
   static bool ClassOf(const HloInstruction* hlo) {
     return hlo->opcode() == HloOpcode::kFusion ||
            hlo->opcode() == HloOpcode::kCall ||
-           hlo->opcode() == HloOpcode::kCustomCall;
+           hlo->opcode() == HloOpcode::kCustomCall ||
+           hlo->opcode() == HloOpcode::kWhile;
   }
 
   // Gets a list of output/operand buffer pairs that alias each other, where the
@@ -1502,6 +1503,34 @@ class HloCallInstruction : public HloCallableInstruction {
   std::string default_called_computation_name() const override {
     return "called_computation";
   }
+};
+
+class HloWhileInstruction : public HloCallableInstruction {
+ public:
+  HloWhileInstruction(const Shape& shape, HloComputation* body,
+                      HloComputation* condition, HloInstruction* init);
+
+  ~HloWhileInstruction() override;
+
+  void ClearCalledComputations() override;
+
+  // When a while instruction is being destructed, clear the back pointer of
+  // its while computations, to avoid referencing freed memory.
+  void ClearWhileComputationInstruction();
+
+  static bool ClassOf(const HloInstruction* hlo) {
+    return hlo->opcode() == HloOpcode::kWhile;
+  }
+
+ protected:
+  std::string default_called_computation_name() const override {
+    return "body_computation";
+  }
+
+ private:
+  std::unique_ptr<HloInstruction> CloneWithNewOperandsImpl(
+      const Shape& shape, absl::Span<HloInstruction* const> new_operands,
+      HloCloneContext* context) const override;
 };
 
 class HloRngInstruction : public HloInstruction {
@@ -2214,6 +2243,8 @@ class HloDynamicUpdateSliceInstruction : public HloDynamicIndexInstruction {
       absl::Span<HloInstruction* const> start_indices);
 
   int64_t first_index_operand_number() const override { return 2; }
+
+  const HloInstruction* update() const { return operand(1); }
 
   static bool ClassOf(const HloInstruction* hlo) {
     return hlo->opcode() == HloOpcode::kDynamicUpdateSlice;
