@@ -60,13 +60,34 @@ TEST(CastOpModel, CastInt4ToFloatLarge) {
   }
 }
 
+TEST(CastOpModel, CastFloatToUint8Infinity) {
+  CastOpModel m({TensorType_FLOAT32, {2}}, {TensorType_UINT8, {2}});
+  m.PopulateTensor<float>(m.input(), {std::numeric_limits<float>::infinity(),
+                                      -std::numeric_limits<float>::infinity()});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.ExtractVector<uint8_t>(m.output()),
+              ElementsAreArray({std::numeric_limits<uint8_t>::max(),
+                                std::numeric_limits<uint8_t>::min()}));
+}
+
+TEST(CastOpModel, CastFloatToInt16Infinity) {
+  CastOpModel m({TensorType_FLOAT32, {2}}, {TensorType_INT16, {2}});
+  m.PopulateTensor<float>(m.input(), {std::numeric_limits<float>::infinity(),
+                                      -std::numeric_limits<float>::infinity()});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.ExtractVector<int16_t>(m.output()),
+              ElementsAreArray({std::numeric_limits<int16_t>::max(),
+                                std::numeric_limits<int16_t>::min()}));
+}
+
 TEST(CastOpModel, CastFloatToInt32Infinity) {
   CastOpModel m({TensorType_FLOAT32, {2}}, {TensorType_INT32, {2}});
   m.PopulateTensor<float>(m.input(), {std::numeric_limits<float>::infinity(),
                                       -std::numeric_limits<float>::infinity()});
   ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.ExtractVector<int32_t>(m.output()),
-              ElementsAreArray({2147483520, -2147483520}));
+              ElementsAreArray({std::numeric_limits<int32_t>::max(),
+                                std::numeric_limits<int32_t>::min()}));
 }
 
 TEST(CastOpModel, CastInt16ToFloat) {

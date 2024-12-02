@@ -5,12 +5,20 @@
 #   to other TF components outside of TSL.
 
 load(
-    "//tsl:tsl.bzl",
+    "@bazel_skylib//:bzl_library.bzl",
+    "bzl_library",
+)
+load(
+    "@local_tsl//tsl/platform:rules_cc.bzl",
+    "cc_library",
+)
+load(
+    "@local_xla//xla/tsl:tsl.bzl",
     "if_not_fuchsia",
     "internal_visibility",
     "tsl_copts",
 )
-load("//tsl:tsl.default.bzl", "get_compatible_with_portable")
+load("@local_xla//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
 load(
     "//tsl/platform:build_config.bzl",
     "tf_cuda_libdevice_path_deps",
@@ -29,14 +37,6 @@ load(
     "tsl_protobuf_deps",
 )
 load("//tsl/platform:build_config_root.bzl", "if_static")
-load(
-    "@local_tsl//tsl/platform:rules_cc.bzl",
-    "cc_library",
-)
-load(
-    "@bazel_skylib//:bzl_library.bzl",
-    "bzl_library",
-)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -94,6 +94,7 @@ cc_library(
     deps = [
         ":byte_order",
         ":stringpiece",
+        ":tstring",
         ":types",
     ],
 )
@@ -578,7 +579,7 @@ filegroup(
         "threadpool_interface.h",
         "tracing.h",
     ] + select({
-        "//tsl:fuchsia": tf_google_mobile_srcs_no_runtime(),
+        "@local_xla//xla/tsl:fuchsia": tf_google_mobile_srcs_no_runtime(),
         "//conditions:default": [
             "file_system_helper.cc",
             "tracing.cc",
@@ -846,6 +847,7 @@ cc_library(
     deps = [
         ":logging",
         ":path",
+        ":platform",
         ":test",
     ],
 )
@@ -902,6 +904,7 @@ cc_library(
         ":macros",
         ":stringpiece",
         ":types",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -925,6 +928,7 @@ cc_library(
     hdrs = ["stringpiece.h"],
     compatible_with = get_compatible_with_portable(),
     deps = [
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1024,7 +1028,7 @@ cc_library(
     compatible_with = get_compatible_with_portable(),
     deps = [
         "@ml_dtypes//:float8",
-        "@ml_dtypes//:int4",
+        "@ml_dtypes//:intn",
     ],
 )
 
@@ -1296,7 +1300,7 @@ cc_library(
     srcs = ["test_main.cc"],
     copts = tsl_copts(),
     linkopts = select({
-        "//tsl:windows": [],
+        "@local_xla//xla/tsl:windows": [],
         "//conditions:default": ["-lm"],
     }),
     deps = [
@@ -1454,6 +1458,7 @@ tsl_cc_test(
         "//tsl/platform/testdata:test_noop",
         "//tsl/platform/testdata:test_stderr",
     ],
+    tags = ["no_oss"],  # TODO(b/327036247): revisit after this moves to XLA
     deps = [
         ":path",
         ":strcat",
@@ -1555,8 +1560,15 @@ tsl_cc_test(
     ],
     deps = [
         ":logging",
+        ":path",
+        ":stacktrace_handler",
+        ":statusor",
         ":test",
-        ":test_main",
+        "@com_google_absl//absl/base:log_severity",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -1704,6 +1716,12 @@ bzl_library(
     name = "rules_cc_bzl",
     srcs = ["rules_cc.bzl"],
     deps = tf_platform_alias("rules_cc_bzl"),
+)
+
+bzl_library(
+    name = "build_config_root_bzl",
+    srcs = ["build_config_root.bzl"],
+    deps = tf_platform_alias("build_config_root_bzl"),
 )
 
 cc_library(

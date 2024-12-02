@@ -5,6 +5,7 @@
 # Placeholder: load py_proto_library
 load(
     "//tensorflow:tensorflow.bzl",
+    "tf_cc_test",
     "tf_cuda_library",
     "tf_cuda_only_cc_test",
 )
@@ -14,6 +15,7 @@ load(
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_proto_library",
+    # copybara:uncomment "tf_pyclif_proto_library",
 )
 load(
     "//tensorflow/core/platform:rules_cc.bzl",
@@ -33,6 +35,39 @@ cc_library(
     ],
     deps = [
         "//tensorflow/core/kernels:gpu_util_hdrs",
+    ],
+)
+
+cc_library(
+    name = "conv_map_wrapper",
+    srcs = ["conv_map_wrapper.cc"],
+    hdrs = ["conv_map_wrapper.h"],
+    visibility = [
+        "//tensorflow:__subpackages__",
+        "//waymo/ml/deploy:__subpackages__",
+    ],
+    deps = [
+        ":autotune_map_proto_cc",
+        ":conv_parameters_proto_cc",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/lib/strings:proto_serialization",
+        "@local_tsl//tsl/protobuf:dnn_proto_cc",
+    ],
+)
+
+tf_cc_test(
+    name = "conv_map_wrapper_test",
+    srcs = ["conv_map_wrapper_test.cc"],
+    deps = [
+        ":autotune_map_proto_cc",
+        ":conv_map_wrapper",
+        ":conv_parameters_proto_cc",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/protobuf:dnn_proto_cc",
+        "@local_xla//xla:test",
     ],
 )
 
@@ -73,9 +108,7 @@ cc_library(
         "conv_autotune_maps.h",
         "conv_parameters.h",
     ],
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
 )
 
 tf_cuda_library(
@@ -121,6 +154,15 @@ tf_proto_library(
 #     visibility = ["//waymo/ml/deploy/system/autotuning:__subpackages__"],
 #     deps = [":autotune_map_proto"],
 # )
+#
+# tf_pyclif_proto_library(
+#     name = "autotune_map_pyclif",
+#     proto_lib = ":autotune_map_proto",
+#     visibility = [
+#         "//waymo/ml/deploy/benchmark:__subpackages__",
+#         "//waymo/ml/deploy/system/autotuning:__subpackages__",
+#     ],
+# )
 # copybara:uncomment_end
 
 tf_cuda_library(
@@ -140,12 +182,10 @@ tf_cuda_library(
         "//tensorflow/core:framework",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/platform:str_util",
-        "//tensorflow/core/platform:stream_executor",
         "@local_tsl//tsl/lib/strings:proto_serialization",
         "@local_tsl//tsl/protobuf:dnn_proto_cc",
         "@local_xla//xla:status_macros",
-        "@local_xla//xla/stream_executor",
-        "@local_xla//xla/stream_executor:lazy_op_runner",
+        "@local_xla//xla/stream_executor:dnn",
         "@local_xla//xla/stream_executor:platform_manager",
         "@local_xla//xla/stream_executor/gpu:gpu_init",
     ],

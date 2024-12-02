@@ -2,9 +2,9 @@
 # This includes the C API, Java API, and protocol buffer files.
 
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
+load("@local_xla//xla/tsl/mkl:build_defs.bzl", "if_enable_mkl", "if_mkl")
 load("@rules_pkg//:pkg.bzl", "pkg_tar", "pkg_zip")
 load("//tensorflow:tensorflow.bzl", "VERSION", "VERSION_MAJOR", "if_macos")
-load("@local_xla//xla/tsl/mkl:build_defs.bzl", "if_enable_mkl", "if_mkl")
 load("//tensorflow/core/platform:build_config_root.bzl", "tf_additional_license_deps")
 
 package(default_visibility = ["//visibility:private"])
@@ -72,7 +72,12 @@ pkg_tar(
         "//tensorflow/c:headers",
     ],
     package_dir = "include/",
-    strip_prefix = "/external/local_tsl",
+    # TODO(ddunleavy): Remove `local_tsl` after TSL move is completed.
+    remap_paths = {
+        "external/local_xla/xla": "xla",
+        "external/local_tsl/tsl": "tsl",
+    },
+    strip_prefix = ".",
     # Mark as "manual" till
     # https://github.com/bazelbuild/bazel/issues/2352
     # and https://github.com/bazelbuild/bazel/issues/1580
@@ -160,7 +165,7 @@ genrule(
             "@com_github_googlecloudplatform_google_cloud_cpp//:LICENSE",
         ],
     }) + select({
-        "@local_tsl//tsl:with_numa_support": [
+        "@local_xla//xla/tsl:with_numa_support": [
             "@hwloc//:COPYING",
         ],
         "//conditions:default": [],
@@ -203,7 +208,7 @@ genrule(
             "@com_github_googlecloudplatform_google_cloud_cpp//:LICENSE",
         ],
     }) + select({
-        "@local_tsl//tsl:with_numa_support": [
+        "@local_xla//xla/tsl:with_numa_support": [
             "@hwloc//:COPYING",
         ],
         "//conditions:default": [],

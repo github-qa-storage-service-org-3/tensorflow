@@ -21,19 +21,22 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/gpu/autotuner_util.h"
+#include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/hlo_pass_interface.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/stream_executor.h"
 
 namespace xla {
 namespace gpu {
 
 // Converts HLO fusions with cuDNN backend config to cuDNN graphs,
-// compiles them using a cuDNN handle and stores them in the
-// backend config in serialized form.
+// compiles them using a cuDNN handle and serializes them.
 class CuDnnFusionCompiler : public HloModulePass {
  public:
-  explicit CuDnnFusionCompiler(const AutotuneConfig& config)
-      : config_(config) {}
+  explicit CuDnnFusionCompiler(se::StreamExecutor& stream_exec,
+                               BinaryMap& compilation_results)
+      : dnn_support_(*stream_exec.AsDnn()),
+        compilation_results_(compilation_results) {}
 
   absl::string_view name() const override { return "cudnn-fusion-compiler"; }
 
@@ -42,10 +45,12 @@ class CuDnnFusionCompiler : public HloModulePass {
       HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
-  int GetAvailablePlanCount(const HloFusionInstruction& hlo) const;
+  static int GetAvailablePlanCount(se::StreamExecutor& stream_exec,
+                                   const HloFusionInstruction& hlo);
 
  private:
-  AutotuneConfig config_;
+  se::dnn::DnnSupport& dnn_support_;
+  BinaryMap& compilation_results_;
 };
 
 }  // namespace gpu

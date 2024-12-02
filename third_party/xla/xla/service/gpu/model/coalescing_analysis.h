@@ -18,11 +18,12 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/types/span.h"
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/hlo_traversal.h"
+#include "xla/service/gpu/model/indexing_map.h"
 
 namespace xla {
 namespace gpu {
@@ -38,7 +39,7 @@ class CoalescingAnalysis {
                      absl::Span<const HloInstruction* const> operands,
                      const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
-                     IndexingContext* indexing_context = nullptr,
+                     mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
 
   // Computes read coalescing for operands of fused `producer` and `consumer`.
@@ -47,7 +48,7 @@ class CoalescingAnalysis {
                      absl::Span<const HloInstruction* const> operands,
                      const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
-                     IndexingContext* indexing_context = nullptr,
+                     mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
 
   // Returns true if the operand is read coalesced.
@@ -58,8 +59,7 @@ class CoalescingAnalysis {
       const HloFusionAdaptor& fusion_adaptor,
       absl::Span<const HloInstruction* const> operands,
       const HloFusionAnalysis& fusion_analysis,
-      KernelFusionInterface* fusion_interface,
-      IndexingContext* indexing_context = nullptr);
+      KernelFusionInterface* fusion_interface, mlir::MLIRContext* mlir_context);
 
   absl::flat_hash_map<const HloInstruction*, bool> coalescing_per_operand_;
   bool is_coalesced_computed_by_heuristic_ = false;

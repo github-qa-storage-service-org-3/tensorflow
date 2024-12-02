@@ -18,16 +18,18 @@ limitations under the License.
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "absl/status/status.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/service/gpu/fusions/mlir/computation_partitioner.h"
 #include "xla/service/gpu/fusions/mlir/mlir_fusion_emitter.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/launch_dimensions.h"
-#include "xla/service/gpu/model/indexing_context.h"
 #include "xla/service/gpu/model/indexing_map.h"
 
 namespace xla {
@@ -35,19 +37,16 @@ namespace gpu {
 
 class MlirConcatenateFusion : public MlirFusionEmitterBase {
  public:
-  explicit MlirConcatenateFusion(const HloFusionAnalysis& analysis)
-      : analysis_(analysis) {}
-
-  static bool IsSupported(const HloFusionAnalysis& analysis);
+  explicit MlirConcatenateFusion(const HloFusionAnalysis& analysis);
 
   LaunchDimensions launch_dimensions() const override;
 
   std::optional<IndexingMap> ComputeThreadIdToOutputIndexing(
-      int64_t root_index, IndexingContext* indexing_context) const override;
+      int64_t root_index, mlir::MLIRContext* ctx) const override;
 
   std::optional<IndexingMap> ComputeThreadIdToInputIndexing(
       int64_t root_index, int64_t hero_operand_index,
-      IndexingContext* indexing_context) const override;
+      mlir::MLIRContext* ctx) const override;
 
  protected:
   absl::Status EmitEntryFunction(
@@ -56,11 +55,15 @@ class MlirConcatenateFusion : public MlirFusionEmitterBase {
       mlir::func::FuncOp entry_function,
       const HloFusionInstruction& fusion) const override;
 
-  std::vector<const HloInstruction*> GetInstructionsWithCustomCodegen(
-      const HloFusionInstruction& fusion) const override;
+  std::vector<mlir_converter::EpilogueSpecification> GetEpilogues(
+      const HloFusionInstruction& fusion,
+      mlir::MLIRContext* mlir_context) const override;
 
  private:
   const HloFusionAnalysis& analysis_;
+  Shape largest_shape_;
+  LaunchDimensionsConfig config_;
+  int unroll_factor_;
 };
 
 }  // namespace gpu
