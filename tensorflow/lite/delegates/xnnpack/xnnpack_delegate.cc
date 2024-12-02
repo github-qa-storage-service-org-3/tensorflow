@@ -24,6 +24,7 @@ limitations under the License.
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -708,6 +709,7 @@ class Delegate {
 
   TfLiteXNNPackDelegateOptions options_{};
   VariableHolder variable_holder_;
+  std::mutex workspace_mutex_;
 };
 
 class Subgraph {
@@ -1116,7 +1118,8 @@ class Subgraph {
   }
 
   TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node,
-                       bool enable_subgraph_reshaping) {
+                       bool enable_subgraph_reshaping, Delegate* delegate) {
+    std::lock_guard<std::mutex> lock(delegate->workspace_mutex_);
     if (enable_subgraph_reshaping) {
       xnn_status status = xnn_status_invalid_state;
       for (int i = 0; i < inputs_.size(); ++i) {
@@ -1172,7 +1175,9 @@ class Subgraph {
     }
   }
 
-  TfLiteStatus Invoke(TfLiteContext* context, bool enable_subgraph_reshaping) {
+  TfLiteStatus Invoke(TfLiteContext* context, bool enable_subgraph_reshaping,
+                      Delegate* delegate) {
+    std::lock_guard<std::mutex> lock(delegate->workspace_mutex_);
     bool any_pointers_changed = false;
     for (std::pair<int, void*> io_info : externals_) {
       const TfLiteTensor& tensor = context->tensors[io_info.first];
@@ -2790,6 +2795,9 @@ class Subgraph {
       case kTfLiteBuiltinRound:
         return VisitRoundNode(subgraph, delegate, logging_context, node_index,
                               node, context->tensors, input_output_tensors);
+      case kTfLiteBuiltinRsqrt:
+        return VisitRsqrtNode(subgraph, delegate, logging_context, node_index,
+                              node, context->tensors, input_output_tensors);
       case kTfLiteBuiltinSlice:
         return VisitSliceNode(subgraph, delegate, logging_context, node_index,
                               node, context->tensors, input_output_tensors);
@@ -3983,60 +3991,6 @@ class Subgraph {
         return kTfLiteError;
       }
       num_input_elements *= SizeOfDimension(&input_tensor, i);
-    }
-
-    if (fc_params->keep_num_dims) {
-      TF_LITE_ENSURE_STATUS(CheckTensorShape(
-          logging_context, output_tensor, NumDimensions(&input_tensor),
-          node->outputs->data[0], BuiltinOperator_FULLY_CONNECTED, node_index));
-
-      for (int i = 0; i < NumDimensions(&input_tensor) - 1; i++) {
-        if (SizeOfDimension(&input_tensor, i) !=
-            SizeOfDimension(&output_tensor, i)) {
-          TF_LITE_MAYBE_KERNEL_LOG(
-              logging_context,
-              "mismatch in shape dimension %d (%d != %d) in input and output "
-              "tensors of FULLY_CONNECTED operator #%d",
-              i, SizeOfDimension(&input_tensor, i),
-              SizeOfDimension(&output_tensor, i), node_index);
-          return kTfLiteError;
-        }
-      }
-    } else {
-      if (num_input_elements % input_channels != 0) {
-        TF_LITE_MAYBE_KERNEL_LOG(
-            logging_context,
-            "number of elements in input tensor #%d in FULLY_CONNECTED "
-            "operator is not divisible by input channels (%d)",
-            node->inputs->data[0], input_channels);
-        return kTfLiteError;
-      }
-
-      TF_LITE_ENSURE_STATUS(CheckTensorShape(
-          logging_context, output_tensor, 2, node->outputs->data[0],
-          BuiltinOperator_FULLY_CONNECTED, node_index));
-
-      if (SizeOfDimension(&output_tensor, 0) !=
-          num_input_elements / input_channels) {
-        TF_LITE_MAYBE_KERNEL_LOG(
-            logging_context,
-            "batch size %d in output tensor #%d in FULLY_CONNECTED operator "
-            "does not match batch size %d in reshaped input tensor #%d",
-            SizeOfDimension(&output_tensor, 0), node->outputs->data[0],
-            num_input_elements / input_channels, node->inputs->data[0]);
-        return kTfLiteError;
-      }
-    }
-
-    if (SizeOfDimension(&output_tensor, NumDimensions(&output_tensor) - 1) !=
-        output_channels) {
-      TF_LITE_MAYBE_KERNEL_LOG(
-          logging_context,
-          "number of channels %d in output tensor #%d does not match output "
-          "channels %d in filter tensor #%d",
-          SizeOfDimension(&output_tensor, NumDimensions(&output_tensor) - 1),
-          node->outputs->data[0], output_channels, node->inputs->data[1]);
-      return kTfLiteError;
     }
 
     float output_min = -std::numeric_limits<float>::infinity();
@@ -6127,6 +6081,38 @@ class Subgraph {
     return kTfLiteOk;
   }
 
+  static TfLiteStatus VisitRsqrtNode(
+      xnn_subgraph_t subgraph, const Delegate& delegate,
+      TfLiteContext* logging_context, int node_index, TfLiteNode* node,
+      const TfLiteTensor* tensors,
+      const std::unordered_map<int, uint32_t>& input_output_tensors) {
+    TF_LITE_ENSURE_STATUS(CheckNumInputsAndOutputs(
+        logging_context, node, 1, 1, BuiltinOperator_RSQRT, node_index));
+
+    const TfLiteTensor& input_tensor = tensors[node->inputs->data[0]];
+    TF_LITE_ENSURE_STATUS(CheckTensorFloat32Type(
+        logging_context, input_tensor, node->inputs->data[0], node_index));
+
+    const TfLiteTensor& output_tensor = tensors[node->outputs->data[0]];
+    TF_LITE_ENSURE_STATUS(CheckTensorFloat32Type(
+        logging_context, output_tensor, node->outputs->data[0], node_index));
+
+    if (subgraph != nullptr) {
+      const xnn_status status = xnn_define_reciprocal_square_root(
+          subgraph, /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+          /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
+          /*flags=*/0);
+      if (status != xnn_status_success) {
+        TF_LITE_KERNEL_LOG(logging_context, "failed to delegate %s node #%d",
+                           EnumNameBuiltinOperator(BuiltinOperator_RSQRT),
+                           node_index);
+        return kTfLiteError;
+      }
+    }
+
+    return kTfLiteOk;
+  }
+
   static TfLiteStatus VisitSquaredDifferenceNode(
       xnn_subgraph_t subgraph, const Delegate& delegate,
       TfLiteContext* logging_context, int node_index, TfLiteNode* node,
@@ -6625,8 +6611,10 @@ class Subgraph {
     return enable_subgraph_reshaping_;
   }
 
+  inline Delegate* GetDelegate() const { return delegate_; }
+
  private:
-  Subgraph(const Delegate& delegate, xnn_runtime_t runtime,
+  Subgraph(Delegate& delegate, xnn_runtime_t runtime,
            const std::unordered_set<int>& externals, std::vector<int>& inputs,
            std::vector<int>& outputs,
            std::unordered_map<int, uint32_t>& tflite_tensor_to_xnnpack)
@@ -6639,6 +6627,7 @@ class Subgraph {
     outputs_ = outputs;
     has_variables_ = !delegate.GetAllVariableTensors().empty();
     enable_subgraph_reshaping_ = delegate.enable_subgraph_reshaping();
+    delegate_ = &delegate;
   }
 
   // XNNPACK Runtime (subgraph + workspace) with smart-pointer for lifetime
@@ -6666,6 +6655,7 @@ class Subgraph {
   bool has_variables_ = false;
   bool variables_set_up_ = false;
   bool enable_subgraph_reshaping_ = false;
+  Delegate* delegate_;
 };
 
 TfLiteIntArray* Delegate::PrepareOpsToDelegate(TfLiteContext* context) {
@@ -7074,7 +7064,8 @@ TfLiteStatus SubgraphPrepare(TfLiteContext* context, TfLiteNode* node) {
 
   Subgraph* subgraph = static_cast<Subgraph*>(node->user_data);
   return static_cast<Subgraph*>(node->user_data)
-      ->Prepare(context, node, subgraph->EnableSubgraphReshaping());
+      ->Prepare(context, node, subgraph->EnableSubgraphReshaping(),
+                subgraph->GetDelegate());
 }
 
 TfLiteStatus SubgraphInvoke(TfLiteContext* context, TfLiteNode* node) {
@@ -7084,7 +7075,8 @@ TfLiteStatus SubgraphInvoke(TfLiteContext* context, TfLiteNode* node) {
 
   Subgraph* subgraph = static_cast<Subgraph*>(node->user_data);
   return static_cast<Subgraph*>(node->user_data)
-      ->Invoke(context, subgraph->EnableSubgraphReshaping());
+      ->Invoke(context, subgraph->EnableSubgraphReshaping(),
+               subgraph->GetDelegate());
 }
 
 void SubgraphFree(TfLiteContext* context, void* buffer) {
