@@ -281,33 +281,6 @@ class PresetAssignments {
   std::string instruction_schedule_str_;
 };
 
-// A class for turning a copy start time and end time into slice start times.
-class SlicedPrefetchStartTimePicker {
- public:
-  // Returns the amount of time elapsed in the instruction schedule between
-  // (exclusive_start_time, exclusive_end_time).
-  using ElapsedTimeFn = std::add_pointer<float(
-      int64_t exclusive_start_time, int64_t exclusive_end_time) const>::type;
-
-  // Returns true if the instructions at lhs_time and rhs_time are in the same
-  // computation.
-  using SameComputationParentFn =
-      std::add_pointer<bool(int64_t lhs_time, int64_t rhs_time) const>::type;
-
-  // Picks slice start times, given the num_slices, prefetch_start_time, and
-  // prefetch_end_time. The returned times are exclusive.
-  //
-  // REQUIRES:
-  // - The instructions following each start time are guaranateed to be in the
-  //   same computation.
-  // - The returned times sorted.
-  // - The first returned time is equal to prefetch_start_time.
-  static std::vector<int64_t> Pick(
-      int64_t num_slices, int64_t exclusive_prefetch_start_time,
-      int64_t prefetch_end_time, absl::AnyInvocable<ElapsedTimeFn> elapsed_fn,
-      absl::AnyInvocable<SameComputationParentFn> has_same_parent_fn);
-};
-
 // MemorySpaceAssignment assigns memory spaces (default or alternate) to each
 // instruction in the module. It will greedily try placing as as many values in
 // the alternate memory space as possible. It uses the heap simulator to
@@ -477,12 +450,12 @@ class MemorySpaceAssignment {
   virtual ~MemorySpaceAssignment() = default;
 
   // Runs the MemorySpaceAssignment pass.
-  static StatusOr<std::unique_ptr<PresetAssignments>> Run(
+  static absl::StatusOr<std::unique_ptr<PresetAssignments>> Run(
       HloModule* module, const HloLiveRange& hlo_live_range,
       const HloAliasAnalysis& alias_analysis, const Options& options);
 
   // Calculates asynchronous copy statistics.
-  StatusOr<AsyncCopyStats> CalculateAsyncCopyStats() const;
+  absl::StatusOr<AsyncCopyStats> CalculateAsyncCopyStats() const;
 
   // Verify that the memory space assignment is free of overlapping buffers and
   // export heap simulator trace to be used by buffer_assignment.
@@ -490,9 +463,9 @@ class MemorySpaceAssignment {
 
  protected:
   // Main driver of the memory space assignment pass.
-  virtual StatusOr<std::unique_ptr<PresetAssignments>> RunMemorySpaceAssignment(
-      const HloLiveRange& hlo_live_range,
-      const HloAliasAnalysis& alias_analysis);
+  virtual absl::StatusOr<std::unique_ptr<PresetAssignments>>
+  RunMemorySpaceAssignment(const HloLiveRange& hlo_live_range,
+                           const HloAliasAnalysis& alias_analysis);
 
   // Finds an AllocationSequence for placing buffers in alternate memory using
   // the AlternateMemoryBestFitHeap algorithm. Must be set before Process() is
@@ -832,7 +805,7 @@ class AlternateMemoryBestFitHeap
   void AllocateCrossProgramPrefetchBuffer(
       HloModule* module, const BufferInterval& prefetch_candidate);
 
-  StatusOr<HeapSimulator::Result<HloValue>> Finish() override;
+  absl::StatusOr<HeapSimulator::Result<HloValue>> Finish() override;
 
  protected:
   // Given a buffer interval, returns the colocated intervals. Unlike the
@@ -1166,7 +1139,7 @@ class AlternateMemoryBestFitHeap
   // All of the allocation values have a must-alias relationship with each
   // other. Returns either kSuccess if all of the sites could be placed in the
   // alternate memory or a bitwise OR of failure reasons why they couldn't
-  StatusOr<Result> AllocateAllocationValues(
+  absl::StatusOr<Result> AllocateAllocationValues(
       absl::Span<AllocationValue> allocation_values);
 
   // Finds an allocation for an allocation request for a segment (see the

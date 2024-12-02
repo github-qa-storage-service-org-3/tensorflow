@@ -343,7 +343,8 @@ Status InsertInstructionAndEnsureOperandsInserted(
   return OkStatus();
 }
 
-StatusOr<xla::HloLiveRange::LogicalTime> GetScheduleTimeFromInstructionName(
+absl::StatusOr<xla::HloLiveRange::LogicalTime>
+GetScheduleTimeFromInstructionName(
     absl::string_view name,
     const absl::flat_hash_map<const xla::HloInstruction*,
                               xla::HloLiveRange::LogicalTime>& schedule) {
@@ -381,7 +382,7 @@ bool DoesOperandMatchFilter(const HloOperandFilter& filter,
   return true;
 }
 
-StatusOr<std::optional<int64_t>> GetPrefetchTimeByEagerness(
+absl::StatusOr<std::optional<int64_t>> GetPrefetchTimeByEagerness(
     float prefetch_eagerness, int64_t earliest_prefetch_time,
     int64_t latest_prefetch_time) {
   CHECK_GE(prefetch_eagerness, 0.0);
@@ -394,7 +395,7 @@ StatusOr<std::optional<int64_t>> GetPrefetchTimeByEagerness(
       (latest_prefetch_time - earliest_prefetch_time) * prefetch_eagerness);
 }
 
-StatusOr<std::optional<int64_t>> GetPrefetchTimeAfterInstruction(
+absl::StatusOr<std::optional<int64_t>> GetPrefetchTimeAfterInstruction(
     const std::string& after_instruction_name,
     const absl::flat_hash_map<const xla::HloInstruction*,
                               xla::HloLiveRange::LogicalTime>& schedule) {
@@ -404,7 +405,7 @@ StatusOr<std::optional<int64_t>> GetPrefetchTimeAfterInstruction(
   return static_cast<std::optional<int64_t>>(reference_instruction_time);
 }
 
-StatusOr<std::optional<int64_t>> GetPrefetchTimeBeforeInstruction(
+absl::StatusOr<std::optional<int64_t>> GetPrefetchTimeBeforeInstruction(
     const std::string& before_instruction_name,
     const absl::flat_hash_map<const xla::HloInstruction*,
                               xla::HloLiveRange::LogicalTime>& schedule) {
@@ -414,7 +415,7 @@ StatusOr<std::optional<int64_t>> GetPrefetchTimeBeforeInstruction(
   return static_cast<std::optional<int64_t>>(reference_instruction_time - 1);
 }
 
-StatusOr<std::optional<int64_t>> GetPrefetchTime(
+absl::StatusOr<std::optional<int64_t>> GetPrefetchTime(
     const PreferredPrefetchOverrideOptions& override_options,
     int64_t earliest_prefetch_time, int64_t latest_prefetch_time,
     const absl::flat_hash_map<const HloInstruction*, HloLiveRange::LogicalTime>&
@@ -436,7 +437,7 @@ StatusOr<std::optional<int64_t>> GetPrefetchTime(
   return static_cast<StatusOr<std::optional<int64_t>>>(std::nullopt);
 }
 
-StatusOr<std::optional<int64_t>> GetOverriddenPreferredPrefetchTime(
+absl::StatusOr<std::optional<int64_t>> GetOverriddenPreferredPrefetchTime(
     const PreferredPrefetchOverrides& preferred_prefetch_overrides,
     int64_t operand_size, const HloUse& hlo_use,
     const absl::flat_hash_map<const HloInstruction*, HloLiveRange::LogicalTime>&
@@ -466,8 +467,8 @@ StatusOr<std::optional<int64_t>> GetOverriddenPreferredPrefetchTime(
 }
 
 bool DoesResultMatchFilter(const HloPositionMatcher& filter,
-                           const ShapeIndex& index,
-                           HloInstruction* instruction) {
+                           const BufferInterval& buffer_interval) {
+  HloInstruction* instruction = buffer_interval.buffer->instruction();
   if (filter.has_instruction_regex() &&
       !RE2::FullMatch(instruction->ToString(), filter.instruction_regex())) {
     return false;
@@ -477,8 +478,15 @@ bool DoesResultMatchFilter(const HloPositionMatcher& filter,
     return false;
   }
   if (filter.has_tuple_index() &&
-      index != ShapeIndex(filter.tuple_index().index().begin(),
-                          filter.tuple_index().index().end())) {
+      buffer_interval.buffer->index() !=
+          ShapeIndex(filter.tuple_index().index().begin(),
+                     filter.tuple_index().index().end())) {
+    return false;
+  }
+  if (filter.has_size_gte() && filter.size_gte() > buffer_interval.size) {
+    return false;
+  }
+  if (filter.has_size_lte() && filter.size_lte() < buffer_interval.size) {
     return false;
   }
   return true;
@@ -495,8 +503,7 @@ int64_t GetBufferIntervalOverridePriority(
   for (int64_t i = 0; i < msa_sort_order_overrides.overrides_size(); ++i) {
     const auto& override = msa_sort_order_overrides.overrides(i);
     if (!DoesResultMatchFilter(override.hlo_position_matcher(),
-                               buffer_interval.buffer->index(),
-                               buffer_interval.buffer->instruction())) {
+                               buffer_interval)) {
       continue;
     }
     LOG(INFO) << "Override Sort Order Config " << i << " matches "
@@ -1338,11 +1345,13 @@ std::function<int(const HloInstruction*)> GetOperandDistanceFunction(
     const HloLiveRange& hlo_live_range, const HloInstruction* use_inst) {
   const int use_idx = hlo_live_range.instruction_schedule().at(use_inst);
   return [&, use_idx](const HloInstruction* operand) -> int {
-    // We just use -1 for parameter, tuple, and gte instructions. We could make
-    // this "see through" the gtes if we get too many false positives.
+    // We just use -1 for parameter, tuple, gte and constant instructions. We
+    // could make this "see through" the gtes if we get too many false
+    // positives.
     if (operand->opcode() == HloOpcode::kParameter ||
         operand->opcode() == HloOpcode::kTuple ||
-        operand->opcode() == HloOpcode::kGetTupleElement) {
+        operand->opcode() == HloOpcode::kGetTupleElement ||
+        operand->opcode() == HloOpcode::kConstant) {
       return -1;
     }
     return use_idx - hlo_live_range.instruction_schedule().at(operand);
@@ -1568,7 +1577,8 @@ void AlternateMemoryBestFitHeap::IdentifyAndOptimizeMemoryBoundLoops() {
   }
 }
 
-StatusOr<HeapSimulator::Result<HloValue>> AlternateMemoryBestFitHeap::Finish() {
+absl::StatusOr<HeapSimulator::Result<HloValue>>
+AlternateMemoryBestFitHeap::Finish() {
   if (options_.autotuning_config.has_value()) {
     CHECK_EQ((*options_.autotuning_config).size(), buffer_intervals_.size());
   }
@@ -2140,7 +2150,7 @@ void AlternateMemoryBestFitHeap::CreateAllocationValuesFromColocatedIntervals(
   FindAliases(&allocation_values);
 }
 
-StatusOr<AlternateMemoryBestFitHeap::Result>
+absl::StatusOr<AlternateMemoryBestFitHeap::Result>
 AlternateMemoryBestFitHeap::AllocateAllocationValues(
     absl::Span<MemorySpaceAssignment::AllocationValue> allocation_values) {
   const auto& instruction_schedule = hlo_live_range_.instruction_schedule();
@@ -5136,71 +5146,6 @@ AlternateMemoryBestFitHeap::Result AlternateMemoryBestFitHeap::CheckPrefetchFit(
   return Result::kFailOutOfMemory;
 }
 
-std::vector<int64_t> SlicedPrefetchStartTimePicker::Pick(
-    int64_t num_slices, int64_t exclusive_prefetch_start_time,
-    int64_t prefetch_end_time, absl::AnyInvocable<ElapsedTimeFn> elapsed_fn,
-    absl::AnyInvocable<SameComputationParentFn> has_same_parent_fn) {
-  CHECK_LE(exclusive_prefetch_start_time, prefetch_end_time);
-  VLOG(5) << "Picking slice start times. num_slices = " << num_slices
-          << "; exclusive_prefetch_start_time = "
-          << exclusive_prefetch_start_time
-          << "; prefetch_end_time = " << prefetch_end_time;
-
-  // Prefetching starts after the selected start instruction and ends
-  // before the selected end instruction. Thus, we have (end - (start + 1)) HLO
-  // instructions worth of time to perform all of the sliced copies. So, the
-  // only choices for start times that give us time to copy are <=
-  // prefetch_end_time - 2.
-  if (exclusive_prefetch_start_time >= prefetch_end_time - 2 ||
-      num_slices == 1) {
-    return std::vector<int64_t>(num_slices, exclusive_prefetch_start_time);
-  }
-
-  float total_elapsed =
-      elapsed_fn(exclusive_prefetch_start_time, prefetch_end_time);
-  if (total_elapsed <= 0.0) {
-    return std::vector<int64_t>(num_slices, exclusive_prefetch_start_time);
-  }
-
-  std::vector<int64_t> start_times;
-  start_times.reserve(num_slices);
-  start_times.push_back(exclusive_prefetch_start_time);
-  int64_t last_valid_candidate = exclusive_prefetch_start_time;
-  int64_t candidate = exclusive_prefetch_start_time;
-  while (candidate < prefetch_end_time - 1 && start_times.size() < num_slices) {
-    float target_elapsed = total_elapsed *
-                           static_cast<float>(num_slices - start_times.size()) /
-                           static_cast<float>(num_slices);
-    float elapsed = elapsed_fn(candidate, prefetch_end_time);
-    if (elapsed < target_elapsed) {
-      // We've gone past our target, so use the last valid candidate.
-      start_times.push_back(last_valid_candidate);
-      continue;
-    }
-    bool updating_candidate_impacts_elapsed =
-        last_valid_candidate != candidate &&
-        elapsed_fn(last_valid_candidate,
-                   ExclusiveToInclusiveStartTime(candidate)) > 0.0;
-    // has_same_parent_fn will look up the computation parent of the
-    // instructions at prefetch_start_time and prefetch_end_time. If
-    // prefetch_start_time is -1, no such instruction will exist. However, if we
-    // want to insert an instruction after the -1 schedule position, we can
-    // use the parent of the instruction at index 0 instead. Thus, we use
-    // std::max below.
-    if (has_same_parent_fn(std::max<int64_t>(0, exclusive_prefetch_start_time),
-                           std::max<int64_t>(0, candidate)) &&
-        updating_candidate_impacts_elapsed) {
-      last_valid_candidate = candidate;
-    }
-    ++candidate;
-  }
-  while (start_times.size() < num_slices) {
-    start_times.push_back(last_valid_candidate);
-  }
-
-  return start_times;
-}
-
 std::string
 AlternateMemoryBestFitHeap::AlternateMemoryAllocationAttemptToString(
     bool for_sliced_solution, const PrefetchContext& context) const {
@@ -5329,7 +5274,7 @@ AlternateMemoryBestFitHeap::FindBestChunkCandidates(
   return {};
 }
 
-StatusOr<MemorySpaceAssignment::AsyncCopyStats>
+absl::StatusOr<MemorySpaceAssignment::AsyncCopyStats>
 MemorySpaceAssignment::CalculateAsyncCopyStats() const {
   AsyncCopyStats stats;
   int64_t current_copies = 0;
@@ -5373,7 +5318,7 @@ MemorySpaceAssignment::CalculateAsyncCopyStats() const {
   return stats;
 }
 
-/*static*/ StatusOr<std::unique_ptr<PresetAssignments>>
+/*static*/ absl::StatusOr<std::unique_ptr<PresetAssignments>>
 MemorySpaceAssignment::Run(HloModule* module,
                            const HloLiveRange& hlo_live_range,
                            const HloAliasAnalysis& alias_analysis,
@@ -5389,7 +5334,7 @@ MemorySpaceAssignment::Run(HloModule* module,
                                                           alias_analysis);
 }
 
-StatusOr<std::unique_ptr<PresetAssignments>>
+absl::StatusOr<std::unique_ptr<PresetAssignments>>
 MemorySpaceAssignment::RunMemorySpaceAssignment(
     const HloLiveRange& hlo_live_range,
     const HloAliasAnalysis& alias_analysis) {
@@ -6006,7 +5951,7 @@ Status MemorySpaceAssignment::FixSchedule() {
 
     VLOG(4) << "Scheduling: " << computation->ToString();
 
-    for (int64_t instruction_index = 0;; ++instruction_index) {
+    for (int64_t instruction_index = -1;; ++instruction_index) {
       auto insts_before_iter = schedule_before_.find(instruction_index);
       if (insts_before_iter != schedule_before_.end()) {
         for (HloInstruction* new_instruction : insts_before_iter->second) {
@@ -6018,25 +5963,32 @@ Status MemorySpaceAssignment::FixSchedule() {
           }
         }
       }
-      // We allow scheduling copy dones past the root instruction (for
-      // end-of-program cross-program prefetch). So the loop exit condition is
-      // actually here.
-      if (instruction_index >= flattened_instructions_.size()) {
-        break;
+
+      if (instruction_index != -1) {
+        // We allow scheduling copy dones past the root instruction (for
+        // end-of-program cross-program prefetch). So the loop exit condition is
+        // actually here.
+        if (instruction_index >= flattened_instructions_.size()) {
+          break;
+        }
+
+        HloInstruction* instruction =
+            flattened_instructions_[instruction_index];
+        // Insert only if it is not deleted (SimplifyGraph sets it to nullptr if
+        // it was deleted) and not previously inserted. Also bitcasts and tuples
+        // are treated specially and only inserted as a result of operand
+        // dependencies.
+        if (instruction != nullptr && instruction->parent() == computation &&
+            instruction->opcode() != HloOpcode::kBitcast &&
+            instruction->opcode() != HloOpcode::kTuple &&
+            !inserted_instructions.contains(instruction)) {
+          VLOG(4) << "inst " << instruction_index << ": "
+                  << instruction->name();
+          TF_RETURN_IF_ERROR(InsertInstructionAndEnsureOperandsInserted(
+              instruction, &new_sequence, &inserted_instructions));
+        }
       }
-      HloInstruction* instruction = flattened_instructions_[instruction_index];
-      // Insert only if it is not deleted (SimplifyGraph sets it to nullptr if
-      // it was deleted) and not previously inserted. Also bitcasts and tuples
-      // are treated specially and only inserted as a result of operand
-      // dependencies.
-      if (instruction != nullptr && instruction->parent() == computation &&
-          instruction->opcode() != HloOpcode::kBitcast &&
-          instruction->opcode() != HloOpcode::kTuple &&
-          !inserted_instructions.contains(instruction)) {
-        VLOG(4) << "inst " << instruction_index << ": " << instruction->name();
-        TF_RETURN_IF_ERROR(InsertInstructionAndEnsureOperandsInserted(
-            instruction, &new_sequence, &inserted_instructions));
-      }
+
       auto insts_after_iter = schedule_after_.find(instruction_index);
       if (insts_after_iter != schedule_after_.end()) {
         for (HloInstruction* new_instruction : insts_after_iter->second) {
@@ -6049,6 +6001,7 @@ Status MemorySpaceAssignment::FixSchedule() {
         }
       }
     }
+
     // For rare cases where the original sequence is empty, ensure the root
     // instruction and its dependencies are scheduled.
     TF_RETURN_IF_ERROR(EnsureInstructionAndOperandsInserted(
@@ -6086,7 +6039,7 @@ Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace() {
 
   auto add_allocation_and_verify = [&](int64_t start_time, int64_t end_time,
                                        const HeapSimulator::Chunk& chunk,
-                                       const HloValue* value) {
+                                       const HloValue* value) -> absl::Status {
     events[std::make_tuple(start_time, /*is_free=*/false, value->id())] =
         std::make_tuple(value, chunk, HeapSimulatorTrace::Event::ALLOC);
     events[std::make_tuple(end_time, /*is_free=*/true, value->id())] =
@@ -6322,10 +6275,9 @@ DefaultCrossProgramPrefetchBufferIntervalComparator::GetTuple(
       sort_data.cumulative_use_size +=
           ShapeUtil::ElementsInRecursive(use.instruction->shape());
     });
-    sort_data_it = additional_sort_data_
-                       .insert(std::make_pair(buffer_interval.buffer,
-                                              std::move(sort_data)))
-                       .first;
+    sort_data_it =
+        additional_sort_data_.try_emplace(buffer_interval.buffer, sort_data)
+            .first;
   }
 
   return std::make_tuple(
