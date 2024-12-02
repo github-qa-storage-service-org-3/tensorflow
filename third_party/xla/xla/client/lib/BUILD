@@ -1,9 +1,9 @@
 # Common computation builders for XLA.
 
-load("//xla/tests:build_defs.bzl", "generate_backend_suites", "xla_test")
-load("@local_tsl//tsl:tsl.bzl", "internal_visibility")
-load("@local_tsl//tsl:tsl.default.bzl", "filegroup")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla/tests:build_defs.bzl", "generate_backend_suites", "xla_test")
+load("//xla/tsl:tsl.bzl", "internal_visibility")
+load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -192,6 +192,7 @@ cc_library(
         "//xla:shape_util",
         "//xla:status_macros",
         "//xla/client:xla_builder",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -228,7 +229,6 @@ cc_library(
         ":slicing",
         "//xla:literal",
         "//xla:shape_util",
-        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:types",
@@ -238,6 +238,7 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
@@ -251,7 +252,6 @@ xla_test(
         ":constants",
         ":matrix",
         ":slicing",
-        "//xla:status",
         "//xla:statusor",
         "//xla:test",
         "//xla:types",
@@ -259,6 +259,7 @@ xla_test(
         "//xla/tests:client_library_test_base",
         "//xla/tests:test_macros_header",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -635,11 +636,11 @@ cc_library(
         ":loops",
         ":slicing",
         "//xla:shape_util",
-        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:xla_data_proto_cc",
         "//xla/client:xla_builder",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -655,11 +656,12 @@ xla_test(
         ":tridiagonal",
         "//xla:literal",
         "//xla:shape_util",
-        "//xla:status",
+        "//xla:test",
         "//xla/client:xla_builder",
         "//xla/tests:client_library_test_base",
         "//xla/tests:test_macros_header",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/status",
     ],
 )
 

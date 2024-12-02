@@ -32,6 +32,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -49,7 +50,6 @@ limitations under the License.
 #include "xla/service/memory_space_assignment/options.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
@@ -92,7 +92,7 @@ MemoryBoundLoopOptimizer::MemoryBoundLoopOptimizer(
       size_function_(size_function),
       reserved_scoped_memory_fn_(reserved_scoped_memory_fn) {}
 
-Status MemoryBoundLoopOptimizer::Initialize() {
+absl::Status MemoryBoundLoopOptimizer::Initialize() {
   const auto& instruction_sequence =
       hlo_live_range_.flattened_instruction_sequence().instructions();
   VLOG(3) << "MemoryBoundLoopOptimizer::Initialize, loop start: " << loop_start_
@@ -158,7 +158,7 @@ Status MemoryBoundLoopOptimizer::Initialize() {
   for (const HloBuffer* buffer : buffers_to_process) {
     MaybeCreateLoopValue(*buffer, loop_computation);
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 void MemoryBoundLoopOptimizer::MaybeCreateLoopValue(
@@ -227,9 +227,8 @@ void MemoryBoundLoopOptimizer::MaybeCreateLoopValue(
 
       // Keep track of bytes accessed by this value.
       if (loop_index || prev_iteration_index) {
-        float bytes_accessed =
-            cost_analysis_.hlo_cost_analysis().output_bytes_accessed(
-                *position.instruction, position.index);
+        float bytes_accessed = cost_analysis_.base_costs().OutputBytesAccessed(
+            *position.instruction, position.index);
         pos_bytes += bytes_accessed;
         VLOG(3) << " accessed: " << bytes_accessed;
       }
@@ -258,9 +257,8 @@ void MemoryBoundLoopOptimizer::MaybeCreateLoopValue(
 
       // Keep track of bytes accessed by this value.
       if (loop_index || next_iteration_index) {
-        float bytes_accessed =
-            cost_analysis_.hlo_cost_analysis().operand_bytes_accessed(
-                *use.instruction, use.operand_number, use.operand_index);
+        float bytes_accessed = cost_analysis_.base_costs().OperandBytesAccessed(
+            *use.instruction, use.operand_number, use.operand_index);
         use_bytes += bytes_accessed;
         VLOG(3) << " accessed: " << bytes_accessed;
       }

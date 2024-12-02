@@ -18,7 +18,11 @@ package xla.ifrt.proxy;
 
 import "google/protobuf/any.proto";
 import "xla/pjrt/execute_options.proto";
+import "xla/python/ifrt/dtype.proto";
+import "xla/python/ifrt/remap_plan.proto";
 import "xla/python/ifrt/serdes.proto";
+import "xla/python/ifrt/shape.proto";
+import "xla/python/ifrt/sharding.proto";
 import "xla/python/ifrt_proxy/common/types.proto";
 import "xla/xla_data.proto";
 import "tsl/protobuf/status.proto";
@@ -42,6 +46,7 @@ message IfrtRequest {
     MakeArrayFromHostBufferRequest make_array_from_host_buffer_request = 4;
     AssembleArrayFromSingleDeviceArraysRequest
         assemble_array_from_single_device_arrays_request = 5;
+    RemapArraysRequest remap_arrays_request = 23;
     CopyToHostBufferRequest copy_to_host_buffer_request = 6;
     DisassembleIntoSingleDeviceArraysRequest
         disassemble_into_single_device_arrays_request = 7;
@@ -85,6 +90,7 @@ message IfrtResponse {
     MakeArrayFromHostBufferResponse make_array_from_host_buffer_response = 4;
     AssembleArrayFromSingleDeviceArraysResponse
         assemble_array_from_single_device_arrays_response = 5;
+    RemapArraysResponse remap_arrays_response = 23;
     CopyToHostBufferResponse copy_to_host_buffer_response = 6;
     DisassembleIntoSingleDeviceArraysResponse
         disassemble_into_single_device_arrays_response = 7;
@@ -157,21 +163,21 @@ message ResponseMetadata {
   // ID of the operation this response belongs to.
   fixed64 op_id = 1;
 
-  // Status of the operation.
+  // absl::Status of the operation.
   //
   //    In case of "chunked" responses (i.e., the full logical response is
   //    spread across a sequence of IfrtResponse protos), the actual sequence of
-  //    IfrtResponse messages will follow only if this Status is OK in the very
-  //    first message. That is, in case of errors, server sends a single
+  //    IfrtResponse messages will follow only if this absl::Status is OK in the
+  //    very first message. That is, in case of errors, server sends a single
   //    IfrtResponse with the appropriate error included.
   //
   //    In case of "batched" operations (i.e., where the response is carrying
   //    the outcomes of multiple requests that were "batched" in the same
-  //    IfrtRequest proto - such as deleting a bunch of Arrays) this Status
-  //    field provides a way to quickly check if none of the individual
-  //    operations encountered errors. Clients should not rely on specific error
-  //    type or string when this is not OK, they should check the response
-  //    message for individual Statuses.
+  //    IfrtRequest proto - such as deleting a bunch of Arrays) this
+  //    absl::Status field provides a way to quickly check if none of the
+  //    individual operations encountered errors. Clients should not rely on
+  //    specific error type or string when this is not OK, they should check the
+  //    response message for individual absl::Statuses.
   tensorflow.StatusProto status = 2;
 }
 
@@ -216,6 +222,7 @@ message InitResponse {
   message Memory {
     int32 id = 1;
     string memory_space_kind = 2;
+    int32 kind_id = 6;
     repeated int32 device_ids = 3;
     string debug_string = 4;
     string to_string = 5;
@@ -242,9 +249,9 @@ message CheckFutureResponse {}
 // Makes an IFRT Array from the contents of a HostBuffer.
 // Equivalent to `ifrt::Client::MakeArrayFromHostBuffer`.
 message MakeArrayFromHostBufferRequest {
-  proto.DType dtype = 1;
-  proto.Shape shape = 2;
-  proto.Sharding sharding = 3;
+  DTypeProto dtype = 1;
+  ShapeProto shape = 2;
+  ShardingProto sharding = 3;
   fixed64 host_buffer_handle = 4;
   optional proto.ByteStrides byte_strides = 5;
 }
@@ -255,13 +262,24 @@ message MakeArrayFromHostBufferResponse {
 // Makes an IFRT Array from a set of single-device Arrays.
 // Equivalent to ifrt::Client::AssembleArrayFromSingleDeviceArrays.
 message AssembleArrayFromSingleDeviceArraysRequest {
-  proto.Shape shape = 1;
-  proto.Sharding sharding = 2;
+  ShapeProto shape = 1;
+  ShardingProto sharding = 2;
   repeated fixed64 single_device_array_handles = 3;
   proto.ArrayCopySemantics copy_semantics = 4;
 }
 message AssembleArrayFromSingleDeviceArraysResponse {
   fixed64 array_handle = 1;
+}
+
+// Remaps the shards of given IFRT arrays to new IFRT arrays.
+// Equivalent to ifrt::Client::RemapArrays.
+message RemapArraysRequest {
+  RemapPlanProto plan = 1;
+  repeated fixed64 array_handles = 2;
+  proto.ArrayCopySemantics copy_semantics = 3;
+}
+message RemapArraysResponse {
+  repeated fixed64 array_handles = 1;
 }
 
 // Reads the contents of a given IFRT Array.
@@ -285,7 +303,7 @@ message DisassembleIntoSingleDeviceArraysResponse {
 
 message ReshardRequest {
   fixed64 array_handle = 1;
-  proto.Sharding sharding = 2;
+  ShardingProto sharding = 2;
   proto.ArrayCopySemantics copy_semantics = 3;
 }
 message ReshardResponse {
@@ -416,9 +434,9 @@ message LoadedExecutableExecuteResponse {
   fixed64 status_handle = 1;
 
   message Output {
-    proto.DType dtype = 1;
-    proto.Shape shape = 2;
-    proto.Sharding sharding = 3;
+    DTypeProto dtype = 1;
+    ShapeProto shape = 2;
+    ShardingProto sharding = 3;
     fixed64 array_handle = 4;
   }
 

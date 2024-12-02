@@ -23,11 +23,9 @@ limitations under the License.
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/model/affine_map_printer.h"
-#include "xla/service/gpu/model/indexing_context.h"
 #include "xla/service/gpu/model/indexing_test_utils.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tests/hlo_test_base.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -35,7 +33,6 @@ namespace {
 
 class InputSlicesTest : public HloTestBase {
  public:
-  InputSlicesTest() : indexing_context_(&mlir_context_) {}
   void SetUp() override {
     HloTestBase::SetUp();
     printer_ =
@@ -46,7 +43,6 @@ class InputSlicesTest : public HloTestBase {
  protected:
   AffineMapPrinter printer_;
   mlir::MLIRContext mlir_context_;
-  IndexingContext indexing_context_;
 };
 
 TEST_F(InputSlicesTest, ThreadIndexing) {
@@ -72,19 +68,18 @@ TEST_F(InputSlicesTest, ThreadIndexing) {
   auto* root = module->entry_computation()->root_instruction();
   auto analysis_fused = AnalyzeFusion(*root, device_info);
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto emitter,
-      GetFusionEmitter(PreBufferAssignmentFusionInfo{analysis_fused}));
+  auto emitter =
+      GetFusionEmitter(PreBufferAssignmentFusionInfo{analysis_fused});
   auto fusion = dynamic_cast<InputSlicesFusion*>(emitter.get());
   ASSERT_NE(fusion, nullptr);
 
   auto thread_id_to_output_indexing =
-      fusion->ComputeThreadIdToOutputIndexing(0, &indexing_context_);
+      fusion->ComputeThreadIdToOutputIndexing(0, &mlir_context_);
   EXPECT_THAT(thread_id_to_output_indexing->ToString(printer_),
               MatchIndexingString(R"(
     (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id] -> (0,
-      ((th_x + bl_x * 128) floordiv 3) mod 2,
-       (th_x + bl_x * 128) mod 3,
+      ((bl_x * 128 + th_x) floordiv 3) mod 2,
+       (bl_x * 128 + th_x) mod 3,
        ((bl_x * 64 + th_x floordiv 2) floordiv 3) mod 5)
     domain:
     th_x in [0, 127]

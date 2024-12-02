@@ -41,14 +41,14 @@ class HloDomainMap {
   // computation, of the given kind. If domain_kind is not empty, only the
   // kDomain instructions of domain_kind will be considered as separators.
   // Otherwise every kDomain instruction will be splitting domains.
-  static StatusOr<std::unique_ptr<HloDomainMap>> Create(
+  static absl::StatusOr<std::unique_ptr<HloDomainMap>> Create(
       HloComputation* computation, std::string domain_kind);
 
   // Creates a new HloDomainMap, creating all the domains within the input
   // module, of the given kind. If domain_kind is not empty, only the
   // kDomain instructions of domain_kind will be considered as separators.
   // Otherwise every kDomain instruction will be splitting domains.
-  static StatusOr<std::unique_ptr<HloDomainMap>> Create(
+  static absl::StatusOr<std::unique_ptr<HloDomainMap>> Create(
       HloModule* module, std::string domain_kind);
 
   // Retrieves all the domains the input module or computation are composed by.
@@ -87,13 +87,13 @@ class HloDomainMap {
   // kDomain instruction of the same kind, hence defining an empty domain.
   // If that is the case, create the empty domain and call the proper
   // normalizer.
-  Status TryProcessEmptyDomain(HloInstruction* instruction);
+  absl::Status TryProcessEmptyDomain(HloInstruction* instruction);
 
-  Status Populate(HloComputation* computation);
+  absl::Status Populate(HloComputation* computation);
 
   // Inserts the provided domain into the ones tracked by this object,
   // creating a new domain ID.
-  Status InsertDomain(std::unique_ptr<DomainMetadata::Domain> domain);
+  absl::Status InsertDomain(std::unique_ptr<DomainMetadata::Domain> domain);
 
   // From the given instruction, expands operand and user wise, the set of
   // instructions which can be reached without crossing a kDomain instruction
@@ -101,11 +101,11 @@ class HloDomainMap {
   // The domain data structure will be populated with all the reached
   // instructions, and the boundaries of the domain, with the kDomain
   // instructions encountered while expanding the reach.
-  Status ExpandDomain(HloInstruction* instruction,
-                      DomainMetadata::Domain* domain) const;
+  absl::Status ExpandDomain(HloInstruction* instruction,
+                            DomainMetadata::Domain* domain) const;
 
   // Creates a domain data structure using the ExpandDomain() API.
-  StatusOr<std::unique_ptr<DomainMetadata::Domain>> CreateDomain(
+  absl::StatusOr<std::unique_ptr<DomainMetadata::Domain>> CreateDomain(
       HloInstruction* instruction,
       const InstructionOrderMap& instructions_order) const;
 
@@ -117,7 +117,7 @@ class HloDomainMap {
 
   // Populates domain_metadata_id_ that maps each HloInstruction to the unique
   // ID of its associated domain metatadata.
-  Status PopulateDomainMetadataMap();
+  absl::Status PopulateDomainMetadataMap();
 
   std::string domain_kind_;
   std::vector<std::unique_ptr<DomainMetadata::Domain>> instruction_domains_;

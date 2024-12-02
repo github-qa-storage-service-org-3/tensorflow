@@ -23,6 +23,7 @@ limitations under the License.
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/hlo_traversal.h"
+#include "xla/service/gpu/model/indexing_map.h"
 
 namespace xla {
 namespace gpu {
@@ -38,7 +39,7 @@ class CoalescingAnalysis {
                      absl::Span<const HloInstruction* const> operands,
                      const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
-                     IndexingContext* indexing_context = nullptr,
+                     mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
 
   // Computes read coalescing for operands of fused `producer` and `consumer`.
@@ -47,7 +48,7 @@ class CoalescingAnalysis {
                      absl::Span<const HloInstruction* const> operands,
                      const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
-                     IndexingContext* indexing_context = nullptr,
+                     mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
 
   // Returns true if the operand is read coalesced.
@@ -58,8 +59,7 @@ class CoalescingAnalysis {
       const HloFusionAdaptor& fusion_adaptor,
       absl::Span<const HloInstruction* const> operands,
       const HloFusionAnalysis& fusion_analysis,
-      KernelFusionInterface* fusion_interface,
-      IndexingContext* indexing_context = nullptr);
+      KernelFusionInterface* fusion_interface, mlir::MLIRContext* mlir_context);
 
   absl::flat_hash_map<const HloInstruction*, bool> coalescing_per_operand_;
   bool is_coalesced_computed_by_heuristic_ = false;
@@ -69,6 +69,7 @@ class CoalescingAnalysis {
 // producer and consumer are considered as one fusion, otherwise it's only the
 // producer.
 bool IsReadCoalescedHeuristic(HloFusionAnalysis::EmitterFusionKind fusion_kind,
+                              const se::DeviceDescription& device_info,
                               const HloInstruction* producer,
                               const HloInstruction* consumer = nullptr);
 

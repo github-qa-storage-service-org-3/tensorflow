@@ -43,15 +43,16 @@ from . import xla_extension as _xla
 # Pylint has false positives for type annotations.
 # pylint: disable=invalid-sequence-index
 
+ifrt_programs = _xla.ifrt_programs
 ops = _xla.ops
 profiler = _xla.profiler
 
 # Just an internal arbitrary increasing number to help with backward-compatible
 # changes. In JAX, reference this via jax._src.lib.xla_extension_version.
-_version = 247
+_version = 269
 
 # Version number for MLIR:Python components.
-mlir_api_version = 55
+mlir_api_version = 57
 
 xla_platform_names = {
     'cpu': 'Host',
@@ -64,6 +65,7 @@ _NameValueMapping = Mapping[str, Union[str, int, List[int], float, bool]]
 
 
 def make_cpu_client(
+    asynchronous=True,
     distributed_client=None,
     node_id=0,
     num_nodes=1,
@@ -71,7 +73,7 @@ def make_cpu_client(
 ) -> ...:
   register_custom_call_handler('cpu', _xla.register_custom_call_target)
   return _xla.get_tfrt_cpu_client(
-      asynchronous=True,
+      asynchronous=asynchronous,
       distributed_client=distributed_client,
       node_id=node_id,
       num_nodes=num_nodes,
@@ -197,12 +199,13 @@ def make_c_api_client(
   return _xla.get_c_api_client(plugin_name, options, distributed_client)
 
 
-def make_tpu_client(library_path: Optional[str] = None):
+def make_tpu_client(library_path: Optional[str] = None,
+                    options: Optional[_NameValueMapping] = None):
   """Returns a TPU client. Defaults to allowing 32 in-flight computations."""
   if not pjrt_plugin_loaded('tpu'):
     c_api = load_pjrt_plugin_dynamically('tpu', library_path or 'libtpu.so')
     profiler.register_plugin_profiler(c_api)
-  return make_tfrt_tpu_c_api_client()
+  return make_tfrt_tpu_c_api_client(options)
 
 
 def generate_pjrt_gpu_plugin_options() -> _NameValueMapping:
@@ -543,6 +546,7 @@ NamedSharding = _xla.NamedSharding
 SingleDeviceSharding = _xla.SingleDeviceSharding
 PmapSharding = _xla.PmapSharding
 GSPMDSharding = _xla.GSPMDSharding
+PjRtLayout = _xla.PjRtLayout
 
 
 def LoadedExecutable_execute(self, arguments, device=None):
@@ -564,22 +568,44 @@ LoadedExecutable.execute = LoadedExecutable_execute
 LoadedExecutable.execute_with_token = LoadedExecutable_execute_with_token
 
 
+class CustomCallTargetTraits(enum.IntFlag):
+  DEFAULT = 0
+  # Calls to custom call are safe to trace into the command buffer. It means
+  # that calls to custom call always launch exactly the same device operations
+  # (can depend on attribute values) that can be captured and then replayed.
+  #
+  # Supported only for custom calls implemented with XLA FFI.
+  COMMAND_BUFFER_COMPATIBLE = 1
+
+
 class CustomCallHandler(Protocol):
 
   def __call__(
-      self, name: str, fn: Any, platform: str, /, api_version: int = ...
+      self,
+      name: str,
+      fn: Any,
+      platform: str,
+      /,
+      api_version: int = ...,
+      traits: CustomCallTargetTraits = ...,
   ) -> None:
     ...
 
 
 _custom_callback_handler: dict[str, CustomCallHandler] = {}
 # Key is xla_platform_name, value is (function_name, function, api_version)
-_custom_callback: dict[str, list[tuple[str, Any, int]]] = {}
+_custom_callback: dict[
+    str, list[tuple[str, Any, int, CustomCallTargetTraits]]
+] = {}
 _custom_callback_lock = threading.Lock()
 
 
 def register_custom_call_target(
-    name: str, fn: Any, platform: str = 'cpu', api_version: int = 0
+    name: str,
+    fn: Any,
+    platform: str = 'cpu',
+    api_version: int = 0,
+    traits: CustomCallTargetTraits = CustomCallTargetTraits.DEFAULT,
 ) -> None:
   """Registers a custom call target.
 
@@ -589,6 +615,7 @@ def register_custom_call_target(
     platform: the target platform.
     api_version: the XLA FFI version to use. Supported versions are: 0 for the
       untyped FFI and 1 for the typed FFI.
+    traits: custom call traits corresponding to XLA FFI handler traits.
   """
   # To support AMD GPUs, we need to have xla_platform_names["gpu"] == "ROCM"
   # Since that is hardcoded to CUDA, we are using the following as workaround.
@@ -596,11 +623,11 @@ def register_custom_call_target(
   with _custom_callback_lock:
     if xla_platform_name in _custom_callback_handler:
       _custom_callback_handler[xla_platform_name](
-          name, fn, xla_platform_name, api_version
+          name, fn, xla_platform_name, api_version, traits
       )
     else:
       _custom_callback.setdefault(xla_platform_name, []).append(
-          (name, fn, api_version)
+          (name, fn, api_version, traits)
       )
 
 
@@ -626,8 +653,8 @@ def register_custom_call_handler(
       return
     _custom_callback_handler[xla_platform_name] = handler
     if xla_platform_name in _custom_callback:
-      for name, fn, api_version in _custom_callback[xla_platform_name]:
-        handler(name, fn, xla_platform_name, api_version)
+      for name, fn, api_version, traits in _custom_callback[xla_platform_name]:
+        handler(name, fn, xla_platform_name, api_version, traits)
       del _custom_callback[xla_platform_name]
 
 

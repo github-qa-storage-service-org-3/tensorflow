@@ -22,6 +22,7 @@ import numpy
 from . import xla_extension as _xla
 from .xla_extension import Shape as Shape
 from .xla_extension import Layout as Layout
+from .xla_extension import ifrt_programs as ifrt_programs
 from .xla_extension import ops as ops
 from .xla_extension import profiler as profiler
 
@@ -42,6 +43,7 @@ from .xla_extension import OpSharding as OpSharding
 from .xla_extension import HloSharding as HloSharding
 from .xla_extension import PrimitiveType as PrimitiveType
 from .xla_extension import Traceback as Traceback
+from .xla_extension import PjRtLayout as PjRtLayout
 from .xla_extension import XlaBuilder as XlaBuilder
 from .xla_extension import XlaComputation as XlaComputation
 from .xla_extension import XlaOp as XlaOp
@@ -81,7 +83,10 @@ def shape_from_pyval(pyval: Any, layout: Sequence[int] | None = None) -> Any: ..
 def heap_profile(client: Client) -> bytes:
   ...
 
+XlaRuntimeError = _xla.XlaRuntimeError
+
 def make_cpu_client(
+    asynchronous: bool = ...,
     distributed_client: Optional[DistributedRuntimeClient] = ...,
     node_id: int = ...,
     num_nodes: int = ...,
@@ -110,7 +115,8 @@ def make_c_api_device_topology(c_api: Any, topology_name: str = '', **kwargs) ->
 def get_topology_for_devices(devices: List[Device]) -> DeviceTopology:
   ...
 
-def make_tpu_client(library_path: Optional[str]) -> Client:
+def make_tpu_client(library_path: Optional[str],
+                    options: Optional[_NameValueMapping] = None) -> Client:
   ...
 
 def make_c_api_client(
@@ -226,7 +232,15 @@ def weakref_lru_cache(cache_context_fn: Callable, call: Callable, maxsize=...):
 
 def copy_array_to_devices_with_sharding(self: ArrayImpl, devices: List[Device], sharding: Any) -> ArrayImpl: ...
 
-def batched_device_put(aval: Any, sharding: Any, shards: Sequence[Any], devices: List[Device]) -> ArrayImpl: ...
+def batched_device_put(
+    aval: Any,
+    sharding: Any,
+    shards: Sequence[Any],
+    devices: List[Device],
+    committed: bool = ...,
+    force_copy: bool = ...,
+    host_buffer_semantics: Any = ...,
+) -> ArrayImpl: ...
 
 def batched_block_until_ready(x: Sequence[ArrayImpl]) -> None: ...
 
@@ -240,14 +254,22 @@ def array_result_handler(
                _skip_checks: bool = ...) -> Callable:
   ...
 
+class CustomCallTargetTraits(enum.IntFlag):
+  DEFAULT = 0
+  COMMAND_BUFFER_COMPATIBLE = 1
+
 def register_custom_call_target(
-    name: str, fn: Callable, platform: str = ..., api_version: int = ...
-) -> None:
-  ...
+    name: str,
+    fn: Any,
+    platform: str = ...,
+    api_version: int = ...,
+    traits: CustomCallTargetTraits = ...,
+) -> None: ...
 
-def register_custom_call_handler(xla_platform_name: str, handler: Any) -> None:
-  ...
-
-def encode_inspect_sharding_callback(handler: Any) -> bytes: ...
+def register_custom_call_handler(
+    xla_platform_name: str, handler: Any
+) -> None: ...
 
 def custom_call_targets(platform: str) -> dict[str, Any]: ...
+
+def encode_inspect_sharding_callback(handler: Any) -> bytes: ...

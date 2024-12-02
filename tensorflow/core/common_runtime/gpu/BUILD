@@ -328,6 +328,7 @@ tf_cuda_cc_test(
         "//tensorflow/core/kernels:ops_util",
         "@local_tsl//tsl/framework:device_id",
         "@local_xla//xla/stream_executor/gpu:gpu_cudamallocasync_allocator_header",
+        "@local_xla//xla/tests:test_macros_header",
     ],
 )
 
@@ -388,6 +389,7 @@ tf_cuda_cc_test(
         "//tensorflow/core/common_runtime:direct_session_internal",
         "//tensorflow/core/kernels:ops_util",
         "@local_xla//xla/stream_executor/gpu:gpu_cudamallocasync_allocator_header",
+        "@local_xla//xla/tests:test_macros_header",
     ],
 )
 
@@ -446,6 +448,7 @@ cc_library(
     features = ["-layering_check"],
     deps = [
         ":gpu_scheduling_metrics_storage",
+        "//tensorflow/core/framework:resource_base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:fixed_array",
         "@com_google_absl//absl/container:node_hash_map",
@@ -476,6 +479,5 @@ cc_library(
     name = "gpu_scheduling_metrics_storage",
     srcs = ["gpu_scheduling_metrics_storage.cc"],
     hdrs = ["gpu_scheduling_metrics_storage.h"],
-    visibility = ["//visibility:public"],
     deps = ["@local_tsl//tsl/framework:real_time_in_memory_metric"],
 )

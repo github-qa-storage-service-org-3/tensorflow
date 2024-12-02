@@ -62,11 +62,16 @@ class PjRtLayout {
 // have access to full xla::Layouts.
 class PjRtXlaLayout : public PjRtLayout {
  public:
-  explicit PjRtXlaLayout(Layout layout) : xla_layout_(std::move(layout)) {}
+  explicit PjRtXlaLayout(Layout layout) : xla_layout_(std::move(layout)) {
+    // Strip memory space and set it to the default. PJRT tracks memory space
+    // separately from layout.
+    xla_layout_.set_memory_space(xla::Layout::kDefaultMemorySpace);
+  }
 
   std::string Serialize() const override { return xla_layout_.ToString(); }
 
-  static StatusOr<PjRtXlaLayout> Deserialize(absl::string_view serialized) {
+  static absl::StatusOr<PjRtXlaLayout> Deserialize(
+      absl::string_view serialized) {
     TF_ASSIGN_OR_RETURN(Layout xla_layout, ParseLayout(serialized));
     return PjRtXlaLayout(std::move(xla_layout));
   }

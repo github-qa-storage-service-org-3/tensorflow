@@ -497,7 +497,7 @@ bool IsCombinerAssociative(const HloComputation* combiner) {
     case HloOpcode::kMinimum:
     case HloOpcode::kMaximum:
       return true;
-    // Other common combiners are associative at least for interger arithmetic.
+    // Other common combiners are associative at least for integer arithmetic.
     case HloOpcode::kAdd:
     case HloOpcode::kMultiply:
     case HloOpcode::kOr:
@@ -525,7 +525,7 @@ bool ScatterExpander::InstructionMatchesPattern(HloInstruction* inst) {
   return (scatter != nullptr) && (mode_ == kEliminateAllScatters ||
                                   (mode_ == kEliminateSimpleScatters &&
                                    ScatterTripCount(scatter) == 1) ||
-                                  (mode_ == kEliminateIndeterminisitcScatters &&
+                                  (mode_ == kEliminateIndeterministicScatters &&
                                    !IsDeterministic(scatter)));
 }
 

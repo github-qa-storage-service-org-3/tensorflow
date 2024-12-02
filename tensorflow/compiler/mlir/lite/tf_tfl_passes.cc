@@ -19,7 +19,6 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "absl/log/log.h"
 #include "llvm/ADT/StringRef.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
@@ -30,6 +29,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/common/tfl_pass_config.h"
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_passes.h"
 #include "tensorflow/compiler/mlir/lite/quantization/tensorflow/passes.h"
+#include "tensorflow/compiler/mlir/lite/stablehlo/odml_converter/passes.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_tf_xla_call_module_to_stablehlo_pass.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/passes.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/transforms.h"
@@ -145,21 +145,20 @@ void AddPreQuantizationStableHloToTfPasses(
   pass_manager.addPass(
       mlir::odml::CreateLegalizeTFXlaCallModuleToStablehloPass());
 
-  // Add CHLO to StableHLO Decompositions:
-  // This is needed since we are relying on XlaCallModule uses MHLO
-  // specific features like mhlo::ErfOp which aren't supported
-  // in StableHLO, but we have CHLO->StableHLO decompositions to legalize.
-  pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
-  pass_manager.addPass(
-      mlir::stablehlo::experimental::createChloRecomposeOpsPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createChloLegalizeToHloBasisOpsPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createChloLegalizeToHloPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createShapeLegalizeToHloPass());
+  // Legalize MHLO to StableHLO should be moved closer to where it is needed
+  // There are some entry points that start with HLO->MHLO like
+  // jax_to_tfl_flatbuffer.cc which can likely be updated to emit StableHLO
+  // to be consistent with other entrypoints.
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
 
+  pass_manager.addNestedPass<mlir::func::FuncOp>(
+      mlir::odml::CreateOutlineCompositesPass());
+  // Decompose CHLO into StableHLO ops
+  // TODO(b/331843141): There are some CHLO's like TopK which we could instead
+  // lower to TFL ops.
+  mlir::stablehlo::experimental::createChloLegalizeToStablehloPipeline(
+      pass_manager);
+  pass_manager.addPass(mlir::odml::CreateTransposeCommuteOpsPass());
   // The following two passes find specific uniform quantization patterns in
   // StableHLO and converts them to TFLite ops that accept or produce uniform
   // quantized types. They only target a specific set of models that contain
@@ -175,7 +174,6 @@ void AddPreQuantizationStableHloToTfPasses(
   pass_manager.addNestedPass<mlir::func::FuncOp>(
       mlir::odml::CreateUniformQuantizedStableHloToTflPass());
 
-  pass_manager.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
   // Legalize jax random to tflite custom op.
   // The CreateLegalizeJaxRandom Pass has to stay at because we need to replace
   // the random function body before being inlined.
@@ -183,6 +181,7 @@ void AddPreQuantizationStableHloToTfPasses(
       mlir::TFL::CreateLegalizeJaxRandomPass());
 
   // Canonicalize, CSE etc.
+  pass_manager.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
   pass_manager.addNestedPass<mlir::func::FuncOp>(
       mlir::createCanonicalizerPass());
   pass_manager.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
@@ -233,8 +232,7 @@ void AddPostQuantizationStableHloToTfPasses(
   }
 
   if (pass_config.enable_composite_direct_lowering) {
-    LOG(WARNING) << "Direct lowerting of composites to TFLite ops is not "
-                    "implemented yet.";
+    pass_manager.addPass(mlir::odml::CreateCompositeLoweringPass());
   }
 
   // TFLite dialect passes.
@@ -258,6 +256,16 @@ void AddPostQuantizationStableHloToTfPasses(
 
   // Legalize all remaining mhlo ops to stableHLO
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
+
+  // Translate "stablehlo.custom_call @stablehlo.composite" to
+  // "stablehlo.composite"
+  // TODO: b/330741524 - clean this up when "stablehlo.composite" is emitted
+  // directly. Additionally remove the composite to custom once ODML long term
+  // solution lands.
+  pass_manager.addPass(
+      mlir::odml::createLegalizeStablehloCustomCallToCompositePass());
+  pass_manager.addNestedPass<mlir::func::FuncOp>(
+      mlir::odml::createLegalizeCompositeToCustomOpPass());
 }
 
 // This is the early part of the conversion in isolation. This enables a caller
