@@ -1,15 +1,15 @@
 # Description:
 #   RPC communication interfaces and implementations for TensorFlow.
 
-load("//tsl:tsl.bzl", "internal_visibility")
-load("//tsl:tsl.default.bzl", "tsl_grpc_cc_dependencies")
-load("//tsl/platform:build_config.bzl", "tf_proto_library", "tsl_cc_test")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("@local_xla//xla/tsl:tsl.bzl", "internal_visibility")
+load("@local_xla//xla/tsl:tsl.default.bzl", "tsl_grpc_cc_dependencies")
+load("//tsl/platform:build_config.bzl", "tf_proto_library", "tsl_cc_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = internal_visibility([
-        "//tsl:internal",
+        "@local_xla//xla/tsl:internal",
     ]),
     licenses = ["notice"],
 )
@@ -95,8 +95,8 @@ cc_library(
         "//tsl/platform:thread_annotations",
         "//tsl/platform:types",
         "//tsl/protobuf:rpc_options_proto_cc",
-        "//tsl/util:device_name_utils",
         "@com_google_absl//absl/strings",
+        "@local_xla//xla/tsl/util:device_name_utils",
     ] + tsl_grpc_cc_dependencies(),
 )
 
@@ -114,7 +114,7 @@ tsl_cc_test(
         "//tsl/platform:test",
         "//tsl/platform:test_main",
         "//tsl/protobuf:rpc_options_proto_cc_impl",
-        "//tsl/util:device_name_utils",
+        "@local_xla//xla/tsl/util:device_name_utils",
     ],
 )
 
@@ -129,8 +129,8 @@ cc_library(
         "//tsl/platform:errors",
         "//tsl/platform:status",
         "//tsl/platform:strcat",
-        "//tsl/util:env_var",
         "@com_google_absl//absl/status",
+        "@local_xla//xla/tsl/util:env_var",
     ] + tsl_grpc_cc_dependencies(),
 )
 
