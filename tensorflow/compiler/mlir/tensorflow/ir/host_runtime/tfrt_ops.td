@@ -94,7 +94,7 @@ Empty strings indicate that they are non-partitioned tensors.}]>:$shape_and_slic
 
 
 def TF_IfrtLoadVariableOp : TF_Op<"IfrtLoadVariable", [Pure]> {
-  let summary = "Loads a variable tensor as an IFRT array";
+  let summary = "Loads a restored variable tensor as an IFRT array and tensor future";
 
   let description = [{
     This op loads a variable tensor as an IFRT array and binds it with the specified name.
@@ -109,17 +109,22 @@ def TF_IfrtLoadVariableOp : TF_Op<"IfrtLoadVariable", [Pure]> {
     configuration specified in `VariableDeviceShardingConfigProto`.
 
     This op returns a scalar string tensor containing the loaded variable name, which can be
-    used as a key to look for the loaded IFRT array in runtime.
+    used as a key to look for the loaded IFRT array in runtime and a restored tensor, which
+    maybe lowered to a future by runtime.
   }];
 
+  // TODO(b/330360798) Redefine the IfrtLoadVariableOp as it doesn't require the
+  // sharding info in the attribute if multihost do not need this info. 
   let arguments = (ins
     Arg<TF_Tensor, [{The variable tensor to be loaded}], []>:$variable,
     DefaultValuedStrAttr<StrAttr, "">:$device_sharding_config_proto_text,
-    DefaultValuedAttr<StrAttr, "">:$name
+    DefaultValuedAttr<StrAttr, "">:$name,
+    DefaultValuedAttr<BoolAttr, "false">:$used_by_host
   );
 
   let results = (outs
-    TF_StrTensor:$array_key
+    TF_StrTensor:$array_key,
+    TF_Tensor: $tensor_future
   );
 
   TF_DerivedOperandTypeListAttr Tin = TF_DerivedOperandTypeListAttr<0>;

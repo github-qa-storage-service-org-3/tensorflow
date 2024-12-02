@@ -44,7 +44,7 @@ struct ReductionGroups {
 
 class ReductionInfo {
  public:
-  static ReductionInfo Create(const HloFusionAnalysis& analysis);
+  static ReductionInfo Create(const HloFusionAnalysis& analysis, bool for_mlir);
 
   const Tiling& GetTiling() const { return tiling_; }
   const ReductionGroups& GetGroups() const { return groups_; }
@@ -57,11 +57,11 @@ class ReductionInfo {
   int GetRowsPerWarp() const;
 
   std::optional<IndexingMap> ComputeThreadIdToOutputIndexing(
-      int64_t root_index, IndexingContext* indexing_context) const;
+      int64_t root_index, mlir::MLIRContext* ctx) const;
 
   std::optional<IndexingMap> ComputeThreadIdToInputIndexing(
       int64_t root_index, int64_t hero_operand_index,
-      IndexingContext* indexing_context) const;
+      mlir::MLIRContext* ctx) const;
 
   LaunchDimensions launch_dimensions() const;
 
@@ -76,6 +76,9 @@ class ReductionInfo {
         groups_(std::move(groups)),
         first_reduce_(first_reduce) {}
 
+  void AddGroupIdConstraint(IndexingMap& map, int64_t root_index,
+                            mlir::MLIRContext* ctx) const;
+
   const HloFusionAnalysis& analysis_;
   Tiling tiling_;
   bool is_row_reduction_;
@@ -86,23 +89,23 @@ class ReductionInfo {
 
 // Base class for reduction fusions. Computes shared information (reduction
 // grouping) and provides implementations of thread->input/output indexing.
-template <typename Base>
+template <typename Base, bool is_mlir = false>
 class ReductionFusionBase : public Base {
  public:
   explicit ReductionFusionBase(const HloFusionAnalysis& analysis)
-      : analysis_(analysis), reduction_info_(ReductionInfo::Create(analysis)) {}
+      : analysis_(analysis),
+        reduction_info_(ReductionInfo::Create(analysis, is_mlir)) {}
 
   std::optional<IndexingMap> ComputeThreadIdToOutputIndexing(
-      int64_t root_index, IndexingContext* indexing_context) const override {
-    return reduction_info().ComputeThreadIdToOutputIndexing(root_index,
-                                                            indexing_context);
+      int64_t root_index, mlir::MLIRContext* ctx) const override {
+    return reduction_info().ComputeThreadIdToOutputIndexing(root_index, ctx);
   }
 
   std::optional<IndexingMap> ComputeThreadIdToInputIndexing(
       int64_t root_index, int64_t hero_operand_index,
-      IndexingContext* indexing_context) const override {
+      mlir::MLIRContext* ctx) const override {
     return reduction_info().ComputeThreadIdToInputIndexing(
-        root_index, hero_operand_index, indexing_context);
+        root_index, hero_operand_index, ctx);
   }
 
   LaunchDimensions launch_dimensions() const override {

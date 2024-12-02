@@ -16,11 +16,9 @@ limitations under the License.
 #include "xla/service/while_loop_unroller.h"
 
 #include <cstdint>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -80,25 +78,25 @@ WhileLoopUnrollerTest::MakeModuleWithSimpleLoop(int num_iters) {
   std::string hlo_string_template = R"(
   HloModule SimpleLoop
   SimpleLoop.body {
-    loop_var.1 = (s32[], s32[3]{0}) parameter(0)
-    get-tuple-element.1 = s32[] get-tuple-element(loop_var.1), index=0
-    constant.1 = s32[] constant(1)
-    idx = s32[] add(get-tuple-element.1, constant.1)
+    loop_var.1 = (s32[]{:T(128)}, s32[3]{0}) parameter(0)
+    get-tuple-element.1 = s32[]{:T(128)} get-tuple-element(loop_var.1), index=0
+    constant.1 = s32[]{:T(128)} constant(1)
+    idx = s32[]{:T(128)} add(get-tuple-element.1, constant.1)
     get-tuple-element.2 = s32[3]{0} get-tuple-element(loop_var.1), index=1
     output = s32[3]{0} add(get-tuple-element.2, get-tuple-element.2)
-    ROOT tuple = (s32[], s32[3]{0}) tuple(idx, output)
+    ROOT tuple = (s32[]{:T(128)}, s32[3]{0}) tuple(idx, output)
   }
   SimpleLoop.condition {
-    loop_var.2 = (s32[], s32[3]{0}) parameter(0)
+    loop_var.2 = (s32[]{:T(128)}, s32[3]{0}) parameter(0)
     get-tuple-element.3 = s32[] get-tuple-element(loop_var.2), index=0
-    constant.2 = s32[] constant({{LOOP_BOUND}})
+    constant.2 = s32[]{:T(128)} constant({{LOOP_BOUND}})
     ROOT less-than = pred[] compare(get-tuple-element.3, constant.2), direction=LT
   }
   ENTRY SimpleLoop {
-    constant.3 = s32[] constant(0)
+    constant.3 = s32[]{:T(128)} constant(0)
     constant.4 = s32[3]{0} constant({0, 1, 2})
-    tuple.1 = (s32[], s32[3]{0}) tuple(constant.3, constant.4)
-    ROOT while = (s32[], s32[3]{0}) while(tuple.1), condition=
+    tuple.1 = (s32[]{:T(128)}, s32[3]{0}) tuple(constant.3, constant.4)
+    ROOT while = (s32[]{:T(128)}, s32[3]{0}) while(tuple.1), condition=
       SimpleLoop.condition, body=SimpleLoop.body
   }
   )";
@@ -532,17 +530,9 @@ TEST_F(WhileLoopUnrollerTest, GetUnrollableLoops) {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           ParseAndReturnVerifiedModule(hlo_string));
 
-  HloInstruction* while1 =
-      module->entry_computation()->GetInstructionWithName("while1");
-  HloInstruction* while2 =
-      module->entry_computation()->GetInstructionWithName("while2");
-  HloInstruction* while3 =
-      module->entry_computation()->GetInstructionWithName("while3");
-
   auto unrollable_loops = GetUnrollableLoops(module.get(), {});
-  EXPECT_TRUE(unrollable_loops.contains(while1));
-  EXPECT_TRUE(unrollable_loops.contains(while2));
-  EXPECT_FALSE(unrollable_loops.contains(while3));
+  // Only while1 and while2 are unrollable
+  EXPECT_EQ(unrollable_loops.size(), 2);
 }
 
 TEST_F(WhileLoopUnrollerTest, UnrollMutipleLoops) {
