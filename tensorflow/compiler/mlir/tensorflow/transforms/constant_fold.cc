@@ -16,14 +16,21 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/transforms/constant_fold.h"
 
 #include <algorithm>
+#include <cstdint>
 
+#include "llvm/ADT/STLExtras.h"
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/IR/TypeRange.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/constant_fold_utils.h"
-#include "tensorflow/core/platform/mutex.h"
 
 namespace mlir {
 namespace TF {
@@ -31,28 +38,30 @@ namespace TF {
 // Implements a TF specific policy on when constant folding is allowed.
 // Policy:
 //
-// Disable constant folding if operands size is greater than a certain
-// threshold (`kOperandsSizeThreshold`).
+// Find the total size of the operands and results, ignoring types with
+// undefined bit widths and unknown shapes.
+// Disable constant folding if operands size is greater than a certain threshold
+// (`kOperandsSizeThreshold`).
 //
-// Otherwise, allow folding if we do not know the shape of an operand or
-// result i.e., one of these values has non-static shape. If we know all the
-// shapes, find the total size of the operands and results. Folding of the op is
-// allowed if one of the following conditions are met:
-// 1. size of results is less than a certain threshold
-// (`kResultsSizeThreshold`), or
-// 2. size of results is within a factor (`kSizeFactor`) of size of operands, or
+// Otherwise, allow folding if:
+// 1. we do not know the shape of an operand or result i.e., one of these values
+//    has non-static shape, or
+// 2. size of results is less than a certain threshold
+//    (`kResultsSizeThreshold`), or
+// 3. size of results is within a factor (`kSizeFactor`) of size of operands.
 // TODO(b/157226221): Look into other heuristics for constant fold policy.
 static bool IsFoldedByDefaultPolicy(Operation* inst) {
   bool has_unknown_shape = false;
   auto get_size = [&](TypeRange types) {
     int64_t size = 0;
     for (auto t : types) {
-      auto tensor_type = t.cast<TensorType>();
+      auto tensor_type = mlir::cast<TensorType>(t);
       // Ignore types with undefined bit widths.
       if (!tensor_type.getElementType().isIntOrFloat()) continue;
+      // Ignore types with dynamic shapes.
       if (!tensor_type.hasStaticShape()) {
         has_unknown_shape = true;
-        return size;
+        continue;
       }
       size += tensor_type.getNumElements() *
               tensor_type.getElementType().getIntOrFloatBitWidth();
@@ -68,9 +77,9 @@ static bool IsFoldedByDefaultPolicy(Operation* inst) {
 #ifdef TF_DISABLE_CONSTANT_FOLDING
   constexpr int64_t kResultsSizeThreshold = 0;
 #else
-  constexpr int64_t kResultsSizeThreshold = (1 << 23);  // 1 MB
+  constexpr int64_t kResultsSizeThreshold = (1 << 23);  // 1 MiB
 #endif
-  constexpr int64_t kOperandsSizeThreshold = (1 << 30);  // 128 MB
+  constexpr int64_t kOperandsSizeThreshold = (1 << 30);  // 128 MiB
 
   return (operands_size <= kOperandsSizeThreshold) &&
          (has_unknown_shape || (results_size <= kResultsSizeThreshold) ||
@@ -93,7 +102,7 @@ LogicalResult ConstantFoldFallbackHook(
   // propagation.
   bool has_empty_numerical_results =
       llvm::all_of(inst->getResultTypes(), [](Type ty) {
-        ShapedType shaped_ty = ty.cast<ShapedType>();
+        ShapedType shaped_ty = mlir::cast<ShapedType>(ty);
         Type element_ty = shaped_ty.getElementType();
         return shaped_ty.hasStaticShape() && shaped_ty.getNumElements() == 0 &&
                element_ty.isIntOrFloat();
@@ -103,7 +112,7 @@ LogicalResult ConstantFoldFallbackHook(
       // addressed.
       inst->isRegistered()) {
     for (Type ty : inst->getResultTypes()) {
-      auto shaped_ty = ty.cast<ShapedType>();
+      auto shaped_ty = mlir::cast<ShapedType>(ty);
       results.push_back(
           DenseElementsAttr::get(shaped_ty, llvm::ArrayRef<Attribute>()));
     }
@@ -112,20 +121,16 @@ LogicalResult ConstantFoldFallbackHook(
 
   // Returns directly if any of the operands is not an elements attributes.
   if (std::any_of(operands.begin(), operands.end(), [](Attribute attr) {
-        return !attr || !attr.isa<ElementsAttr>();
+        return !attr || !mlir::isa<ElementsAttr>(attr);
       }))
     return failure();
 
   SmallVector<ElementsAttr, 4> inputs;
   inputs.reserve(operands.size());
   for (auto input : operands) {
-    inputs.push_back(input.cast<ElementsAttr>());
+    inputs.push_back(mlir::cast<ElementsAttr>(input));
   }
 
-  // Avoid overlapping folds with the same context.
-  // TODO(jpienaar): Avoid using global context & mutex here.
-  static auto* mu = new tensorflow::mutex();
-  tensorflow::mutex_lock l(*mu);
   SmallVector<Attribute> constants;
   LogicalResult status = EvaluateOperation(inst, inputs, constants);
   results.assign(constants.begin(), constants.end());

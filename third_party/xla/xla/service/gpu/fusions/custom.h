@@ -15,11 +15,11 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_FUSIONS_CUSTOM_H_
 #define XLA_SERVICE_GPU_FUSIONS_CUSTOM_H_
 
+#include "absl/status/statusor.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/ir_emitter_context.h"
-#include "xla/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -50,31 +50,9 @@ class CustomFusion : public FusionInterface {
 // compile-time instead of allocating a new buffer for it at runtime by
 // translating the static slice into offset + size of the original buffer passed
 // into the custom call `%gemm`.
-class AddressComputationFusion : public FusionInterface {
+class DynamicSliceFusion : public FusionInterface {
  public:
-  explicit AddressComputationFusion(const HloFusionAnalysis& analysis)
-      : analysis_(analysis) {}
-
-  absl::StatusOr<FusionEmissionResult> Emit(
-      IrEmitterContext& ir_emitter_context,
-      const HloFusionInstruction& fusion) const final;
-
- private:
-  const HloFusionAnalysis& analysis_;
-};
-
-// TODO(vuson): merge these two fusions.
-// Emitter for custom fusions implementing dynamic address computation. A
-// dynamic address computation contains a custom call hero, with at least one of
-// its operands coming from a dynamic contiguous slice, and/or with at least one
-// of its results feeding into a contiguous DUS.
-//
-// The goal is to compute the buffer addresses for sliced operands/results
-// without having to allocate new buffers for these by wrapping
-// AddressComputationThunk around the original custom call thunk.
-class DynamicAddressComputationFusion : public FusionInterface {
- public:
-  explicit DynamicAddressComputationFusion(const HloFusionAnalysis& analysis)
+  explicit DynamicSliceFusion(const HloFusionAnalysis& analysis)
       : analysis_(analysis) {}
 
   absl::StatusOr<FusionEmissionResult> Emit(

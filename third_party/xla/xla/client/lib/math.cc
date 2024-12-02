@@ -22,13 +22,24 @@ limitations under the License.
 #include <limits>
 #include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/client/lib/arithmetic.h"
 #include "xla/client/lib/constants.h"
 #include "xla/client/lib/loops.h"
+#include "xla/client/lib/math_impl.h"
 #include "xla/client/xla_builder.h"
 #include "xla/primitive_util.h"
-#include "xla/shape_util.h"
+#include "xla/shape.h"
 #include "xla/status_macros.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -93,7 +104,8 @@ static XlaOp DoWithUpcastToF32(XlaOp operand,
 
 // TODO(jlebar): Use this function in more places in this file to restrict the
 // domain of other functions.
-static Status EnsureOperandIsRealFp(absl::string_view op_name, XlaOp operand) {
+static absl::Status EnsureOperandIsRealFp(absl::string_view op_name,
+                                          XlaOp operand) {
   auto& b = *operand.builder();
   TF_ASSIGN_OR_RETURN(auto shape, b.GetShape(operand));
   auto elem_ty = shape.element_type();
@@ -102,7 +114,7 @@ static Status EnsureOperandIsRealFp(absl::string_view op_name, XlaOp operand) {
         "Operands to %s must be real-valued floating-point, but got %s",
         op_name, PrimitiveType_Name(elem_ty));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 XlaOp IsPosInf(XlaOp operand) {
@@ -1177,8 +1189,31 @@ XlaOp Acos(XlaOp x) {
 
 // asin(x) = 2 * atan(x / (1 + sqrt(1 - x^2)))
 XlaOp Asin(XlaOp x) {
-  return ScalarLike(x, 2.0) *
-         Atan2(x, ScalarLike(x, 1.0) + Sqrt(ScalarLike(x, 1.0) - x * x));
+  XlaBuilder* b = x.builder();
+  auto do_it = [&](XlaOp z) -> absl::StatusOr<XlaOp> {
+    TF_ASSIGN_OR_RETURN(auto shape, b->GetShape(z));
+    auto elem_ty = shape.element_type();
+    switch (elem_ty) {
+      case C128:
+        return math_impl::AsinComplex<double>(z);
+      case C64:
+        return math_impl::AsinComplex<float>(z);
+      case F64:
+        return math_impl::AsinReal<double>(z);
+      case F32:
+        return math_impl::AsinReal<float>(z);
+        // todo(pearu): add implementations for BF16 and F16 to avoid
+        // the upcast below
+      default:
+        return InvalidArgument("Asin got unsupported element type %s",
+                               PrimitiveType_Name(elem_ty));
+    }
+  };
+  // These upcasts are not strictly necessary on all platforms to get within our
+  // error tolerances, so we could relax this if it ever mattered.
+  return DoWithUpcastToF32(x, {BF16, F16}, [&](XlaOp x) {
+    return b->ReportErrorOrReturn(do_it(x));
+  });
 }
 
 XlaOp Atan(XlaOp x) { return Atan2(x, ScalarLike(x, 1.0)); }
@@ -1245,11 +1280,23 @@ XlaOp Asinh(XlaOp x) {
     //
     //   y * sign(x).
     //
-    // TODO(jlebar): For now, we ignore the question of overflow if x is a
-    // complex type, because we don't yet have exhaustive tests for complex trig
-    // functions.
     if (primitive_util::IsComplexType(shape.element_type())) {
-      return Log(x + Sqrt(x * x + one));
+      // Asinh(x) = I * Asin(-I * x)
+      //
+      // We use mixed-mode arithmetic instead of complex arithemtic to
+      // ensure that multiplication of I and complex infinities will
+      // not produce superficial nan's:
+      auto x_re = Real(x);
+      auto x_im = Imag(x);
+      auto z = Asin(Complex(x_im, -x_re));
+      auto z_im = Imag(z);
+      // when abs(x.imag) > 1 and x.real == 0, select correct branch
+      // from Asin(Complex(x.imag, -0)) result (assuming x.real is +0,
+      // the imaginary part of the argument to Asin approaches 0 from
+      // the negative side):
+      auto on_branch_cut = And(Eq(x_re, ScalarLike(x_re, 0)),
+                               Gt(Abs(x_im), ScalarLike(x_im, 1)));
+      return Complex(Select(on_branch_cut, z_im, -z_im), Real(z));
     }
     // For small x, sqrt(x**2 + 1) will evaluate to 1 due to floating point
     // arithmetic. However, we would like to retain the low order term of this,
@@ -1309,9 +1356,22 @@ XlaOp Atanh(XlaOp x) {
 // correct answer of 3.40281961e+38 (0x7f7fffec) is very close to max-float, so
 // we deem this acceptable.
 XlaOp Cosh(XlaOp x) {
-  return DoWithUpcastToF32(x, {BF16, F16}, [](XlaOp x) {
+  XlaBuilder* b = x.builder();
+  auto do_it = [&](XlaOp x) -> absl::StatusOr<XlaOp> {
+    TF_ASSIGN_OR_RETURN(auto shape, b->GetShape(x));
+
     auto log_one_half = Log(ScalarLike(x, 0.5));
-    return Exp(x + log_one_half) + Exp(-x + log_one_half);
+    auto result = Exp(x + log_one_half) + Exp(-x + log_one_half);
+    if (primitive_util::IsComplexType(shape.element_type())) {
+      return result;
+    }
+
+    // Cosh(x) has a minimum value of 1.0 near 0.0, clamp to 1.0 to handle
+    // rounding errors in Exp().
+    return Max(result, ScalarLike(result, 1.0));
+  };
+  return DoWithUpcastToF32(x, {BF16, F16}, [&](XlaOp x) {
+    return b->ReportErrorOrReturn(do_it(x));
   });
 }
 

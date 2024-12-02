@@ -1,6 +1,6 @@
-load("//tsl:tsl.bzl", "internal_visibility")
-load("//tsl:tsl.default.bzl", "tsl_grpc_cc_dependencies")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("@local_xla//xla/tsl:tsl.bzl", "internal_visibility")
+load("@local_xla//xla/tsl:tsl.default.bzl", "tsl_grpc_cc_dependencies")
 load(
     "//tsl/platform:build_config.bzl",
     "tf_protos_profiler_service",
@@ -61,6 +61,7 @@ cc_library(
         "@local_xla//xla/python:__pkg__",
         "//tsl/profiler:internal",
         "//tsl/profiler/rpc:__pkg__",
+        "//learning/pathways/data_parallel:__pkg__",
     ]),
     deps = [
         "//tsl/lib/io:zlib_compression_options",
