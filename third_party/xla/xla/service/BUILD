@@ -381,6 +381,7 @@ cc_library(
     deps = [
         ":collective_ops_utils",
         ":hlo_pass",
+        "//xla:shape_util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:backend_configs_cc",
@@ -4974,6 +4975,7 @@ cc_library(
         "hlo_pass_interface.h",
     ],
     deps = [
+        "//xla:shape_util",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:types",
@@ -5040,6 +5042,7 @@ cc_library(
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:errors",
     ],
 )
@@ -5061,6 +5064,7 @@ xla_cc_test(
         "//xla/tests:hlo_test_base",
         "//xla/tests:literal_test_util",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -5078,6 +5082,7 @@ cc_library(
         "//xla/hlo/evaluator:hlo_evaluator",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_query",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@local_tsl//tsl/platform:errors",
     ],
 )
@@ -7360,6 +7365,7 @@ cc_library(
         ":hlo_pass",
         "//xla:shape_layout",
         "//xla:shape_util",
+        "//xla:status",
         "//xla:statusor",
         "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/container:flat_hash_set",

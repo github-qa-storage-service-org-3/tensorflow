@@ -663,6 +663,7 @@ xla_test(
         ":literal_test_util",
         ":test_macros_header",
         ":xla_internal_test_main",
+        "//xla:types",
         "//xla/client:global_data",
         "//xla/client:local_client",
         "//xla/client:xla_builder",
@@ -2898,6 +2899,7 @@ xla_test(
         "cpu",
     ],
     copts = tsl_copts(),
+    shard_count = 4,
     deps = [
         ":hlo_test_base",
         ":test_macros_header",
@@ -2906,6 +2908,8 @@ xla_test(
         "//xla:shape_util",
         "//xla:test",
         "//xla:test_helpers",
+        "//xla/service/cpu:onednn_util",
+        "@local_tsl//tsl/platform:platform_port",
     ],
 )
 
