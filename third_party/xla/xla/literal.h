@@ -870,18 +870,6 @@ class LiteralBase {
       return tuple_rep->children[index];
     }
 
-    Piece& child(ShapeIndexView index) {
-      return const_cast<Piece&>(const_cast<const Piece*>(this)->child(index));
-    }
-    const Piece& child(ShapeIndexView index) const {
-      const Piece* result = this;
-      while (!index.empty()) {
-        result = &result->child(index.front());
-        index.remove_prefix(1);
-      }
-      return *result;
-    }
-
     // Adds a child piece to this piece's children.
     void emplace_back(Piece child_piece) {
       auto* tuple_rep = GetTupleRep();
@@ -1548,10 +1536,6 @@ class BorrowingLiteral : public LiteralBase {
                    const Shape& shape);
   // TODO(b/79707221): adding constructors for nested tuples as well.
 
-  // Construct a BorrowingLiteral from a LiteralProto.  The proto must not be
-  // modified during the lifetime of the BorrowingLiteral.
-  explicit BorrowingLiteral(const LiteralProto& proto);
-
  private:
   // Recursively builds the subtree for the given piece and sets the subshapes
   // of the given piece with the given shape.
@@ -1618,7 +1602,7 @@ Status LiteralBase::SerializeWithShapeProto(const ShapeProto& shape_proto,
                                             OutputIterator output) const {
   SerializeState<OutputIterator> state(shape_proto, output);
   TF_RETURN_IF_ERROR(root_piece().ForEachSubpieceWithStatus(
-      [&](const ShapeIndex& shape_index, const Piece& piece) {
+      [&](const ShapeIndex& shape_index, const Piece& piece) -> absl::Status {
         const Shape& subshape = piece.subshape();
         if (subshape.IsTuple()) {
           return OkStatus();
@@ -1652,7 +1636,7 @@ absl::StatusOr<Literal> Literal::Deserialize(InputIterator begin,
   Literal literal(shape);
   TF_RETURN_IF_ERROR(
       literal.mutable_root_piece().ForEachMutableSubpieceWithStatus(
-          [&](const ShapeIndex& shape_index, Piece* piece) {
+          [&](const ShapeIndex& shape_index, Piece* piece) -> absl::Status {
             const Shape& subshape = piece->subshape();
             if (subshape.IsTuple()) {
               return OkStatus();

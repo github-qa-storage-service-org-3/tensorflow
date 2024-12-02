@@ -36,6 +36,7 @@ limitations under the License.
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_future.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/device.h"
 #include "xla/python/ifrt/executable.h"
@@ -132,7 +133,6 @@ template <>
 struct ShardedBufferAdapter<ExecuteShardedArg> {
   static int num_devices(const ExecuteShardedArg& arg) {
     if (std::holds_alternative<PyArray>(arg)) {
-      CHECK(std::get<PyArray>(arg).fastpath_enabled());
       return std::get<PyArray>(arg).num_addressable_shards();
     } else {
       return std::get<std::vector<PyArray>>(arg).size();
@@ -141,7 +141,6 @@ struct ShardedBufferAdapter<ExecuteShardedArg> {
   static tsl::RCReference<ifrt::Array> GetIfRtArray(
       const ExecuteShardedArg& arg) {
     if (std::holds_alternative<PyArray>(arg)) {
-      CHECK(std::get<PyArray>(arg).fastpath_enabled());
       return tsl::FormRef(std::get<PyArray>(arg).ifrt_array());
     }
     auto& arg_vector = std::get<std::vector<PyArray>>(arg);
@@ -406,14 +405,14 @@ PyLoadedExecutable::GetOutputMemoryKinds() const {
   return ifrt_loaded_executable_->GetOutputMemoryKinds();
 }
 
-absl::StatusOr<std::vector<Layout>> PyLoadedExecutable::GetParameterLayouts()
-    const {
+absl::StatusOr<std::vector<std::unique_ptr<PjRtLayout>>>
+PyLoadedExecutable::GetParameterLayouts() const {
   nb::gil_scoped_release gil_release;
   return ifrt_loaded_executable_->GetParameterLayouts();
 }
 
-absl::StatusOr<std::vector<Layout>> PyLoadedExecutable::GetOutputLayouts()
-    const {
+absl::StatusOr<std::vector<std::unique_ptr<PjRtLayout>>>
+PyLoadedExecutable::GetOutputLayouts() const {
   nb::gil_scoped_release gil_release;
   return ifrt_loaded_executable_->GetOutputLayouts();
 }
