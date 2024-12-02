@@ -34,6 +34,7 @@
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/device.h"
 #include "xla/python/ifrt/dtype.h"
+#include "xla/python/ifrt/remap_plan.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
 #include "xla/python/ifrt_proxy/client/array.h"
@@ -42,8 +43,9 @@
 #include "xla/python/ifrt_proxy/client/rpc_helper.h"
 #include "xla/python/ifrt_proxy/common/ifrt_service.pb.h"
 #include "xla/python/ifrt_proxy/common/types.h"
+#include "xla/tsl/concurrency/ref_count.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/concurrency/ref_count.h"
+#include "tsl/platform/casts.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -60,8 +62,9 @@ absl::StatusOr<std::unique_ptr<Client>> Client::Create(
 
   absl::flat_hash_map<int, std::unique_ptr<Memory>> memories;
   for (const auto& m : init_response.memories()) {
-    auto memory = std::make_unique<Memory>(m.id(), m.memory_space_kind(),
-                                           m.debug_string(), m.to_string());
+    auto memory =
+        std::make_unique<Memory>(m.id(), m.memory_space_kind(), m.kind_id(),
+                                 m.debug_string(), m.to_string());
     memories.insert({m.id(), std::move(memory)});
   }
 
@@ -96,7 +99,7 @@ absl::StatusOr<std::unique_ptr<Client>> Client::Create(
         return absl::NotFoundError(
             absl::StrCat("Memory ", d.default_memory_id(), " not found"));
       }
-      device->default_memory_space_ = it->second.get();
+      device->default_memory_ = it->second.get();
     }
     for (const int memory_id : d.memory_ids()) {
       const auto it = memories.find(memory_id);
@@ -104,7 +107,7 @@ absl::StatusOr<std::unique_ptr<Client>> Client::Create(
         return absl::NotFoundError(
             absl::StrCat("Memory ", memory_id, " not found"));
       }
-      device->memory_spaces_.push_back(it->second.get());
+      device->memories_.push_back(it->second.get());
     }
 
     devices.insert({d.id(), std::move(device)});
@@ -128,12 +131,16 @@ absl::StatusOr<std::unique_ptr<Client>> Client::Create(
   std::string runtime_type =
       absl::StrCat("proxy/", init_response.runtime_type());
 
-  return absl::WrapUnique(new Client(
+  auto client = absl::WrapUnique(new Client(
       std::move(rpc_helper), init_response.session_id(),
       init_response.platform_name(), init_response.platform_version(),
       init_response.platform_id(), init_response.process_index(), runtime_type,
-      std::move(devices), std::move(device_ptrs),
-      std::move(addressable_device_ptrs), std::move(memories)));
+      std::move(devices), device_ptrs, std::move(addressable_device_ptrs),
+      std::move(memories)));
+  for (ifrt::Device* device : device_ptrs) {
+    tensorflow::down_cast<Device*>(device)->client_ = client.get();
+  }
+  return client;
 }
 
 Client::Client(std::shared_ptr<RpcHelper> rpc_helper, uint64_t session_id,
@@ -158,11 +165,12 @@ Client::Client(std::shared_ptr<RpcHelper> rpc_helper, uint64_t session_id,
 
 Client::~Client() { rpc_helper_->Disconnect(); }
 
-absl::StatusOr<xla::ifrt::Device*> Client::LookupDevice(int device_id) const {
-  auto it = devices_.find(device_id);
+absl::StatusOr<xla::ifrt::Device*> Client::LookupDevice(
+    DeviceId device_id) const {
+  auto it = devices_.find(device_id.value());
   if (it == devices_.end()) {
     return absl::NotFoundError(
-        absl::StrCat("Device ", device_id, " not found."));
+        absl::StrCat("Device ", device_id.value(), " not found."));
   }
   return it->second.get();
 }
@@ -186,6 +194,13 @@ Client::AssembleArrayFromSingleDeviceArrays(
     ArrayCopySemantics semantics) {
   return Array::AssembleArrayFromSingleDeviceArrays(
       this, rpc_helper_, std::move(shape), sharding, arrays, semantics);
+}
+
+absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>>
+Client::RemapArrays(const RemapPlan& plan,
+                    absl::Span<tsl::RCReference<xla::ifrt::Array>> arrays,
+                    ArrayCopySemantics semantics) {
+  return Array::RemapArrays(this, rpc_helper_, plan, arrays, semantics);
 }
 
 absl::StatusOr<DeviceAssignment> Client::GetDefaultDeviceAssignment(

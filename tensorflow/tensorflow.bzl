@@ -1,5 +1,6 @@
 """Provides build configuration for TensorFlow."""
 
+load("@rules_java//java:defs.bzl", "java_test")
 load(
     "//tensorflow:py.default.bzl",
     _plain_py_binary = "py_binary",
@@ -68,7 +69,7 @@ load(
     "rocm_copts",
 )
 load(
-    "@local_tsl//tsl:tsl.bzl",
+    "@local_xla//xla/tsl:tsl.bzl",
     "tsl_gpu_library",
     _cc_header_only_library = "cc_header_only_library",
     _if_cuda_or_rocm = "if_cuda_or_rocm",
@@ -106,7 +107,7 @@ def clean_dep(target):
     """
 
     # A repo-relative label is resolved relative to the file in which the
-    # Label() call appears, i.e. @local_tsl.
+    # Label() call appears, i.e. @tsl.
     return str(Label(target))
 
 cc_header_only_library = _cc_header_only_library
@@ -286,7 +287,7 @@ def if_not_mobile(a):
 
 # Config setting selector used when building for products
 # which requires restricted licenses to be avoided.
-def if_not_mobile_or_arm_or_lgpl_restricted(a):
+def if_not_mobile_or_arm_or_macos_or_lgpl_restricted(a):
     _ = (a,)
     return select({
         "//conditions:default": [],
@@ -400,7 +401,6 @@ def get_win_copts(is_external = False):
         # "-DPLATFORM_WINDOWS",
         # "-DEIGEN_HAS_C99_MATH",
         # "-DTENSORFLOW_USE_EIGEN_THREADPOOL",
-        # "-DEIGEN_AVOID_STL_ARRAY",
         # "-Iexternal/gemmlowp",
         # "-Wno-sign-compare",
         # "-DNOGDI",
@@ -408,7 +408,6 @@ def get_win_copts(is_external = False):
         "/DPLATFORM_WINDOWS",
         "/DEIGEN_HAS_C99_MATH",
         "/DTENSORFLOW_USE_EIGEN_THREADPOOL",
-        "/DEIGEN_AVOID_STL_ARRAY",
         "/Iexternal/gemmlowp",
         "/wd4018",  # -Wno-sign-compare
         # Bazel's CROSSTOOL currently pass /EHsc to enable exception by
@@ -451,7 +450,6 @@ def tf_copts(
         android_copts.append(android_optimization_level_override)
     return (
         if_not_windows([
-            "-DEIGEN_AVOID_STL_ARRAY",
             "-Iexternal/gemmlowp",
             "-Wno-sign-compare",
             "-ftemplate-depth=900",
@@ -1883,7 +1881,7 @@ def tf_java_test(
         name = cc_library_name,
         srcs = tf_binary_additional_srcs(fullversion = True) + tf_binary_dynamic_kernel_dsos() + tf_binary_dynamic_kernel_deps(kernels),
     )
-    native.java_test(
+    java_test(
         name = name,
         srcs = srcs,
         deps = deps + [cc_library_name],

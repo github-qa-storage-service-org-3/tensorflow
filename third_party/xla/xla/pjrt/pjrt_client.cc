@@ -20,6 +20,7 @@ limitations under the License.
 #include <utility>
 
 #include "absl/base/casts.h"
+#include "absl/status/status.h"
 #include "absl/strings/substitute.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/pjrt/utils.h"
@@ -43,23 +44,12 @@ StatusOr<std::uintptr_t> PjRtClient::UnsafeBufferPointer(PjRtBuffer* buffer) {
   return absl::bit_cast<std::uintptr_t>(ptr);
 }
 
-PjRtFuture<Status> PjRtBuffer::CopyRawToHostFuture(
-    PjRtFuture<StatusOr<void*>> dst, int64_t offset, int64_t transfer_size) {
-  auto promise = PjRtFuture<Status>::CreatePromise();
-  dst.OnReady(
-      [this, promise, offset, transfer_size](StatusOr<void*> dst) mutable {
-        if (dst.ok()) {
-          CopyRawToHost(*dst, offset, transfer_size)
-              .OnReady([promise = std::move(promise)](Status status) mutable {
-                promise.Set(status);
-              });
-        } else {
-          promise.Set(dst.status());
-        }
-      });
-  return PjRtFuture<Status>(std::move(promise));
+PjRtFuture<> PjRtBuffer::CopyRawToHostFuture(PjRtFuture<void*> dst,
+                                             int64_t offset,
+                                             int64_t transfer_size) {
+  return PjRtFuture<>(absl::UnimplementedError(
+      "PjRtBuffer::CopyRawToHostFuture is not implemented"));
 }
-
 
 std::string CompiledMemoryStats::DebugString() const {
   return absl::Substitute(

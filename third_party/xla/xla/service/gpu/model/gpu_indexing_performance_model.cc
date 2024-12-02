@@ -123,7 +123,7 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForFusion(
   // operands. For each instruction, tells which elements of the instructions
   // result will be used to compute one result element of the fusion.
   auto grouped_fusion_indexing = ComputeGroupedOutputToInputIndexing(
-      fusion_adaptor, roots[0], &indexing_context_);
+      fusion_adaptor, roots[0], mlir_context_);
 
   int64_t flops = 0;
   int64_t bytes_read = 0;
@@ -131,12 +131,11 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForFusion(
 
   for (const auto& [instr, indexing_maps] : grouped_fusion_indexing) {
     VLOG(10) << "instr: " << instr->name();
-    HloInstructionAdaptor instr_adaptor(*instr);
 
     // Instructions inside the fusion are computation and account for FLOPs
     // count. Instructions outside the fusion are operands of the fusion and
     // account for memory read time.
-    bool is_operand = !fusion_adaptor.ContainsInstruction(instr_adaptor);
+    bool is_operand = !fusion_adaptor.ContainsInstruction(instr);
 
     auto element_type = instr->shape().element_type();
     int64_t n_bytes_total = 0;

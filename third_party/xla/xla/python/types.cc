@@ -45,11 +45,11 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/python/lib/core/numpy.h"
 
 namespace xla {
 
@@ -276,6 +276,17 @@ absl::StatusOr<nb_dtype> IfrtDtypeToNbDtype(ifrt::DType dtype) {
 absl::StatusOr<ifrt::DType> DtypeToIfRtDType(nb_dtype dtype) {
   TF_ASSIGN_OR_RETURN(auto primitive_type, DtypeToPrimitiveType(dtype));
   return ifrt::ToDType(primitive_type);
+}
+
+absl::StatusOr<nb_dtype> IfrtDtypeToDtypeWithTokenCanonicalization(
+    ifrt::DType dtype) {
+  if (dtype.kind() == ifrt::DType::kToken) {
+    // Treat token as bool.
+    return nb::steal<nb_dtype>(
+        reinterpret_cast<PyObject*>(PyArray_DescrFromType(NPY_BOOL)));
+  }
+
+  return IfrtDtypeToNbDtype(dtype);
 }
 
 const NumpyScalarTypes& GetNumpyScalarTypes() {

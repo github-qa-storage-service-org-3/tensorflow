@@ -147,7 +147,7 @@ absl::Status TransposeFusion::EmitKernel(IrEmitterContext& ir_emitter_context,
   std::vector<std::pair<int64_t, const HloInstruction*>> extra_outputs;
 
   for (const auto& [output_idx, root] : llvm::enumerate(hlo_roots)) {
-    const auto& hero = *analysis_.fusion_heroes()[output_idx];
+    const auto& hero = analysis_.fusion_hero(output_idx).instruction();
     auto transpose_descr = GetDescriptionForTiledTransposeEmitter(*root, hero);
     if (transpose_descr.has_value()) {
       auto iterator_inserted = transposes_to_roots.insert(std::make_pair(
@@ -284,20 +284,19 @@ LaunchDimensions TransposeFusion::launch_dimensions() const {
 }
 
 std::optional<IndexingMap> TransposeFusion::ComputeThreadIdToOutputIndexing(
-    int64_t root_index, IndexingContext* indexing_context) const {
-  auto* mlir_context = indexing_context->GetMLIRContext();
-  const auto& hero = *analysis_.fusion_heroes()[root_index];
-  const auto& root = *analysis_.fusion_roots()[root_index];
+    int64_t root_index, mlir::MLIRContext* ctx) const {
+  const auto& hero = analysis_.fusion_hero(root_index).instruction();
+  const auto& root = analysis_.fusion_root(root_index).instruction();
   if (!GetDescriptionForTiledTransposeEmitter(root, hero)) {
     // Non-transpose roots are elementwise by definition.
-    return ComputeThreadIdToInputIndexing(root_index, 0, indexing_context);
+    return ComputeThreadIdToInputIndexing(root_index, 0, ctx);
   }
 
   // The block offsets are permuted, but the thread offsets remain the same.
-  auto block_offset = GetBlockOffsetsForTiling(tiling_, mlir_context)
+  auto block_offset = GetBlockOffsetsForTiling(tiling_, ctx)
                           .getSubMap(std::vector<unsigned>{permutation_.begin(),
                                                            permutation_.end()});
-  auto thread_offset = GetThreadOffsetsForTiling(tiling_, mlir_context);
+  auto thread_offset = GetThreadOffsetsForTiling(tiling_, ctx);
   auto permuted_tiled_shape =
       ShapeUtil::MakeShape(U8, Permute(tiling_.GetShape(), permutation_));
 
@@ -305,22 +304,21 @@ std::optional<IndexingMap> TransposeFusion::ComputeThreadIdToOutputIndexing(
       GetIndexingMapForTiling(
           block_offset, thread_offset, tiling_.GetNumThreadsPerBlock(),
           tiling_.GetNumBlocks(), tiling_.GetThreadTileSize(),
-          permuted_tiled_shape.dimensions(), indexing_context),
-      GetBitcastMap(permuted_tiled_shape, hero.shape(), indexing_context));
-  map.Simplify();
+          permuted_tiled_shape.dimensions()),
+      GetBitcastMap(permuted_tiled_shape, hero.shape(), ctx));
+  map.Simplify(GetIndexingMapForInstruction);
   return map;
 }
 
 std::optional<IndexingMap> TransposeFusion::ComputeThreadIdToInputIndexing(
     int64_t root_index, int64_t hero_operand_index,
-    IndexingContext* indexing_context) const {
-  const auto& hero = *analysis_.fusion_heroes()[root_index];
+    mlir::MLIRContext* ctx) const {
+  const auto& hero = analysis_.fusion_hero(root_index).instruction();
 
   auto map = ComposeIndexingMaps(
-      GetIndexingMapForTiling(tiling_, indexing_context),
-      GetBitcastMap(tiling_.GetXlaShape(), hero.operand(0)->shape(),
-                    indexing_context));
-  map.Simplify();
+      GetIndexingMapForTiling(tiling_, ctx),
+      GetBitcastMap(tiling_.GetXlaShape(), hero.operand(0)->shape(), ctx));
+  map.Simplify(GetIndexingMapForInstruction);
   return map;
 }
 

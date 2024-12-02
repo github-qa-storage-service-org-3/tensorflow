@@ -32,12 +32,14 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/ffi/execution_context.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/pjrt/compile_options.pb.h"
 #include "xla/pjrt/executable_metadata.pb.h"
 #include "xla/pjrt/execute_options.pb.h"
 #include "xla/pjrt/pjrt_common.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/service/compiler.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_cost_analysis.h"
@@ -151,6 +153,15 @@ struct LoadOptions {
 class ExecuteContext {
  public:
   virtual ~ExecuteContext() = default;
+
+  ffi::ExecutionContext& ffi_context() { return ffi_context_; }
+  const ffi::ExecutionContext& ffi_context() const { return ffi_context_; }
+
+ private:
+  // XLA FFI execution context is a mechanism to attach arbitrary user data to
+  // a particular call of PjRtLoadedExecutable::Execute and forward it to custom
+  // calls implemented as XLA FFI handlers.
+  ffi::ExecutionContext ffi_context_;
 };
 
 struct PjRtTransferMetadata {
@@ -212,7 +223,9 @@ struct ExecuteOptions {
   // the launch IDs may be used by the runtime to detect the mismatch.
   int32_t launch_id = 0;
   // If non-null, an opaque context passed to an execution that may be used to
-  // supply additional arguments to a derived class of PjRtExecutable.
+  // supply additional arguments to a derived class of PjRtExecutable. It is
+  // a caller responsibility to ensure that the context is valid for the
+  // duration of the execution.
   const ExecuteContext* context = nullptr;
   // If true, check that the PjRtBuffer argument shapes match the compiled
   // shapes. Otherwise, any shape with the right size on device may be passed.
@@ -306,7 +319,7 @@ struct CompiledMemoryStats {
     CompiledMemoryStats stats;
     stats.generated_code_size_in_bytes = proto.generated_code_size_in_bytes();
     stats.argument_size_in_bytes = proto.argument_size_in_bytes();
-    stats.output_size_in_bytes = proto.alias_size_in_bytes();
+    stats.output_size_in_bytes = proto.output_size_in_bytes();
     stats.alias_size_in_bytes = proto.alias_size_in_bytes();
     stats.temp_size_in_bytes = proto.temp_size_in_bytes();
     stats.serialized_hlo_proto = proto.hlo_proto().SerializeAsString();
@@ -352,10 +365,12 @@ class PjRtExecutable {
   GetOutputDimensions() const;
 
   // Returns the layout of each input parameter.
-  virtual StatusOr<std::vector<Layout>> GetParameterLayouts() const;
+  virtual absl::StatusOr<std::vector<std::unique_ptr<PjRtLayout>>>
+  GetParameterLayouts() const;
 
   // Returns the layout of each output.
-  virtual StatusOr<std::vector<Layout>> GetOutputLayouts() const;
+  virtual absl::StatusOr<std::vector<std::unique_ptr<PjRtLayout>>>
+  GetOutputLayouts() const;
 
   // Returns a list of lists of memory kind strings for output. The returned
   // value is `[num_programs, num_output]`. The size of the outer list should be

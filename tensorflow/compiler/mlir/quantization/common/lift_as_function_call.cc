@@ -21,7 +21,10 @@ limitations under the License.
 #include <stack>
 #include <string>
 
+#include "absl/algorithm/container.h"
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
@@ -74,9 +77,15 @@ constexpr StringRef kStablehloModuleAttrsAttrName = "_stablehlo_module_attrs";
 // version 8 and above.
 constexpr StringRef kUsesShapePolymorphismAttr = "jax.uses_shape_polymorphism";
 
-// Checks if the op is inside a lifted function.
-bool IsInLiftedFunc(Operation& op) {
-  return op.getParentOfType<func::FuncOp>()->hasAttr(kFusedFunctionAttr);
+bool IsInLiftedFunc(Operation* op) {
+  if (op == nullptr) return false;
+  return op->getParentOfType<func::FuncOp>()->hasAttr(kFusedFunctionAttr);
+}
+
+bool IsInStableHloOpRegion(Operation* op) {
+  if (op == nullptr) return false;
+  auto parent_op = op->getParentOp();
+  return parent_op != nullptr && stablehlo::IsStablehloOp(parent_op);
 }
 
 // Inserts the function to the symbol table of the module thread-safely.
@@ -129,7 +138,7 @@ ValueRange CreateTFXlaCallModuleOp(OpBuilder& builder, const Location location,
   SmallVector<Attribute> shape_attrs;
   for (const Type result_type : output_types) {
     shape_attrs.push_back(
-        tf_type::ShapeAttr::get(ctx, result_type.cast<ShapedType>()));
+        tf_type::ShapeAttr::get(ctx, mlir::cast<ShapedType>(result_type)));
   }
   auto empty_array_attr = ArrayAttr::get(ctx, {});
   auto platforms = ArrayAttr::get(ctx, {StringAttr::get(ctx, kPlatformCpu)});
@@ -259,7 +268,7 @@ LogicalResult SetAttributeMap(MLIRContext& context,
     const NamedAttribute& attribute = attributes[idx];
     // Skip the following steps if the attribute value is `NullAttribute`.
     if (const auto string_attr =
-            attribute.getValue().dyn_cast_or_null<StringAttr>();
+            mlir::dyn_cast_or_null<StringAttr>(attribute.getValue());
         string_attr != nullptr &&
         string_attr.getValue().equals(kNullAttributeValue)) {
       continue;
@@ -472,10 +481,9 @@ bool IsEinsumSupportedByXlaDotV2(StringAttr equation_attr) {
          rhs_out_idx_start >= batch_dim_size;
 }
 
-absl::StatusOr<Method> GetQuantizationMethod(
-    TF::XlaCallModuleOp xla_call_module_op) {
+absl::StatusOr<Method> GetQuantizationMethod(absl::Nonnull<Operation*> op) {
   const auto quantization_method_attr =
-      xla_call_module_op->getAttrOfType<StringAttr>(kQuantizationMethodAttr);
+      op->getAttrOfType<StringAttr>(kQuantizationMethodAttr);
   if (!quantization_method_attr) {
     return absl::InvalidArgumentError(absl::StrCat(
         "Attribute ", kQuantizationMethodAttr.str(), " is not found."));
@@ -489,6 +497,42 @@ absl::StatusOr<Method> GetQuantizationMethod(
   }
 
   return quantization_method;
+}
+
+Method GetQuantizationMethodOrDefault(absl::Nonnull<Operation*> op) {
+  absl::StatusOr<Method> method = GetQuantizationMethod(op);
+  if (method.status().code() == absl::StatusCode::kInternal) {
+    // This indicates that the `Method` protobuf string is corrupt, but this
+    // function ignores it and returns the default instance.
+    op->emitError(absl::StrCat("Failed to get quantization method: ",
+                               method.status().ToString()));
+  }
+  return method.ok() ? *method : Method::default_instance();
+}
+
+bool HasWeightOnlyPtqMethod(TF::XlaCallModuleOp xla_call_module_op) {
+  Method method = GetQuantizationMethodOrDefault(xla_call_module_op);
+  return method.has_weight_only_ptq();
+}
+
+bool IsWeightOnlyQuantizableOp(const Operation& op) {
+  if (auto call_op = dyn_cast<TF::XlaCallModuleOp>(op)) {
+    StringRef entry_function_name = GetEntryFunctionName(call_op);
+    absl::StatusOr<Method> quantization_method = GetQuantizationMethod(call_op);
+    return ContainsConvOrDot(entry_function_name) && quantization_method.ok() &&
+           quantization_method->has_weight_only_ptq();
+  }
+  return false;
+}
+
+SmallVector<func::FuncOp> GetSortedFunctions(ModuleOp module_op) {
+  auto iterator_range = module_op.getOps<func::FuncOp>();
+  SmallVector<func::FuncOp> func_ops(iterator_range.begin(),
+                                     iterator_range.end());
+  absl::c_sort(func_ops, [](func::FuncOp op1, func::FuncOp op2) {
+    return op1.getName() < op2.getName();
+  });
+  return func_ops;
 }
 
 }  // namespace mlir::quant

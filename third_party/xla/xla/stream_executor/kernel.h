@@ -1,3 +1,4 @@
+#include "absl/base/attributes.h"
 /* Copyright 2015 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -96,7 +97,7 @@ limitations under the License.
 namespace stream_executor {
 
 class Kernel;
-class StreamExecutor;
+class StreamExecutorInterface;
 
 //===----------------------------------------------------------------------===//
 // Kernel cache config
@@ -232,8 +233,9 @@ class Kernel {
   // a dedicated KernelFactory accessible via StreamExecutor.
 
   // Creates kernel on a given executor from a given kernel specification.
+  ABSL_DEPRECATED("Use KernelFactory::Create instead.")
   static absl::StatusOr<std::unique_ptr<Kernel>> Create(
-      StreamExecutor *executor, const MultiKernelLoaderSpec &spec);
+      StreamExecutorInterface *executor, const MultiKernelLoaderSpec &spec);
 
   Kernel() = default;
   virtual ~Kernel() = default;
@@ -282,6 +284,8 @@ class Kernel {
 //===----------------------------------------------------------------------===//
 // Typed kernel
 //===----------------------------------------------------------------------===//
+template <typename... Params>
+class TypedKernelFactory;
 
 // Typed kernel is a typed smart-pointer-like wrapper around untyped Kernel.
 template <typename... Params>
@@ -290,7 +294,8 @@ class TypedKernel {
   static constexpr size_t kNumberOfParameters = sizeof...(Params);
 
   // Creates a typed kernel on a given executor from a kernel specification.
-  static absl::StatusOr<TypedKernel> Create(StreamExecutor *executor,
+  ABSL_DEPRECATED("Use TypedKernelFactory::Create instead.")
+  static absl::StatusOr<TypedKernel> Create(StreamExecutorInterface *executor,
                                             const MultiKernelLoaderSpec &spec) {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<Kernel> kernel,
                         Kernel::Create(executor, spec));
@@ -302,15 +307,26 @@ class TypedKernel {
   // launch would have to match types of the arguments provided at creation
   // time. The canonical storage for both ptx and cubin_data should outlive the
   // lifetime of the kernel.
+  ABSL_DEPRECATED("Use TypedKernelFactory::Create instead.")
   static absl::StatusOr<TypedKernel> Create(
-      StreamExecutor *executor, absl::string_view kernel_name,
+      StreamExecutorInterface *executor, absl::string_view kernel_name,
       absl::string_view ptx, absl::Span<const uint8_t> cubin_data);
 
   // Creates a kernel which can be launched with `stream.ThenLaunch(...)` from
   // an in-process symbol pointer.
-  static absl::StatusOr<TypedKernel> Create(StreamExecutor *executor,
+  ABSL_DEPRECATED("Use TypedKernelFactory::Create instead.")
+  static absl::StatusOr<TypedKernel> Create(StreamExecutorInterface *executor,
                                             absl::string_view kernel_name,
                                             void *symbol);
+
+  // Creates a kernel which can be launched with `stream.ThenLaunch(...)` from
+  // an LLVM IR.
+  ABSL_DEPRECATED("Use TypedKernelFactory::Create instead.")
+  static absl::StatusOr<TypedKernel> Create(StreamExecutorInterface *executor,
+                                            absl::string_view ir,
+                                            absl::string_view entrypoint,
+                                            absl::string_view kernel_name,
+                                            absl::Span<std::string> options);
 
   TypedKernel() = default;
 
@@ -323,6 +339,7 @@ class TypedKernel {
   operator bool() const { return static_cast<bool>(kernel_); }  // NOLINT
 
  private:
+  friend class TypedKernelFactory<Params...>;
   explicit TypedKernel(std::unique_ptr<Kernel> kernel)
       : kernel_(std::move(kernel)) {}
 
@@ -736,7 +753,7 @@ std::unique_ptr<KernelArgsPackedArrayBase> PackKernelArgs(
 
 template <typename... Args>
 inline absl::StatusOr<TypedKernel<Args...>> TypedKernel<Args...>::Create(
-    StreamExecutor *executor, absl::string_view kernel_name,
+    StreamExecutorInterface *executor, absl::string_view kernel_name,
     absl::string_view ptx, absl::Span<const uint8_t> cubin_data) {
   MultiKernelLoaderSpec loader_spec(TypedKernel<Args...>::kNumberOfParameters);
   loader_spec.AddCudaPtxInMemory(ptx, kernel_name);
@@ -750,9 +767,21 @@ inline absl::StatusOr<TypedKernel<Args...>> TypedKernel<Args...>::Create(
 
 template <typename... Args>
 inline absl::StatusOr<TypedKernel<Args...>> TypedKernel<Args...>::Create(
-    StreamExecutor *executor, absl::string_view kernel_name, void *symbol) {
+    StreamExecutorInterface *executor, absl::string_view kernel_name,
+    void *symbol) {
   MultiKernelLoaderSpec loader_spec(TypedKernel<Args...>::kNumberOfParameters);
   loader_spec.AddInProcessSymbol(symbol, kernel_name);
+
+  return TypedKernel<Args...>::Create(executor, loader_spec);
+}
+
+template <typename... Args>
+inline absl::StatusOr<TypedKernel<Args...>> TypedKernel<Args...>::Create(
+    StreamExecutorInterface *executor, absl::string_view ir,
+    absl::string_view entrypoint, absl::string_view kernel_name,
+    absl::Span<std::string> options) {
+  MultiKernelLoaderSpec loader_spec(TypedKernel<Args...>::kNumberOfParameters);
+  loader_spec.AddLlvmHostKernel(ir, entrypoint, kernel_name, options);
 
   return TypedKernel<Args...>::Create(executor, loader_spec);
 }

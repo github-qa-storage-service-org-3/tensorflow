@@ -62,8 +62,8 @@ limitations under the License.
 #include "xla/service/gpu/parallel_loop_emitter.h"
 #include "xla/service/gpu/reduction_utils.h"
 #include "xla/service/gpu/runtime/kernel_thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/gpu/target_util.h"
-#include "xla/service/gpu/thunk.h"
 #include "xla/service/llvm_ir/fused_ir_emitter.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/kernel_support_library.h"
@@ -481,7 +481,7 @@ ReductionEmitter::BuildFusedInitializerThunk(const HloInstruction* fusion_root,
     return *std::move(constant_init_thunk);
   }
 
-  const Shape dest_shape = fusion_root->shape();
+  const Shape& dest_shape = fusion_root->shape();
 
   LaunchDimensions launch_dimensions = CalculateLaunchDimensions(
       dest_shape, ir_emitter_context_.gpu_device_info());

@@ -117,10 +117,8 @@ EXTRA_EIGEN_COPTS = select({
     "//tensorflow:windows": [
         # copybara:uncomment_begin(no MSVC flags in google)
         # "-DEIGEN_HAS_C99_MATH",
-        # "-DEIGEN_AVOID_STL_ARRAY",
         # copybara:uncomment_end_and_comment_begin
         "/DEIGEN_HAS_C99_MATH",
-        "/DEIGEN_AVOID_STL_ARRAY",
         # copybara:comment_end
     ],
     "//conditions:default": ["-Wno-error=reorder"],
@@ -662,13 +660,13 @@ cc_library(
 
 cc_library(
     name = "control_flow_common",
-    srcs = [],
+    srcs = ["control_flow_common.cc"],
     hdrs = ["control_flow_common.h"],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     deps = [
         ":kernel_util",
-        "//tensorflow/lite:kernel_api",
+        "//tensorflow/lite:util",
         "//tensorflow/lite/core:subgraph",
         "//tensorflow/lite/core/c:common",
     ],
@@ -766,6 +764,7 @@ BUILTIN_KERNEL_SRCS = [
     "shape.cc",
     "stablehlo_gather.cc",
     "stablehlo_add.cc",
+    "stablehlo_composite.cc",
     "stablehlo_multiply.cc",
     "stablehlo_pad.cc",
     "stablehlo_reduce_window.cc",
@@ -887,6 +886,7 @@ cc_library(
         "@fft2d",
         "@ruy//ruy/profiler:instrumentation",
         "//tensorflow/lite/c:c_api_types",
+        "//tensorflow/lite/c:common",
         "//tensorflow/lite:array",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:cc_api_stable",
@@ -1335,6 +1335,24 @@ cc_test(
         "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/schema:schema_fbs",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "stablehlo_composite_test",
+    srcs = ["stablehlo_composite_test.cc"],
+    tags = ["tflite_nnapi"],
+    deps = [
+        ":kernel_util",
+        ":subgraph_test_util",
+        ":test_main",
+        ":test_util",
+        "//tensorflow/lite:cc_api_stable",
+        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate_hdrs_only",
+        "//tensorflow/lite/kernels/internal:tensor_ctypes",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
     ],
@@ -2245,6 +2263,7 @@ cc_test(
         ":builtin_ops",
         ":test_main",
         ":test_util",
+        "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest",
     ],
 )

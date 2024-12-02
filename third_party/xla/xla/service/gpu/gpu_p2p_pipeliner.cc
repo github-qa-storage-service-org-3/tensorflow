@@ -38,20 +38,34 @@ namespace gpu {
 namespace {
 
 bool ShouldPipeline(const HloInstruction* instr) {
-  if (!HloPredicateIsOp<HloOpcode::kRecv, HloOpcode::kSend>(instr)) {
+  if (!HloPredicateIsOp<HloOpcode::kRecvDone, HloOpcode::kSendDone>(instr)) {
     return false;
   }
-
   // Not annotated for pipelining.
   auto it = instr->frontend_attributes().map().find(kSendRecvPipelineAttr);
   if (it == instr->frontend_attributes().map().end()) {
     return false;
   }
 
-  // Check that the Send or Recv is used for non-trivial computation. This
-  // avoids repeatedly pipelining a loop.
-  return (instr->user_count() == 1 && instr->parent() != nullptr &&
-          instr->users()[0] != instr->parent()->root_instruction());
+  // Allow RecvDone to have a Send as a control predecessor. This control
+  // predecessor will be dropped by the pipeliner, which is what we needed
+  // when we rotate the RecvDone to the beginning of the while-body.
+  auto allowed_predecessor = [&]() {
+    return instr->opcode() == HloOpcode::kRecvDone &&
+           instr->control_predecessors().size() == 1 &&
+           instr->control_predecessors()[0]->opcode() == HloOpcode::kSend;
+  };
+  if (!instr->control_successors().empty() ||
+      (!instr->control_predecessors().empty() && !allowed_predecessor())) {
+    return false;
+  }
+
+  // Checks that the SendDone or RecvDone is used for non-trivial computation.
+  // This avoids repeatedly pipelining a loop.
+  bool is_pipelined =
+      (instr->user_count() == 1 && instr->parent() != nullptr &&
+       instr->users()[0] == instr->parent()->root_instruction());
+  return !is_pipelined;
 }
 
 bool ShouldAllowLoopVariantParameterInChain(const HloInstruction* instr) {
@@ -65,6 +79,14 @@ bool ShouldAllowLoopVariantParameterInChain(const HloInstruction* instr) {
 Status PostprocessP2PImpl(
     HloInstruction* instr,
     std::function<std::string(std::vector<ReplicaGroup>&)> transformer) {
+  // The input instruction is a Done instruction.
+  if (!HloPredicateIsOp<HloOpcode::kRecvDone, HloOpcode::kSendDone>(instr)) {
+    return Internal("Expected SendDone/RecvDone as the pipelined collective");
+  }
+  instr = instr->mutable_operand(0);
+  if (!HloPredicateIsOp<HloOpcode::kRecv, HloOpcode::kSend>(instr)) {
+    return Internal("Expected Send/Recv as the SendDone/RecvDone operand");
+  }
   auto validation_it =
       instr->frontend_attributes().map().find(kSendRecvValidationAttr);
   if (validation_it == instr->frontend_attributes().map().end() ||
@@ -189,11 +211,15 @@ void AddP2PPipeliner(HloPassPipeline& pipeline) {
       /*pipeline_use_tree=*/false,
       /*process_different_sized_ops=*/true,
       /*pipelining_direction=*/
-      CollectivePipeliner::PipeliningDirection::kBackward, ShouldPipeline,
+      CollectivePipeliner::PipeliningDirection::kBackward,
+      /*should_process=*/ShouldPipeline,
       /*acceptable_formatting=*/HloPredicateTrue,
       /*reuse_pipelined_op_buffer=*/HloPredicateTrue,
-      ShouldAllowLoopVariantParameterInChain, PostprocessPeeledP2P,
-      PostprocessRotatedP2P};
+      /*should_allow_loop_variant_parameter_in_chain=*/
+      ShouldAllowLoopVariantParameterInChain,
+      /*should_allow_control_dependencies=*/true,
+      /*=postprocess_backward_peeled_op*/ PostprocessPeeledP2P,
+      /*=postprocess_backward_rotated_op*/ PostprocessRotatedP2P};
   pipeline.AddPass<CollectivePipeliner>(config);
 }
 

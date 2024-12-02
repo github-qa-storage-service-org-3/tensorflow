@@ -53,6 +53,8 @@ class NVPTXCompiler : public GpuCompiler {
  public:
   NVPTXCompiler();
 
+  int32_t GetToolkitVersion() const override;
+
   absl::Status OptimizeHloConvolutionCanonicalization(
       HloModule* hlo_module, se::GpuComputeCapability gpu_version,
       se::dnn::VersionInfo dnn_version,
@@ -78,6 +80,10 @@ class NVPTXCompiler : public GpuCompiler {
 
   absl::Status AddCustomKernelReplacementPasses(
       HloPassPipeline* pipeline, const DebugOptions& debug_options) override;
+
+  absl::Status RunCudnnFusionCompilerPass(
+      HloModule* module, se::StreamExecutor* stream_exec,
+      Thunk::BinaryMap* dnn_compiled_graphs) override;
 
   HloDataflowAnalysis::CanShareBuffer GetCanShareBuffer() const override;
 

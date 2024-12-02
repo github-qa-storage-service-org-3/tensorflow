@@ -33,11 +33,12 @@ limitations under the License.
 #include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/gpu/stream_executor_util.h"
-#include "xla/service/gpu/thunk.h"
 #include "xla/status.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/kernel_factory.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/errors.h"
@@ -188,9 +189,9 @@ absl::Status CustomKernelThunk::Initialize(const InitializeParams& params) {
 
   auto it = kernel_cache_.find(params.executor);
   if (kernel_cache_.end() == it) {
-    TF_ASSIGN_OR_RETURN(
-        std::unique_ptr<se::Kernel> kernel,
-        se::Kernel::Create(params.executor, custom_kernel_.kernel_spec()));
+    TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
+                        se::KernelFactory::Create(
+                            params.executor, custom_kernel_.kernel_spec()));
     kernel_cache_.emplace(params.executor, std::move(kernel));
   }
 

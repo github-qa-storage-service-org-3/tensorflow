@@ -21,8 +21,10 @@ limitations under the License.
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,6 +32,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/casts.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -42,6 +45,7 @@ limitations under the License.
 #include "third_party/nanobind/include/nanobind/stl/optional.h"  // IWYU pragma: keep
 #include "third_party/nanobind/include/nanobind/stl/string.h"  // IWYU pragma: keep
 #include "third_party/nanobind/include/nanobind/stl/string_view.h"  // IWYU pragma: keep
+#include "third_party/nanobind/include/nanobind/stl/unique_ptr.h"  // IWYU pragma: keep
 #include "third_party/nanobind/include/nanobind/stl/vector.h"  // IWYU pragma: keep
 #include "xla/layout.h"
 #include "xla/layout_util.h"
@@ -65,6 +69,8 @@ limitations under the License.
 #include "xla/python/nb_helpers.h"
 #include "xla/python/nb_numpy.h"
 #include "xla/python/pjrt_ifrt/pjrt_array.h"
+#include "xla/python/pjrt_ifrt/pjrt_client.h"
+#include "xla/python/pjrt_ifrt/pjrt_device.h"
 #include "xla/python/pjrt_ifrt/xla_sharding.h"
 #include "xla/python/py_client.h"
 #include "xla/python/py_device.h"
@@ -80,11 +86,14 @@ limitations under the License.
 #include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/statusor.h"
+#include "xla/xla_data.pb.h"
+// TODO(b/324133505): remove this GOOGLE_CUDA block after JAX OSS migrates
+// to cuda plugin.
 #if GOOGLE_CUDA
 #include "xla/stream_executor/cuda/cuda_driver.h"
 #endif
+#include "xla/tsl/concurrency/ref_count.h"
 #include "xla/util.h"
-#include "tsl/concurrency/ref_count.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
@@ -248,8 +257,10 @@ extern "C" void PyArray_tp_dealloc(PyObject* self) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_CLEAR(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_ClearManagedDict(self);
+#else
+  PyObject_ClearManagedDict(self);
 #endif  // PY_VERSION_HEX < 0x030C0000
 
   tp->tp_free(self);
@@ -262,8 +273,10 @@ extern "C" int PyArray_tp_traverse(PyObject* self, visitproc visit, void* arg) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_VISIT(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_VisitManagedDict(self, visit, arg);
+#else
+  PyObject_VisitManagedDict(self, visit, arg);
 #endif  // PY_VERSION_HEX < 0x030C0000
   // https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_traverse
   Py_VISIT(Py_TYPE(self));
@@ -275,8 +288,10 @@ extern "C" int PyArray_tp_clear(PyObject* self) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_CLEAR(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_ClearManagedDict(self);
+#else
+  PyObject_ClearManagedDict(self);
 #endif  // PY_VERSION_HEX < 0x030C0000
   return 0;
 }
@@ -328,10 +343,13 @@ nb::object MakeShapedArrayCached(const ShapedArrayCacheKey& key) {
       });
 
   if (!value->has_value()) {
-    nb_dtype dtype = IfrtDtypeToNbDtype(key.dtype).value();
-    nb::object aval =
-        (*shaped_array)(SpanToNbTuple(absl::Span<const int64_t>(key.dims)),
-                        dtype, key.weak_type);
+    nb_dtype dtype =
+        IfrtDtypeToDtypeWithTokenCanonicalization(key.dtype).value();
+    nb::object aval = (*shaped_array)(
+        SpanToNbTuple(absl::Span<const int64_t>(
+            key.dtype.kind() == ifrt::DType::kToken ? std::vector<int64_t>{0}
+                                                    : key.dims)),
+        dtype, key.weak_type);
     *value = aval;
     return aval;
   }
@@ -340,16 +358,12 @@ nb::object MakeShapedArrayCached(const ShapedArrayCacheKey& key) {
 
 }  // namespace
 
-PyArray_Storage::PyArray_Storage(nb::object aval, bool weak_type,
-                                 xla::nb_dtype dtype,
-                                 std::vector<int64_t> shape,
-                                 nb::object sharding, bool committed,
-                                 nb_class_ptr<PyClient> py_client,
-                                 std::optional<nb_traceback> traceback,
-                                 tsl::RCReference<ifrt::Array> ifrt_array,
-                                 xla::PjRtFuture<absl::Status> result_status)
-    : fastpath_enabled(true),
-      aval(std::move(aval)),
+PyArray_Storage::PyArray_Storage(
+    nb::object aval, bool weak_type, xla::nb_dtype dtype,
+    std::vector<int64_t> shape, nb::object sharding, bool committed,
+    nb_class_ptr<PyClient> py_client, std::optional<nb_traceback> traceback,
+    tsl::RCReference<ifrt::Array> ifrt_array, xla::PjRtFuture<> result_status)
+    : aval(std::move(aval)),
       weak_type(weak_type),
       dtype(std::move(dtype)),
       shape(std::move(shape)),
@@ -367,8 +381,6 @@ PyArray_Storage::PyArray_Storage(nb::object aval, bool weak_type,
   prev = nullptr;
 }
 
-PyArray_Storage::PyArray_Storage(DisableFastpath) : fastpath_enabled(false) {}
-
 void PyArray::PyInit(PyArray self, nb::object aval, nb::object sharding,
                      absl::Span<const PyArray> py_arrays, bool committed,
                      bool skip_checks) {
@@ -380,22 +392,17 @@ void PyArray::PyInit(PyArray self, nb::object aval, nb::object sharding,
             nb::cast<bool>(aval.attr("weak_type")), std::move(dtype),
             std::move(shape), std::move(sharding), committed,
             py_arrays.at(0).py_client(), Traceback::Get(),
-            std::move(ifrt_array), xla::PjRtFuture<absl::Status>());
+            std::move(ifrt_array), xla::PjRtFuture<>());
 
   if (!skip_checks) {
     self.CheckAndRearrange();
   }
 }
 
-void PyArray::PyInit(nb::object self, DisableFastpath) {
-  Construct(reinterpret_cast<PyArrayObject*>(self.ptr()),
-            PyArray_Storage::DisableFastpath());
-}
-
 PyArray PyArray::MakeFromSingleDeviceArray(
     nb_class_ptr<PyClient> py_client, std::optional<nb_traceback> traceback,
     tsl::RCReference<ifrt::Array> ifrt_array, bool weak_type, bool committed,
-    xla::PjRtFuture<absl::Status> result_status) {
+    xla::PjRtFuture<> result_status) {
   if (!llvm::isa<ifrt::SingleDeviceSharding>(ifrt_array->sharding())) {
     throw XlaRuntimeError(
         InvalidArgument("Constructing single device jax.Array from non-single "
@@ -403,11 +410,13 @@ PyArray PyArray::MakeFromSingleDeviceArray(
   }
   auto shape_span = ifrt_array->shape().dims();
   ShapedArrayCacheKey key;
-  key.dims = std::vector<int64_t>(shape_span.begin(), shape_span.end());
   key.dtype = ifrt_array->dtype();
+  key.dims = key.dtype.kind() == ifrt::DType::kToken
+                 ? std::vector<int64_t>{0}
+                 : std::vector<int64_t>(shape_span.begin(), shape_span.end());
   key.weak_type = weak_type;
   auto aval = MakeShapedArrayCached(key);
-  auto dtype = IfrtDtypeToNbDtype(key.dtype).value();
+  auto dtype = IfrtDtypeToDtypeWithTokenCanonicalization(key.dtype).value();
   const ifrt::MemoryKind memory_kind = ifrt_array->sharding().memory_kind();
   nb::object py_memory_kind =
       (jax::GetEnableMemories() && memory_kind.memory_kind().has_value())
@@ -428,11 +437,13 @@ PyArray PyArray::MakeFromIfrtArrayAndSharding(
     bool weak_type, bool committed, bool skip_checks) {
   auto shape_span = ifrt_array->shape().dims();
   ShapedArrayCacheKey key;
-  key.dims = std::vector<int64_t>(shape_span.begin(), shape_span.end());
   key.dtype = ifrt_array->dtype();
+  key.dims = key.dtype.kind() == ifrt::DType::kToken
+                 ? std::vector<int64_t>{0}
+                 : std::vector<int64_t>(shape_span.begin(), shape_span.end());
   key.weak_type = weak_type;
   auto aval = MakeShapedArrayCached(key);
-  auto dtype = IfrtDtypeToNbDtype(key.dtype).value();
+  auto dtype = IfrtDtypeToDtypeWithTokenCanonicalization(key.dtype).value();
   return PyArray(std::move(aval), weak_type, dtype, std::move(key.dims),
                  std::move(sharding), std::move(py_client),
                  std::move(traceback), std::move(ifrt_array), committed,
@@ -454,12 +465,12 @@ PyArray PyArrayResultHandler::Call(absl::Span<const PyArray> py_arrays) const {
   return Call(
       py_arrays.at(0).py_client(),
       CreateIfRtArrayFromSingleDeviceShardedPyArrays(dtype_, shape_, py_arrays),
-      xla::PjRtFuture<absl::Status>());
+      xla::PjRtFuture<>());
 }
 
-PyArray PyArrayResultHandler::Call(
-    nb_class_ptr<PyClient> py_client, tsl::RCReference<ifrt::Array> ifrt_array,
-    xla::PjRtFuture<absl::Status> result_status) const {
+PyArray PyArrayResultHandler::Call(nb_class_ptr<PyClient> py_client,
+                                   tsl::RCReference<ifrt::Array> ifrt_array,
+                                   xla::PjRtFuture<> result_status) const {
   return PyArray(aval_, weak_type_, dtype_, shape_, sharding_,
                  std::move(py_client), Traceback::Get(), std::move(ifrt_array),
                  committed_, skip_checks_, std::move(result_status));
@@ -467,7 +478,7 @@ PyArray PyArrayResultHandler::Call(
 
 PyArray PyArrayResultHandler::Call(PyArray py_array) const {
   return Call(py_array.py_client(), tsl::FormRef(py_array.ifrt_array()),
-              xla::PjRtFuture<absl::Status>());
+              xla::PjRtFuture<>());
 }
 
 PyArray::PyArray(nb::object aval, bool weak_type, nb_dtype dtype,
@@ -475,8 +486,7 @@ PyArray::PyArray(nb::object aval, bool weak_type, nb_dtype dtype,
                  nb_class_ptr<PyClient> py_client,
                  std::optional<nb_traceback> traceback,
                  tsl::RCReference<ifrt::Array> ifrt_array, bool committed,
-                 bool skip_checks,
-                 xla::PjRtFuture<absl::Status> result_status) {
+                 bool skip_checks, xla::PjRtFuture<> result_status) {
   auto* self =
       PyArray_tp_new(reinterpret_cast<PyTypeObject*>(type_), nullptr, nullptr);
   m_ptr = self;
@@ -623,6 +633,11 @@ Status PyArray::set_arrays(nb::object obj) {
 }
 
 StatusOr<PyArray> PyArray::FullyReplicatedShard() {
+  auto& cached = GetStorage().fully_replicated_array;
+  if (!cached.is_none()) {
+    return nb::cast<PyArray>(cached);
+  }
+
   if (ifrt_array() == nullptr) {
     return InvalidArgument(
         "FullyReplicatedShard() called on deleted or donated buffer");
@@ -631,9 +646,11 @@ StatusOr<PyArray> PyArray::FullyReplicatedShard() {
   TF_ASSIGN_OR_RETURN(auto fully_replicated_ifrt_shard,
                       ifrt_array()->FullyReplicatedShard(
                           ifrt::ArrayCopySemantics::kReuseInput));
-  return MakeFromSingleDeviceArray(py_client(), traceback(),
-                                   std::move(fully_replicated_ifrt_shard),
-                                   weak_type(), committed(), result_status());
+  auto array = MakeFromSingleDeviceArray(
+      py_client(), traceback(), std::move(fully_replicated_ifrt_shard),
+      weak_type(), committed(), result_status());
+  cached = array;
+  return nb::cast<PyArray>(cached);
 }
 
 Status PyArray::BlockUntilReady() const {
@@ -657,22 +674,6 @@ StatusOr<size_t> PyArray::GetOnDeviceSizeInBytes() {
   return shard_size * nb::len(nb::object(sharding().attr("device_set")));
 }
 
-StatusOr<PyArray> PyArray::FetchSingleShard(std::string_view api) {
-  if (ifrt_array() == nullptr) {
-    return InvalidArgument("%s( called on deleted or donated buffer", api);
-  }
-
-  if (llvm::isa<ifrt::SingleDeviceSharding>(&ifrt_array()->sharding())) {
-    return *this;
-  }
-
-  auto& py_arrays = py_arrays_cached();
-  if (py_arrays.empty() || py_arrays[0].shape() != shape()) {
-    return InvalidArgument("%s() is supported only for unsharded arrays.", api);
-  }
-  return py_arrays[0];
-}
-
 absl::Status PyArray::BlockUntilResultStatusIsReady() {
   auto& result_status = GetStorage().result_status;
   // If the result_status future is not valid, this result did not come directly
@@ -689,8 +690,7 @@ absl::Status PyArray::BlockUntilResultStatusIsReady() {
 }
 
 StatusOr<nb::object> PyArray::SingleDeviceArrayToNumpyArray() {
-  TF_ASSIGN_OR_RETURN(auto arr,
-                      FetchSingleShard("SingleDeviceArrayToNumpyArray"));
+  TF_ASSIGN_OR_RETURN(auto arr, FullyReplicatedShard());
   auto result = arr.GetStorage().host_value.AsNumPyArray(
       arr.GetStorage().dynamic_shape, arr.ifrt_array());
   TF_RETURN_IF_ERROR(arr.BlockUntilResultStatusIsReady());
@@ -698,8 +698,7 @@ StatusOr<nb::object> PyArray::SingleDeviceArrayToNumpyArray() {
 }
 
 Status PyArray::CopySingleDeviceArrayToHostAsync() {
-  TF_ASSIGN_OR_RETURN(auto arr,
-                      FetchSingleShard("CopySingleDeviceArrayToHostAsync"));
+  TF_ASSIGN_OR_RETURN(auto arr, FullyReplicatedShard());
   return arr.GetStorage().host_value.CopyToHostAsync(
       arr.GetStorage().dynamic_shape, arr.ifrt_array());
 }
@@ -802,10 +801,8 @@ nb::dict PyArray::CudaArrayInterface() {
 }
 
 StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
-                                                nb_class_ptr<PyClient> client) {
-#ifndef GOOGLE_CUDA
-  throw XlaRuntimeError("This operation requires CUDA support.");
-#else
+                                                nb_class_ptr<PyClient> client,
+                                                std::optional<int> device_id) {
   if (!cai.contains("data")) {
     return absl::InvalidArgumentError(
         "CUDA Array Interface does not define `data`");
@@ -841,13 +838,25 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
       PrimitiveType element_type,
       DtypeToPrimitiveType(nb_dtype::from_args(cai["typestr"])));
 
-  // cannot determine device_id/stream when device pointer is NULL.
-  int device_id =
-      (data_value == 0
-           ? 0
-           : stream_executor::gpu::CreatedContexts::GetDeviceOrdinal(data_ptr));
+  // TODO(b/324133505): remove this GOOGLE_CUDA block after JAX OSS migrates
+  // to cuda plugin.
+#ifdef GOOGLE_CUDA
+  if (!device_id.has_value()) {
+    // cannot determine device_id/stream when device pointer is NULL.
+    device_id.emplace(
+        (data_value == 0
+             ? 0
+             : stream_executor::gpu::CreatedContexts::GetDeviceOrdinal(
+                   data_ptr)));
+  }
+#endif  // GOOGLE_CUDA
+
+  if (!device_id.has_value()) {
+    throw XlaRuntimeError(
+        "This operation requires CUDA support from jaxlib or jax cuda plugin.");
+  }
   TF_ASSIGN_OR_RETURN(auto device,
-                      client->DeviceFromLocalHardwareId(device_id));
+                      client->DeviceFromLocalHardwareId(*device_id));
   bool is_default_stream =
       data_value == 0 || version == 2 ||
       (version == 3 && (!cai.contains("stream") || cai["stream"].is_none()));
@@ -898,10 +907,17 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(element_type, dimensions,
                                                     minor_to_major);
   std::function<void()> on_delete_callback = []() {};
+  auto* pjrt_device =
+      llvm::dyn_cast_or_null<ifrt::PjRtDevice>(device->device());
+  if (pjrt_device == nullptr) {
+    return InvalidArgument(
+        "This operation is implemented for a PjRt-compatible backend only.");
+  }
+  TF_RET_CHECK(pjrt_device->IsAddressable());
   TF_ASSIGN_OR_RETURN(
       auto pjrt_buffer,
       device->client()->pjrt_client()->CreateViewOfDeviceBuffer(
-          static_cast<char*>(data_ptr), shape, device->device(),
+          static_cast<char*>(data_ptr), shape, pjrt_device->pjrt_device(),
           on_delete_callback,
           stream <= 2 ? std::nullopt : std::make_optional(stream)));
   auto* ifrt_client =
@@ -914,7 +930,6 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
                       ifrt_client->CreatePjRtArray(std::move(pjrt_buffer)));
   return PyArray::MakeFromSingleDeviceArray(std::move(client), Traceback::Get(),
                                             std::move(ifrt_array), false, true);
-#endif  // GOOGLE_CUDA
 }
 
 Status PyArray::Delete() {
@@ -956,9 +971,6 @@ nb::handle PyArray::Storage::AsHandle() {
 
 PyArray::Storage::~PyArray_Storage() {
   CHECK(PyGILState_Check());
-  if (!fastpath_enabled) {
-    return;
-  }
   if (py_client->arrays_ == this) {
     py_client->arrays_ = next;
   }
@@ -968,6 +980,11 @@ PyArray::Storage::~PyArray_Storage() {
   if (next) {
     next->prev = prev;
   }
+  // Release GIL and then explicitly destroy `ifrt_array` to prevent deadlock on
+  // CPU backend caused by interactions between argument donations and host
+  // callbacks.
+  nb::gil_scoped_release gil_release;
+  ifrt_array.reset();
 }
 
 StatusOr<PyArray> PyArray::CopyToDeviceWithSharding(ifrt::DeviceList devices,
@@ -1082,8 +1099,8 @@ StatusOr<PyArray> PyArray::BatchedDevicePut(
   DevicePutOptions options;
   options.squash_64bit_types = !jax_enable_x64;
   options.allow_zero_copy =
-      (!force_copy &&
-       (host_buffer_semantics == ifrt::Client::HostBufferSemantics::kZeroCopy));
+      (!force_copy && (host_buffer_semantics ==
+                       ifrt::Client::HostBufferSemantics::kImmutableZeroCopy));
 
   nb::list owning_pylist;
   std::vector<tsl::RCReference<ifrt::Array>> ifrt_arrays;
@@ -1095,6 +1112,8 @@ StatusOr<PyArray> PyArray::BatchedDevicePut(
 
   ifrt::MemoryKind dst_memory_kind = CreateIfRtMemoryKindFromSharding(sharding);
 
+  std::vector<DevicePutResultFn> device_put_fns;
+  device_put_fns.reserve(xs.size());
   size_t i = 0;
   for (auto& x : xs) {
     if (PyArray::IsPyArray(x)) {
@@ -1105,16 +1124,27 @@ StatusOr<PyArray> PyArray::BatchedDevicePut(
           jax::ApplyTransferGuardToHostToDevice(transfer_guard_formatter));
     }
     TF_ASSIGN_OR_RETURN(
-        DevicePutResult on_device,
+        device_put_fns.emplace_back(),
         DevicePut(x, dst_devices[i]->client()->ifrt_client(),
                   dst_devices[i]->device(), options, dst_memory_kind));
-    ifrt_arrays.push_back(std::move(on_device.ifrt_array));
+    ++i;
+  }
+  std::vector<DevicePutResult> device_puts;
+  device_puts.reserve(device_put_fns.size());
+  {
+    nb::gil_scoped_release gil_release;
+    for (auto& device_put_fn : device_put_fns) {
+      TF_ASSIGN_OR_RETURN(auto device_put, std::move(device_put_fn)());
+      device_puts.push_back(std::move(device_put));
+    }
+  }
+  for (auto& device_put : device_puts) {
+    ifrt_arrays.push_back(std::move(device_put.ifrt_array));
     devices.push_back(ifrt_arrays.back()->sharding().devices().front());
     shapes.push_back(ifrt_arrays.back()->shape());
-    if (on_device.owning_pybuffer) {
-      owning_pylist.append(on_device.owning_pybuffer);
+    if (device_put.owning_pybuffer) {
+      owning_pylist.append(device_put.owning_pybuffer);
     }
-    ++i;
   }
 
   // TODO(phawkins): it's highly suspicious to me that owning_pylist isn't
@@ -1199,8 +1229,14 @@ struct ExtraBufferInfo {
   std::unique_ptr<PjRtBuffer::ExternalReference> external_reference_hold;
 };
 
+// The default layout of a non-tuple array should have major-to-minor layout
+// and no tiles.
+bool HasDefaultLayout(const Layout& layout) {
+  return LayoutUtil::IsMonotonicWithDim0Major(layout) && layout.tiles().empty();
+}
+
 int PyArray_bf_getbuffer(PyObject* exporter, Py_buffer* view, int flags) {
-  Status status = [&]() {
+  Status status = [&]() -> absl::Status {
     PyArray py_array = nb::borrow<PyArray>(exporter);
     if (py_array.ifrt_array() == nullptr) {
       // TODO(phawkins): why is this happening?
@@ -1276,6 +1312,12 @@ int PyArray_bf_getbuffer(PyObject* exporter, Py_buffer* view, int flags) {
                !LayoutUtil::IsMonotonicWithDim0Major(xla_layout) &&
                !LayoutUtil::IsMonotonicWithDim0Minor(xla_layout)) {
       return InvalidArgument("Buffer is not in contiguous layout.");
+    } else if (!HasDefaultLayout(xla_layout)) {
+      // Fail and fall back to using __array__ if the CPU buffer has a device
+      // specific layout. For instance, this happens for host buffers in pinned
+      // memories of the TPU device.
+      return InvalidArgument(
+          "Buffer is potentially a device buffer with non default layout.");
     }
     std::memset(view, 0, sizeof(Py_buffer));
     const void* root_ptr =
@@ -1347,6 +1389,19 @@ std::optional<std::vector<int64_t>> ByteStridesOrDefaultForShapeInt64(
   return ByteStridesForShape(shape);
 }
 
+bool IsZeroCopyableCpuBuffer(const PjRtBuffer* buf) {
+  // For CPU buffers with device-specific layouts, we must delinearize
+  // to unpack the array. This could happen for the host buffer
+  // pre-mapped to the TPU device, a.k.a., pinned host buffers for the
+  // device.
+  bool has_default_layout = buf->layout() == nullptr ||
+                            HasDefaultLayout(GetXlaLayoutUnsafe(buf->layout()));
+  // On CPU for values >= 8 bits, we can return the value in a zero-copy way.
+  // For sub-byte values, we must copy in order to unpack the array.
+  return buf->IsOnCpu() &&
+         !primitive_util::IsSubByteNonPredType(buf->element_type()) &&
+         has_default_layout;
+}
 }  // namespace
 
 PyHostValue::PyHostValue() = default;
@@ -1357,14 +1412,20 @@ StatusOr<nb::object> PyHostValue::AsNumPyArray(
   if (ifrt_array->IsDeleted()) {
     return InvalidArgument("DeviceArray has been deleted.");
   }
+  // The only `jax.Array` with token-shape buffer is the one wrapped by
+  // `jax.core.Token`. Since it is an internal implementation detail, we
+  // don't support converting it to a numpy array.
+  if (ifrt_array->dtype().kind() == ifrt::DType::kToken) {
+    return InvalidArgument(
+        "Cannot convert a token-shape buffer to a numpy array.");
+  }
   auto* arr = llvm::dyn_cast_or_null<ifrt::PjRtCompatibleArray>(ifrt_array);
   if (arr != nullptr) {
     auto* pjrt_buffer = arr->pjrt_buffers().front().get();
     TF_RET_CHECK(!pjrt_buffer->IsTuple());
-    // On CPU for non-int4 values, we can return the value in a zero-copy way.
-    // For int4 values, we must copy in order to unpack the array.
-    if (pjrt_buffer->IsOnCpu() &&
-        !primitive_util::Is4BitType(pjrt_buffer->element_type())) {
+    // On CPU for values >= 8 bits, we can return the value in a zero-copy way.
+    // For sub-byte values, we must copy in order to unpack the array.
+    if (IsZeroCopyableCpuBuffer(pjrt_buffer)) {
       TF_ASSIGN_OR_RETURN(const auto* shape,
                           XlaDynamicShape(ifrt_array, dynamic_shape_holder));
       TF_ASSIGN_OR_RETURN(nb_dtype dtype,
@@ -1375,21 +1436,22 @@ StatusOr<nb::object> PyHostValue::AsNumPyArray(
         std::unique_ptr<PjRtBuffer::ExternalReference> external_reference_hold;
       };
       auto hold = std::make_unique<Hold>();
-      TF_ASSIGN_OR_RETURN(hold->external_reference_hold,
-                          pjrt_buffer->AcquireExternalReference());
       hold->buffer = tsl::FormRef(ifrt_array);
+      auto* hold_ptr = hold.release();
+      nb::capsule hold_capsule(
+          hold_ptr, [](void* h) noexcept { delete static_cast<Hold*>(h); });
+      {
+        // Release the GIL as `AcquireExternalReference` may block.
+        nb::gil_scoped_release gil;
+        TF_ASSIGN_OR_RETURN(hold_ptr->external_reference_hold,
+                            pjrt_buffer->AcquireExternalReference());
+        TF_RETURN_IF_ERROR(ifrt_array->GetReadyFuture().Await());
+      }
       void* data =
-          hold->external_reference_hold->OpaqueDeviceMemoryDataPointer();
-      nb::capsule hold_capsule(hold.release(), [](void* h) noexcept {
-        delete static_cast<Hold*>(h);
-      });
+          hold_ptr->external_reference_hold->OpaqueDeviceMemoryDataPointer();
       nb_numpy_ndarray array(dtype, shape->dimensions(),
                              ByteStridesForShape(*shape), data, hold_capsule);
       array.attr("flags").attr("writeable") = nb::bool_(false);
-      {
-        nb::gil_scoped_release gil;
-        TF_RETURN_IF_ERROR(ifrt_array->GetReadyFuture().Await());
-      }
       return array;
     }
   }
@@ -1411,16 +1473,13 @@ Status PyHostValue::CopyToHostAsync(std::optional<Shape>& dynamic_shape_holder,
     return OkStatus();
   }
   auto* arr = llvm::dyn_cast_or_null<ifrt::PjRtCompatibleArray>(ifrt_array);
-  if (arr != nullptr) {
-    auto* pjrt_buffer = arr->pjrt_buffers().front().get();
-    if (pjrt_buffer->IsOnCpu() &&
-        !primitive_util::Is4BitType(pjrt_buffer->element_type())) {
-      return OkStatus();
-    }
+  if (arr != nullptr && !arr->pjrt_buffers().front()->IsTuple() &&
+      IsZeroCopyableCpuBuffer(arr->pjrt_buffers().front().get())) {
+    return OkStatus();
   }
   auto transfer_guard_formatter = [ifrt_array] {
     return absl::StrCat(
-        "shape=()", absl::StrJoin(ifrt_array->shape().dims(), ","),
+        "shape=(", absl::StrJoin(ifrt_array->shape().dims(), ","),
         "), dtype=", ifrt_array->dtype().DebugString(),
         ", device=", ifrt_array->sharding().devices().front()->DebugString());
   };
@@ -1505,7 +1564,14 @@ Status PyArray::RegisterTypes(nb::module_& m) {
       absl::StrCat(nb::cast<std::string>(m.attr("__name__")), ".ArrayImpl");
 
   PyType_Spec PyArray_spec = {
+#if PY_VERSION_HEX < 0x030B0000
+      // Work around for https://github.com/python/cpython/issues/89478
+      // CPython 3.10 and earlier assume that the .name value remains alive
+      // forever.
+      /*.name=*/strdup(name.c_str()),
+#else
       /*.name=*/name.c_str(),
+#endif  // PY_VERSION_HEX < 0x030B0000
       /*.basicsize=*/static_cast<int>(sizeof(PyArrayObject)),
       /*.itemsize=*/0,
 #if PY_VERSION_HEX < 0x030C0000
@@ -1541,12 +1607,6 @@ Status PyArray::RegisterTypes(nb::module_& m) {
       },
       nb::is_method(), nb::arg("aval"), nb::arg("sharding"), nb::arg("arrays"),
       nb::arg("committed"), nb::arg("_skip_checks") = false);
-  // TODO(yashkatariya): remove this once the transition completes.
-  type.attr("_init_with_fastpath_disabled") = nb::cpp_function(
-      [](nb::object self) {
-        PyArray::PyInit(self, PyArray::DisableFastpath());
-      },
-      nb::is_method());
   type.attr("delete") = nb::cpp_function(
       [](PyArray& self) { xla::ThrowIfError(self.Delete()); }, nb::is_method());
   type.attr("_sharding") = nb_property_readonly(&PyArray::sharding);
@@ -1570,6 +1630,8 @@ Status PyArray::RegisterTypes(nb::module_& m) {
       nb::is_method());
   type.attr("__cuda_array_interface__") = nb_property_readonly(
       [](PyArray self) { return self.CudaArrayInterface(); });
+  type.attr("_pjrt_layout") =
+      nb_property_readonly(xla::ValueOrThrowWrapper(&PyArray::layout));
   type.attr("on_device_size_in_bytes") = nb::cpp_function(
       xla::ValueOrThrowWrapper(&PyArray::GetOnDeviceSizeInBytes),
       nb::is_method());
