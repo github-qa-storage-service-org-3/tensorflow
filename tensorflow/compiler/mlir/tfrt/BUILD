@@ -145,6 +145,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
         "@tf_runtime//:basic_kernels_opdefs",
         "@tf_runtime//:core_runtime_opdefs",
@@ -165,6 +166,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tfrt/ir:tfrt_fallback_async_opdefs",
         "//tensorflow/compiler/mlir/tfrt/ir:tfrt_fallback_opdefs",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
         "@tf_runtime//:basic_kernels_opdefs",
         "@tf_runtime//:core_runtime_opdefs",
@@ -180,6 +182,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
     ],
 )
@@ -203,6 +206,7 @@ cc_library(
         "transforms/deduplicate_if_result_pass.cc",
         "transforms/fuse_tpu_compile_and_execute_ops.cc",
         "transforms/insert_tensor_copy.cc",
+        "transforms/lower_bound_batch_threads.cc",
         "transforms/lower_saved_model.cc",
         "transforms/merge_tf_if_ops.cc",
         "transforms/optimize.cc",
@@ -252,7 +256,9 @@ cc_library(
         "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
         "@tf_runtime//:basic_kernels_opdefs",
         "@tf_runtime//:core_runtime_opdefs",
@@ -444,6 +450,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:SideEffectInterfaces",
     ],
 )
 
@@ -466,9 +473,7 @@ tf_proto_library(
 
 cc_library(
     name = "passes",
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
     deps = [
         "//tensorflow/compiler/mlir/tfrt:tf_to_tfrt",
     ],
@@ -689,6 +694,7 @@ cc_library(
     hdrs = ["backend_compiler.h"],
     deps = [
         "//tensorflow/core/tfrt/runtime",
+        "@com_google_absl//absl/status",
         "@llvm-project//mlir:IR",
     ],
 )

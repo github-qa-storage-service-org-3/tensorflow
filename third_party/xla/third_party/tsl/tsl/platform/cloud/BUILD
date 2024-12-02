@@ -1,14 +1,14 @@
 # Description:
 # Cloud file system implementation.
 
+load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load(
-    "//tsl:tsl.bzl",
+    "@local_xla//xla/tsl:tsl.bzl",
     "if_windows",
     "internal_visibility",
     "tsl_copts",
 )
 load("//tsl/platform:build_config.bzl", "tsl_cc_test")
-load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -207,18 +207,19 @@ cc_library(
     copts = tsl_copts(),
     deps = [
         ":http_request",
-        "//tsl/lib/gtl:map_util",
         "//tsl/platform:env",
         "//tsl/platform:errors",
         "//tsl/platform:macros",
         "//tsl/platform:protobuf",
         "//tsl/platform:scanner",
         "//tsl/platform:status",
-        "//tsl/platform:str_util",
         "//tsl/platform:stringpiece",
         "//tsl/platform:types",
-        "//tsl/util:env_var",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@curl",
+        "@local_xla//xla/tsl/util:env_var",
     ],
 )
 
@@ -438,7 +439,7 @@ tsl_cc_test(
     deps = [
         ":curl_http_request",
         "//tsl/lib/core:status_test_util",
-        "//tsl/platform:env_impl",
+        "//tsl/platform:errors",
         "//tsl/platform:path",
         "//tsl/platform:platform_port",
         "//tsl/platform:test",

@@ -35,6 +35,24 @@ def CreateOp: TensorflowMlrt_Op<"createop", []> {
   let assemblyFormat = "attr-dict";
 }
 
+def ConstOp: TensorflowMlrt_Op<"constop", []> {
+  let summary = "The tf_mlrt ConstOp";
+
+  let description = [{
+    The ConstOp creates a constant tensorflow::Tensor from serialized proto.
+  }];
+
+  let arguments = (ins
+    StrAttr:$tensor_proto
+  );
+
+  let results = (outs
+    TFTensorType:$result
+  );
+
+  let assemblyFormat = "attr-dict";
+}
+
 def ExecuteOp : TensorflowMlrt_Op<"executeop", []> {
   let summary = "The Fallback ExecuteOp";
   let description = [{
@@ -444,7 +462,8 @@ def IfrtLoadVariableOp: TensorflowMlrt_Op<"ifrt_load_variable", [Pure]> {
     `tf.IfrtLoadVariableOp` converts the tensor into an IFRT array based on device and sharding
     configuration specified in `VariableDeviceShardingConfigProto`.
 
-    This op returns a scalar string tensor as a key for user to look for the loaded array.
+    This op returns a scalar string tensor as a key for user to look for the loaded array
+    and a future containing the restored tensor.
   }];
 
   let arguments = (ins
@@ -454,7 +473,8 @@ def IfrtLoadVariableOp: TensorflowMlrt_Op<"ifrt_load_variable", [Pure]> {
   );
 
   let results = (outs
-    TFTensorType:$array_key
+    TFTensorType:$array_key,
+    MlrtFutureType: $tensor_future
   );
 }
 
