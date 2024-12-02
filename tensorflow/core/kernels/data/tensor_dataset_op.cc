@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/data/global_shuffle_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/split_utils.h"
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/graph/graph.h"
@@ -88,10 +89,11 @@ class TensorDatasetOp::Dataset : public DatasetBase {
 
   Status Get(OpKernelContext* ctx, int64 index,
              std::vector<Tensor>* out_tensors) const override {
-    return Get(index, out_tensors);
+    return Get(AnyContext(ctx), index, out_tensors);
   }
 
-  Status Get(int64 index, std::vector<Tensor>* out_tensors) const override {
+  Status Get(AnyContext ctx, int64 index,
+             std::vector<Tensor>* out_tensors) const override {
     TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
     *out_tensors = tensors_;
     return absl::OkStatus();
@@ -182,13 +184,14 @@ class TensorDatasetOp::Dataset : public DatasetBase {
       mutex_lock l(mu_);
       TF_RETURN_IF_ERROR(writer->WriteScalar(prefix(), kProduced,
                                              static_cast<int64_t>(produced_)));
+      TF_RETURN_IF_ERROR(global_shuffle_iterator_.Save(prefix(), ctx, writer));
       return absl::OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       if (ctx->restored_element_count().has_value()) {
-        return global_shuffle_iterator_.Restore(ctx);
+        return global_shuffle_iterator_.Restore(prefix(), ctx, reader);
       }
 
       mutex_lock l(mu_);

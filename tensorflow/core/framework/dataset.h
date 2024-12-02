@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -28,7 +29,9 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "xla/tsl/framework/allocator.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/cancellation.h"
@@ -58,7 +61,6 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/refcount.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/thread_annotations.h"
 
@@ -89,7 +91,15 @@ using TraceMeMetadata = std::vector<std::pair<StringPiece, string>>;
 
 // Maps the index of dataset elements to a globally shuffled index. See the
 // comment for IteratorContext::Params::index_mapper for more details.
-using IndexMapperFn = std::function<size_t(size_t)>;
+// Notes:
+// * `absl::OutOfRangeError` indicates the input index argument exceeds
+//   the cardinality of the dataset.
+// * `absl::NotFoundError` indicates we should skip this element.
+//    This happens in the case we mix multiple datasets into one. For example,
+//    `dataset1.concatenate(dataset2)`.
+// See go/tf-data-random-access-iterator and
+// go/tf-data-random-access-iterator-for-concatenate for more info.
+using IndexMapperFn = std::function<absl::StatusOr<size_t>(size_t)>;
 
 constexpr char kTFDataFunction[] = "_tf_data_function";
 
@@ -423,6 +433,10 @@ class SplitProvider {
   // Cancels the split provider. After cancelling, all other existing and future
   // calls should return quickly without blocking.
   virtual void Cancel() {}
+  // Used to determine if the split provider is dynamic. Dynamic split providers
+  // are expected to be non-deterministic and may return different splits upon
+  // reinitialization.
+  virtual bool IsDynamic() const { return false; }
 };
 
 // Returns the runner threadpool size from an OpKernelContext.
@@ -664,7 +678,8 @@ class IteratorContext {
  public:
   struct Params {
     explicit Params(IteratorContext* ctx)
-        : allocator_getter(ctx->allocator_getter()),
+        : accelerator_device_info(ctx->accelerator_device_info()),
+          allocator_getter(ctx->allocator_getter()),
           cancellation_manager(ctx->cancellation_manager()),
           collective_executor(ctx->collective_executor()),
           env(ctx->env()),
@@ -694,6 +709,7 @@ class IteratorContext {
       // NOTE: need reinterpret_cast because function.h forward-declares Device.
       DeviceBase* device =
           reinterpret_cast<DeviceBase*>(ctx->function_library()->device());
+      accelerator_device_info = device->tensorflow_accelerator_device_info();
       allocator_getter = [device](AllocatorAttributes attrs) {
         return device->GetAllocator(attrs);
       };
@@ -715,6 +731,9 @@ class IteratorContext {
           },
           *ctx->runner(), std::placeholders::_1);
     }
+
+    // If non-null, information about the GPU or TPU on which the op is placed.
+    const DeviceBase::AcceleratorDeviceInfo* accelerator_device_info = nullptr;
 
     // The Allocator to be used to allocate the output of an iterator.
     std::function<Allocator*(AllocatorAttributes)> allocator_getter = nullptr;
@@ -822,6 +841,10 @@ class IteratorContext {
     return params_.id_registry;
   }
 
+  const DeviceBase::AcceleratorDeviceInfo* accelerator_device_info() {
+    return params_.accelerator_device_info;
+  }
+
   Allocator* allocator(AllocatorAttributes attrs) {
     return params_.allocator_getter(attrs);
   }
@@ -890,11 +913,19 @@ class IteratorContext {
 
   IndexMapperFn index_mapper() const { return params_.index_mapper; }
 
+  void set_restored_element_count(size_t element_count) {
+    params_.restored_element_count.emplace(element_count);
+  }
+
   std::optional<int64_t> restored_element_count() const {
     return params_.restored_element_count;
   }
 
   void SetModel(std::shared_ptr<model::Model> model) { params_.model = model; }
+
+  void SetIndexMapper(const IndexMapperFn& index_mapper) {
+    params_.index_mapper = index_mapper;
+  };
 
   std::unique_ptr<thread::ThreadPool> CreateThreadPool(const string& name,
                                                        int num_threads) {
@@ -977,6 +1008,26 @@ class IteratorContext {
  private:
   Params params_;
   MemoryCheckpoint checkpoint_;
+};
+
+// Generic context that can be constructed with either an `OpKernelContext` or
+// `IteratorContext`.
+struct AnyContext {
+  Allocator* allocator;
+  std::function<void(std::function<void()>)>* runner;
+  int64_t runner_threadpool_size;
+
+  explicit AnyContext(IteratorContext* ctx) {
+    allocator = ctx->allocator({});
+    runner = ctx->runner();
+    runner_threadpool_size = ctx->runner_threadpool_size();
+  }
+
+  explicit AnyContext(OpKernelContext* ctx) {
+    allocator = ctx->get_allocator({});
+    runner = ctx->runner();
+    runner_threadpool_size = GetRunnerThreadpoolSizeFromOpKernelContext(ctx);
+  }
 };
 
 // Represents the current position in a range of outputs, where the
@@ -1304,6 +1355,10 @@ class DatasetBase : public core::RefCounted {
   // Returns the number of bytes allocated for tensors of this dataset.
   virtual int64_t AllocatedBytes() const { return 0; }
 
+  // Returns the estimated element size based on `output_shapes()` and
+  // `output_dtypes()`.
+  virtual std::optional<int64_t> GetEstimatedElementSize() const;
+
   // Returns the estimated number of bytes used for tensors of this dataset.
   virtual int64_t TotalBytes() const { return 0; }
 
@@ -1346,9 +1401,11 @@ class DatasetBase : public core::RefCounted {
   virtual Status Get(OpKernelContext* ctx, int64 index,
                      std::vector<Tensor>* out_tensors) const;
 
-  // Same as above, but without an `OpKernelContext`. Used to support datasets
+  // Same as above, but with an `AnyContext`, which can be constructed from
+  // either an `OpKernelContext` or `IteratorContext`. Used to support datasets
   // that provide random access through both the dataset and iterator APIs.
-  virtual Status Get(int64 index, std::vector<Tensor>* out_tensors) const;
+  virtual Status Get(AnyContext ctx, int64 index,
+                     std::vector<Tensor>* out_tensors) const;
 
   // Returns true if the dataset and its inputs support random access.
   virtual absl::Status RandomIndexingCompatible() const {

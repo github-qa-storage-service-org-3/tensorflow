@@ -1,7 +1,8 @@
 load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
-load("//tensorflow/compiler/tests:build_defs.bzl", "generate_backend_suites", "tf_xla_py_strict_test")
 load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test", "tf_cuda_cc_test")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "tf_library")
+load("//tensorflow/compiler/tests:build_combined_defs.bzl", "tf_xla_combined_py_test")
+load("//tensorflow/compiler/tests:build_defs.bzl", "generate_backend_suites", "tf_xla_py_strict_test")
 load(
     "//tensorflow/core/platform:build_config_root.bzl",
     "tf_cuda_tests_tags",
@@ -88,14 +89,19 @@ py_strict_test(
     ],
 )
 
-tf_xla_py_strict_test(
-    name = "adadelta_test",
+tf_xla_combined_py_test(
+    name = "ops_test_mlir_false",
     size = "medium",
-    srcs = ["adadelta_test.py"],
     enable_mlir_bridge = False,
+    package = "tensorflow.compiler.tests",
     python_version = "PY3",
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+    ],
+    test_files = [
+        # go/keep-sorted start
+        "adadelta_test.py",
+        # go/keep-sorted end
     ],
     deps = [
         ":xla_test",
@@ -259,6 +265,7 @@ tf_xla_py_strict_test(
         "cpu",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     python_version = "PY3",
     shard_count = 2,
@@ -681,6 +688,7 @@ tf_xla_py_strict_test(
         "cpu",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     python_version = "PY3",
     tags = [
@@ -754,10 +762,6 @@ tf_xla_py_strict_test(
     name = "eager_test",
     size = "medium",
     srcs = ["eager_test.py"],
-    # copybara:uncomment_begin
-    # #TODO(b/287111047): Remove once the bug is fixed.
-    # disable_tpu_tfrt = True,
-    # copybara:uncomment_end
     enable_mlir_bridge = False,
     python_version = "PY3",
     tags = [
@@ -927,6 +931,7 @@ tf_xla_py_strict_test(
         "cpu",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     python_version = "PY3",
     shard_count = 10,
@@ -1215,6 +1220,7 @@ tf_xla_py_strict_test(
     shard_count = 5,
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [
@@ -1411,6 +1417,7 @@ tf_xla_py_strict_test(
     shard_count = 6,
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [
@@ -1519,6 +1526,7 @@ tf_xla_py_strict_test(
     disabled_backends = [
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = True,
     python_version = "PY3",
@@ -1556,12 +1564,14 @@ tf_xla_py_strict_test(
     disabled_backends = [
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = True,
     python_version = "PY3",
     shard_count = 10,
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",  # Times out under coverage
         "optonly",
     ],
     deps = [
@@ -1593,6 +1603,7 @@ tf_xla_py_strict_test(
     disabled_backends = [
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     # TODO(b/232442915): Enable MLIR.
     enable_mlir_bridge = False,
@@ -1941,6 +1952,7 @@ tf_xla_py_strict_test(
     # Times out in fastbuild mode.
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [
@@ -2105,7 +2117,6 @@ cc_library(
         "//tensorflow/compiler/jit",
         "//tensorflow/compiler/jit:common",
         "//tensorflow/compiler/jit:flags_headers",
-        "//tensorflow/compiler/tf2xla:common",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:framework",
@@ -2116,8 +2127,15 @@ cc_library(
         "//tensorflow/core:test",
         "//tensorflow/core:testlib",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:fixed_array",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:status",
+        "@local_xla//xla:xla_data_proto_cc",
     ],
 )
 
@@ -2203,7 +2221,6 @@ tf_cuda_cc_test(
         "//tensorflow/compiler/jit:flags",
         "//tensorflow/compiler/jit:xla_kernel_creator",
         "//tensorflow/compiler/tf2xla:xla_compiler",
-        "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
@@ -2211,7 +2228,7 @@ tf_cuda_cc_test(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/kernels:ops_testutil",
-        "@com_google_absl//absl/synchronization",
+        "@local_tsl//tsl/platform:status",
     ],
 )
 
@@ -2346,6 +2363,7 @@ tf_xla_py_strict_test(
     disabled_backends = [
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = True,
     python_version = "PY3",
@@ -2380,6 +2398,7 @@ tf_xla_py_strict_test(
     disabled_backends = [
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = False,
     python_version = "PY3",
@@ -2607,6 +2626,7 @@ tf_xla_py_strict_test(
         "cpu",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     tags = [
         "no_pip",
@@ -2635,6 +2655,7 @@ tf_xla_py_strict_test(
         "cpu_ondemand",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = False,
     main = "where_op_test.py",
@@ -2721,6 +2742,7 @@ tf_xla_py_strict_test(
         "cpu_ondemand",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     enable_mlir_bridge = False,
     python_version = "PY3",
@@ -2885,6 +2907,7 @@ tf_xla_py_strict_test(
         "cpu",
         "gpu",
         "gpu_a100",
+        "gpu_h100",
     ],
     python_version = "PY3",
     tags = [

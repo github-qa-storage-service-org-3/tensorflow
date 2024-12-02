@@ -17,26 +17,28 @@ limitations under the License.
 #include <string_view>
 
 #include "mhlo/transforms/passes.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"  // from @llvm-project
-#include "mlir/Dialect/Func/Extensions/AllExtensions.h"  // from @llvm-project
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
-#include "mlir/IR/Location.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/OperationSupport.h"  // from @llvm-project
-#include "mlir/IR/OwningOpRef.h"  // from @llvm-project
-#include "mlir/Parser/Parser.h"  // from @llvm-project
-#include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "third_party/nanobind/include/nanobind/nanobind.h"
-#include "third_party/nanobind/include/nanobind/stl/string.h"  // IWYU pragma: keep
-#include "third_party/nanobind/include/nanobind/stl/string_view.h"  // IWYU pragma: keep
-#include "stablehlo/dialect/ChloOps.h"  // from @stablehlo
-#include "stablehlo/dialect/Serialization.h"  // from @stablehlo
-#include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
+#include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LogicalResult.h"
+#include "nanobind/nanobind.h"
+#include "nanobind/stl/string.h"  // IWYU pragma: keep
+#include "nanobind/stl/string_view.h"  // IWYU pragma: keep
+#include "stablehlo/dialect/ChloOps.h"
+#include "stablehlo/dialect/Serialization.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/xla_computation.h"
 #include "xla/mlir/utils/error_util.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -45,7 +47,6 @@ limitations under the License.
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/refine_polymorphic_shapes.h"
 #include "xla/service/llvm_ir/llvm_util.h"
-#include "xla/status.h"
 #include "xla/translate/hlo_to_mhlo/hlo_to_mlir_hlo.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
@@ -92,6 +93,16 @@ std::string PrintModule(mlir::ModuleOp module) {
   return s;
 }
 
+absl::StatusOr<std::string> SerializeUsingBytecode(mlir::ModuleOp module) {
+  std::string bytecode;
+  llvm::raw_string_ostream os(bytecode);
+  mlir::BytecodeWriterConfig config;
+  if (mlir::failed(mlir::writeBytecodeToFile(module, os, config))) {
+    return absl::InvalidArgumentError("mlir::writeBytecodeToFile failed");
+  }
+  return bytecode;
+}
+
 void EnablePrintBeforeAndAfter(mlir::PassManager& pm) {
   auto print_before = [](mlir::Pass*, mlir::Operation*) { return true; };
   auto print_after = [](mlir::Pass*, mlir::Operation*) { return true; };
@@ -133,12 +144,13 @@ absl::StatusOr<XlaComputation> PyMlirModuleToXlaComputation(
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
                       ParseModule(&context, mlir_module));
   XlaComputation computation;
-  TF_RETURN_IF_ERROR(
-      MlirToXlaComputation(*module, computation, use_tuple_args, return_tuple));
+  TF_RETURN_IF_ERROR(MlirToXlaComputation(*module, computation, use_tuple_args,
+                                          return_tuple,
+                                          /*use_shardy=*/false));
   return computation;
 }
 
-absl::StatusOr<std::string> PyMhloToStablehlo(std::string_view mlir_module) {
+absl::StatusOr<nb::bytes> PyMhloToStablehlo(std::string_view mlir_module) {
   mlir::MLIRContext context;
   if (VLOG_IS_ON(3)) context.disableMultithreading();
   // JAX can be customized in a way that involves operations from custom
@@ -156,10 +168,13 @@ absl::StatusOr<std::string> PyMhloToStablehlo(std::string_view mlir_module) {
   if (!mlir::succeeded(pm.run(*module))) {
     return tsl::errors::InvalidArgument("MHLO => StableHLO failed");
   }
-  return PrintModule(*module);
+  // Use bytecode, passing unregistered dialects with properties causes issues
+  // when using textual assembly.
+  TF_ASSIGN_OR_RETURN(std::string bytecode, SerializeUsingBytecode(*module));
+  return nb::bytes(bytecode.data(), bytecode.size());
 }
 
-absl::StatusOr<std::string> PyStablehloToMhlo(const nb::bytes& mlir_module) {
+absl::StatusOr<nb::bytes> PyStablehloToMhlo(const nb::bytes& mlir_module) {
   mlir::MLIRContext context;
   if (VLOG_IS_ON(3)) context.disableMultithreading();
   // See PyMhloToStablehlo for an explanation of why we're allowing unregistered
@@ -175,7 +190,11 @@ absl::StatusOr<std::string> PyStablehloToMhlo(const nb::bytes& mlir_module) {
   if (!mlir::succeeded(pm.run(*module))) {
     return tsl::errors::InvalidArgument("StableHLO => MHLO failed");
   }
-  return PrintModule(*module);
+
+  // Use bytecode, passing unregistered dialects with properties causes issues
+  // when using textual assembly.
+  TF_ASSIGN_OR_RETURN(std::string bytecode, SerializeUsingBytecode(*module));
+  return nb::bytes(bytecode.data(), bytecode.size());
 }
 
 absl::StatusOr<nb::bytes> PySerializePortableArtifact(

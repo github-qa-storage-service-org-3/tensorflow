@@ -87,6 +87,22 @@ void InitializeStateForValue(
   cached->second = next_state_index;
 }
 
+bool HasPerAxisQuantizedOperand(Operation* op) {
+  for (int i = 0; i < op->getNumOperands(); ++i) {
+    if (auto dq_op = dyn_cast_or_null<quantfork::DequantizeCastOp>(
+            op->getOperand(i).getDefiningOp())) {
+      auto type =
+          mlir::cast<TensorType>(dq_op.getArg().getType()).getElementType();
+      if (auto per_axis_qtype =
+              mlir::dyn_cast_or_null<quant::UniformQuantizedPerAxisType>(
+                  QuantizedType::getQuantizedElementType(type))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 void QuantizationDriver::InitializeArgState(const BlockArgument arg,
@@ -164,7 +180,7 @@ bool QuantizationDriver::SetConstantResultParams(Operation* op) {
         /*num_bits=*/8, is_signed_,
         /*narrow_range=*/is_weight, legacy_float_scale_);
   }
-  if (const auto quant_type = final_type.dyn_cast_or_null<QuantizedType>();
+  if (const auto quant_type = mlir::dyn_cast_or_null<QuantizedType>(final_type);
       quant_type != nullptr) {
     return SetResultParams(op, /*result_index=*/0, quant_type);
   }
@@ -210,7 +226,7 @@ QuantizedType QuantizationDriver::GetBiasParams(
     if (bias_op != nullptr) {
       Type bias_type = bias_op->getResult(0).getType();
       if (bias_type != builder_.getNoneType()) {
-        const int bias_rank = bias_type.dyn_cast<ShapedType>().getRank();
+        const int bias_rank = mlir::dyn_cast<ShapedType>(bias_type).getRank();
         adjusted_quant_dim = bias_rank > 1 ? bias_rank - 1 : 0;
       }
     }
@@ -474,13 +490,16 @@ QuantizedType QuantizationDriver::GetQuantParamsForSameScaleConstraint(
 void QuantizationDriver::PreprocessConstantOps() {
   fn_.walk([&](arith::ConstantOp cst) {
     // Non-float tensors are neither weights nor require quantization.
-    const auto type = cst.getType().dyn_cast<ShapedType>();
-    if (!type || !type.getElementType().isa<FloatType>()) return;
+    const auto type = mlir::dyn_cast<ShapedType>(cst.getType());
+    if (!type || !mlir::isa<FloatType>(type.getElementType())) return;
 
     // Skip if the value is NaN or INF.
     // Otherwise the illegal scale/zp will be calculated.
-    auto float_attr = cst.getValueAttr().dyn_cast<DenseFPElementsAttr>();
-    if (float_attr && !float_attr.getValues<APFloat>()[0].isFinite()) return;
+    auto float_attr = mlir::dyn_cast<DenseFPElementsAttr>(cst.getValueAttr());
+    if (float_attr && (float_attr.getValues<APFloat>().empty() ||
+                       !float_attr.getValues<APFloat>()[0].isFinite())) {
+      return;
+    }
 
     const Value value = cst.getResult();
     builder_.setInsertionPoint(cst);
@@ -602,7 +621,7 @@ bool QuantizationDriver::ShouldCheckBiasScale(
   auto affine_op = dyn_cast<AffineQuantizedOpInterface>(op);
   auto bias_op = op->getOperand(bias_index).getDefiningOp<arith::ConstantOp>();
   if (!affine_op || !bias_op || input_indices.size() != 2) return false;
-  if (!bias_op.getValue().isa<DenseFPElementsAttr>()) return false;
+  if (!mlir::isa<DenseFPElementsAttr>(bias_op.getValue())) return false;
   filter_index = affine_op.GetAffineOperandIndex();
   if (!op->getOperand(filter_index).getDefiningOp<arith::ConstantOp>()) {
     return false;
@@ -640,12 +659,12 @@ bool QuantizationDriver::SetBiasParamsWithAdjustments(
   QuantState filter_state = GetOperandQuantState(op, filter_index);
   auto bias_op = op->getOperand(bias_index).getDefiningOp<arith::ConstantOp>();
   const double input_scale =
-      input_state.params.cast<UniformQuantizedType>().getScale();
+      mlir::cast<UniformQuantizedType>(input_state.params).getScale();
 
-  auto bias_values = bias_op.getValue().cast<DenseFPElementsAttr>();
+  auto bias_values = mlir::cast<DenseFPElementsAttr>(bias_op.getValue());
   // Restrict maximum absolute value of bias within INT_MAX / 2, to make some
   // room for accumulator.
-  if (auto bias_quantized_type = params.dyn_cast<UniformQuantizedType>();
+  if (auto bias_quantized_type = mlir::dyn_cast<UniformQuantizedType>(params);
       bias_quantized_type != nullptr) {
     double bias_half_range = 0.0f;
     for (auto bias : bias_values.getValues<APFloat>()) {
@@ -673,7 +692,7 @@ bool QuantizationDriver::SetBiasParamsWithAdjustments(
     }
 
     const auto filter_quantized_type =
-        filter_state.params.cast<UniformQuantizedType>();
+        mlir::cast<UniformQuantizedType>(filter_state.params);
     changed |= SetOperandParams(
         op, filter_index,
         UniformQuantizedType::getChecked(
@@ -685,10 +704,10 @@ bool QuantizationDriver::SetBiasParamsWithAdjustments(
             filter_quantized_type.getStorageTypeMax()),
         /*override=*/true);
   } else if (auto bias_quantized_type =
-                 params.dyn_cast<quant::UniformQuantizedPerAxisType>();
+                 mlir::dyn_cast<quant::UniformQuantizedPerAxisType>(params);
              bias_quantized_type != nullptr) {
     const auto filter_quantized_type =
-        filter_state.params.cast<quant::UniformQuantizedPerAxisType>();
+        mlir::cast<quant::UniformQuantizedPerAxisType>(filter_state.params);
     std::vector<double> new_bias_scales = bias_quantized_type.getScales().vec();
     std::vector<double> new_filter_scales =
         filter_quantized_type.getScales().vec();
@@ -788,30 +807,38 @@ bool QuantizationDriver::PropagateParamsAndReturnIfChanged() {
       // quantization for the quantized kernel. If the quantized dimension
       // changes, the following logic no longer works as the same `params`
       // shouldn't be used for both input and output quantization params.
-      // E.g. TransposeOp's propagation is handled in
-      // `PropagateTransposedQuantDim` in PrepareQuantize.
+      // E.g. During TransposeOp's quantization propagation in
+      // PrepareQuantize, if the quantization is per-axis and the
+      // QuantizedDimension is transposed, then the output q-dq params must
+      // reflect the new QuantizedDimension. So, check and skip the
+      // propagation if any of the operands has a per-axis quantized type param
+      // and `RequiredSameQuantizedAxes` set to false.
+      // Currently, these lines of code are only applicable to TFL_TransposeOp
+      // and the output q-dq propagation for this Op is performed in
+      // `PropagateTransposedPerAxisQuantDim`.
       if (is_qdq_conversion_ &&
           !scale_spec->required_same_quantized_axes_func()) {
-        continue;
+        if (HasPerAxisQuantizedOperand(op)) continue;
       }
 
       // Use the final state to set all the operands' parameters.
       for (int i = 0; i < op->getNumOperands(); ++i) {
-        if (auto type = op->getOperand(i).getType().dyn_cast<ShapedType>()) {
+        if (auto type =
+                mlir::dyn_cast<ShapedType>(op->getOperand(i).getType())) {
           // Without this check, it will accidentally propagate the quantization
           // information by the shared non-float tensors.
-          if (type.getElementType().isa<FloatType>())
+          if (mlir::isa<FloatType>(type.getElementType()))
             changed |= SetOperandParams(op, i, params);
         }
       }
 
       // Use the final state to set all the results' parameters.
       for (int i = 0; i < op->getNumResults(); ++i)
-        if (auto type = op->getResult(i).getType().dyn_cast<ShapedType>();
+        if (auto type = mlir::dyn_cast<ShapedType>(op->getResult(i).getType());
             type != nullptr) {
           // Without this check, it will accidentally propagate the quantization
           // information by the shared non-float-tensors.
-          if (type.getElementType().isa<FloatType>())
+          if (mlir::isa<FloatType>(type.getElementType()))
             changed |= SetResultParams(op, i, params);
         }
     }
