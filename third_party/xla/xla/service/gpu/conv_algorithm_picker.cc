@@ -64,13 +64,15 @@ limitations under the License.
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/util/env_var.h"
+#include "xla/tsl/util/proto/proto_utils.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/numbers.h"
+#include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/util/proto/proto_utils.h"
 
 #if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
 #include "third_party/gpus/cudnn/cudnn.h"  // IWYU pragma: keep
@@ -99,9 +101,16 @@ class ScratchAllocator : public se::ScratchAllocator {
       : device_ordinal_(device_ordinal), memory_allocator_(memory_allocator) {}
 
   int64_t GetMemoryLimitInBytes() override {
-    return 1LL << 32;  // 4GB.  TODO(jlebar): Tune this?
+    return ScratchAllocator::GetDefaultMemoryLimitInBytes();
   }
   int64_t TotalAllocatedBytes() { return total_allocated_bytes_; }
+
+  static int64_t GetDefaultMemoryLimitInBytes() {
+    int64_t value;
+    TF_CHECK_OK(tsl::ReadInt64FromEnvVar("TF_CUDNN_WORKSPACE_LIMIT_IN_MB",
+                                         1LL << 12, &value));
+    return value * (1LL << 20);
+  }
 
   absl::StatusOr<se::DeviceMemory<uint8_t>> AllocateBytes(
       int64_t byte_size) override;
@@ -612,7 +621,6 @@ absl::StatusOr<AutotuneResult> GpuConvAlgorithmPicker::AutotuneOneConvRunner(
   // Use assignment instead of brace-list to make GCC 4.9 happy.
   RunConvOptions options;
   options.runner_cache = runner;
-  options.profile_result = &profile_result;
   // The following plan timing code is based on
   // https://github.com/NVIDIA/cudnn-frontend/blob/60496f42fdc7a4ccc059f5934e306e728a756755/include/cudnn_frontend_find_plan.h
   float max_time = 0;
@@ -625,15 +633,21 @@ absl::StatusOr<AutotuneResult> GpuConvAlgorithmPicker::AutotuneOneConvRunner(
   // Dry-run to warmup the plan.
   launch_status = RunGpuConv(config, operand_buffers, result_buffers,
                              scratch_memory, stream, options);
+  // Flag that a warm-up run has been executed; this allows the GpuTimer for
+  // the main measurement to safely use the delay kernel pattern, even if lazy
+  // module loading is enabled.
+  options.profile_result = &profile_result;
+  profile_result.set_warmup_run_executed(true);
   constexpr int kMaxIter = 10;
   // Iterate until the new measurement is within kThreshold of the current
   // minimum.
   int num_iters = 0;
-  for (;
-       num_iters < kMaxIter && launch_status.ok() && profile_result.is_valid();
-       num_iters++) {
+  for (; num_iters < kMaxIter && launch_status.ok(); ++num_iters) {
     launch_status = RunGpuConv(config, operand_buffers, result_buffers,
                                scratch_memory, stream, options);
+    if (!profile_result.is_valid()) {
+      break;
+    }
     float old_min_time = min_time;
     min_time = std::min(min_time, profile_result.elapsed_time_in_ms());
     max_time = std::max(max_time, profile_result.elapsed_time_in_ms());
