@@ -1,4 +1,4 @@
-/* Copyright 2024 The OpenXLA Authors.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,25 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/service/gpu/model/indexing_context.h"
+#ifndef TENSORFLOW_COMPILER_MLIR_TFRT_TRANSFORMS_IFRT_IFRT_TYPES_H_
+#define TENSORFLOW_COMPILER_MLIR_TFRT_TRANSFORMS_IFRT_IFRT_TYPES_H_
 
-#include <utility>
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 
-#include "xla/service/gpu/model/indexing_map.h"
+namespace tensorflow {
+namespace ifrt_serving {
 
-namespace xla {
-namespace gpu {
+struct DtypeAndShape {
+  tensorflow::DataType dtype;
+  tensorflow::TensorShape shape;
+};
 
-static RTVarID rt_var_count = 0;
+}  // namespace ifrt_serving
+}  // namespace tensorflow
 
-RTVar IndexingContext::RegisterRTVar(RTVarData rt_var_data) {
-  rt_vars_registry_.insert(std::make_pair(rt_var_count, rt_var_data));
-  return RTVar{rt_var_count++};
-}
-
-RTVarData& IndexingContext::GetRTVarData(RTVarID id) {
-  return rt_vars_registry_.at(id);
-}
-
-}  // namespace gpu
-}  // namespace xla
+#endif  // TENSORFLOW_COMPILER_MLIR_TFRT_TRANSFORMS_IFRT_IFRT_TYPES_H_
