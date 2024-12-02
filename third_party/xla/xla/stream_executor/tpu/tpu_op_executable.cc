@@ -21,10 +21,12 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/service_executable_run_options.h"
-#include "xla/status.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/tpu/c_api_conversions.h"  // IWYU pragma: keep
 #include "xla/stream_executor/tpu/c_api_decl.h"
@@ -49,7 +51,7 @@ TpuOpExecutable::TpuOpExecutable(
       core_program_(core_program),
       outside_compilation_params_(outside_compilation_params) {}
 
-xla::Status TpuOpExecutable::LoadProgramAndEnqueueToStream(
+absl::Status TpuOpExecutable::LoadProgramAndEnqueueToStream(
     const xla::ServiceExecutableRunOptions& run_options,
     absl::Span<const se::DeviceMemoryBase> arguments,
     se::DeviceMemoryBase result,
@@ -86,8 +88,7 @@ xla::Status TpuOpExecutable::LoadProgramAndEnqueueToStream(
 
   auto platform = down_cast<tpu::TpuPlatform*>(
       tpu::TpuPlatformInterface::GetRegisteredPlatform());
-  auto stream = platform->LookupStream(
-      run_options.run_options().stream()->implementation());
+  auto stream = platform->LookupStream(run_options.run_options().stream());
   StatusHelper status;
 
   TpuExecutable_LoadProgramAndEnqueueToStream_Params params;

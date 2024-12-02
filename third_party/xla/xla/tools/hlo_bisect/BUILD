@@ -32,8 +32,8 @@ xla_cc_binary(
         "//xla/service:cpu_plugin",
         "//xla/service:gpu_plugin",
         "//xla/service:interpreter_plugin",
+        "//xla/tsl/util:command_line_flags",
         "@local_tsl//tsl/platform:platform_port",
-        "@local_tsl//tsl/util:command_line_flags",
     ] + if_cuda(["//xla/stream_executor/cuda:cublas_plugin"]),
 )
 
@@ -43,7 +43,6 @@ cc_library(
     hdrs = ["hlo_bisect_state.h"],
     deps = [
         "//xla:literal",
-        "//xla:status",
         "//xla:statusor",
         "//xla:util",
         "//xla/hlo/ir:hlo",
@@ -52,6 +51,7 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
     ],
 )

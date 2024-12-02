@@ -41,7 +41,6 @@ limitations under the License.
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_pass_pipeline.h"
 #include "xla/service/llvm_compiler.h"
-#include "xla/status.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_description.pb.h"
 #include "xla/stream_executor/device_memory_allocator.h"
@@ -70,9 +69,6 @@ class GpuCompiler : public LLVMCompiler {
   absl::StatusOr<std::unique_ptr<HloModule>> RunHloPasses(
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
       const CompileOptions& options) override;
-
-  absl::StatusOr<std::unique_ptr<BufferAssignment>> AssignBuffers(
-      HloModule* hlo_module, const se::StreamExecutor* stream_exec) override;
 
   absl::StatusOr<std::unique_ptr<Executable>> RunBackend(
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
@@ -119,10 +115,13 @@ class GpuCompiler : public LLVMCompiler {
     return &FusionCanShareBufferHint;
   }
 
+  virtual int32_t GetToolkitVersion() const = 0;
+
  protected:
   struct BackendCompileResult {
     std::string asm_text;
     std::vector<uint8_t> binary;
+    Thunk::BinaryMap dnn_compiled_graphs;
   };
 
   // During compilation with device, stream_exec != null and autotune_results
@@ -165,6 +164,13 @@ class GpuCompiler : public LLVMCompiler {
     return absl::OkStatus();
   }
 
+  // Runs CUDNN fusion compiler pass.
+  virtual absl::Status RunCudnnFusionCompilerPass(
+      HloModule* module, se::StreamExecutor* stream_exec,
+      Thunk::BinaryMap* dnn_compiled_graphs) {
+    return absl::OkStatus();
+  }
+
   AlgebraicSimplifierOptions GetAlgebraicSimplifierOptions(
       const HloModuleConfig& config);
 
@@ -194,6 +200,9 @@ class GpuCompiler : public LLVMCompiler {
   absl::Status LoadAutotuneResultsFromFile(const DebugOptions& debug_options);
   absl::Status SerializeAutotuneResultsToFile(
       const DebugOptions& debug_options);
+
+  absl::Status RunPreSchedulingPasses(HloModule* module,
+                                      se::StreamExecutor* stream_exec);
 
   // During compilation with device, stream_exec != null and autotune_results
   // == null. During deviceless AOT compilation, stream_exec == null and

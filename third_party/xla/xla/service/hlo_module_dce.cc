@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <deque>
 
+#include "absl/status/status.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -25,7 +26,6 @@ limitations under the License.
 #include "xla/service/hlo_liveness_analysis.h"
 #include "xla/service/tuple_simplifier.h"
 #include "xla/service/while_loop_simplifier.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/statusor.h"
 #include "xla/types.h"
@@ -37,7 +37,7 @@ namespace xla {
 
 namespace {
 
-StatusOr<bool> RunWhileDCE(
+absl::StatusOr<bool> RunWhileDCE(
     HloModule* module, HloLivenessAnalysis* liveness,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;
@@ -105,7 +105,7 @@ StatusOr<bool> RunWhileDCE(
 
 }  // namespace
 
-StatusOr<bool> HloModuleDCE::Run(
+absl::StatusOr<bool> HloModuleDCE::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   VLOG(2) << "Before HloModuleDCE:";

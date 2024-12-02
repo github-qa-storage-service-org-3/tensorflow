@@ -3,6 +3,16 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load(
+    "@local_config_rocm//rocm:build_defs.bzl",
+    "if_rocm",
+    "if_rocm_hipblaslt",
+)
+load(
+    "@local_xla//xla/tsl/mkl:build_defs.bzl",
+    "if_mkl",
+    "mkl_deps",
+)
+load(
     "//tensorflow:tensorflow.bzl",
     "if_android",
     "if_cuda_or_rocm",
@@ -21,11 +31,6 @@ load(
 )
 load("//tensorflow:tensorflow.default.bzl", "cc_header_only_library", "filegroup", "get_compatible_with_portable", "tf_cc_shared_library", "tf_cuda_cc_test", "tf_cuda_cc_tests", "tf_disable_ptxas_warning_flags", "tf_kernel_library")
 load(
-    "@local_xla//xla/tsl/mkl:build_defs.bzl",
-    "if_mkl",
-    "mkl_deps",
-)
-load(
     "//tensorflow/core/kernels/mlir_generated:build_defs.bzl",
     "if_mlir_generated_experimental_kernels_enabled",
     "if_mlir_generated_gpu_kernels_enabled",
@@ -40,11 +45,6 @@ load(
     "tf_cuda_tests_tags",
 )
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load(
-    "@local_config_rocm//rocm:build_defs.bzl",
-    "if_rocm",
-    "if_rocm_hipblaslt",
-)
 
 # Description:
 # Op kernel implementations for TensorFlow.
@@ -546,13 +546,8 @@ cc_library(
     name = "gpu_util_hdrs",
     hdrs = [
         "gpu_utils.h",
-        # See the exports_files declaration for a description of why this
-        # silliness is here.
-        #
-        # TODO(b/202546057) get rid of this once fused_conv is moved out of
-        # contrib.
-        "@local_xla//xla/stream_executor:lazy_op_runner.h",
     ],
+    deps = ["@local_xla//xla/stream_executor:lazy_op_runner"],
 )
 
 cc_library(
@@ -703,11 +698,13 @@ cc_library(
         "//tensorflow/core:lib_internal",
         "//tensorflow/core/kernels/batching_util:adaptive_shared_batch_scheduler",
         "//tensorflow/core/kernels/batching_util:batch_resource_base",
+        "//tensorflow/core/kernels/batching_util:batch_scheduler_hdrs",
         "//tensorflow/core/kernels/batching_util:bounded_executor",
         "//tensorflow/core/kernels/batching_util:concat_split_util",
         "//tensorflow/core/kernels/batching_util:periodic_function_dynamic",
         "//tensorflow/core/kernels/batching_util:warmup",
         "//tensorflow/core/platform:numbers",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@local_tsl//tsl/platform:types",
@@ -827,6 +824,7 @@ cc_library(
     hdrs = ["fused_eigen_output_kernels.h"],
     deps = [
         "//tensorflow/core:framework",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@eigen_archive//:eigen3",
     ],
@@ -889,6 +887,7 @@ ARRAY_DEPS = [
     "//tensorflow/core:protos_all_cc",
     "//tensorflow/core/framework:bounds_check",
     "//tensorflow/core/profiler/lib:scoped_memory_debug_annotation",
+    "//tensorflow/core/util:bad_indices_policy",
     "@eigen_archive//:eigen3",
 ]
 
@@ -1662,6 +1661,7 @@ tf_cc_test(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/framework:types_proto_cc",
+        "//tensorflow/core/kernels/batching_util:batch_scheduler_hdrs",
         "//tensorflow/core/kernels/batching_util:warmup",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/protobuf:for_core_protos_cc",
@@ -2130,6 +2130,7 @@ tf_cuda_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -3433,7 +3434,7 @@ tf_cc_tests(
         "//tensorflow/core:testlib",
         "//tensorflow/core/platform:status_matchers",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/util:determinism_test_util",
+        "@local_xla//xla/tsl/util:determinism_test_util",
     ],
 )
 
@@ -5135,7 +5136,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "sparse_reduce_op",
     prefix = "sparse_reduce_op",
-    deps = SPARSE_DEPS,
+    deps = SPARSE_DEPS + ["@com_google_absl//absl/status"],
 )
 
 tf_kernel_library(
@@ -6496,6 +6497,8 @@ filegroup(
         "//tensorflow/c/kernels:portable_all_op_kernels",
         "//tensorflow/core/kernels/image:non_max_suppression_op.cc",
         "//tensorflow/core/kernels/image:non_max_suppression_op.h",
+        "//tensorflow/core/util:bad_indices_policy.cc",
+        "//tensorflow/core/util:bad_indices_policy.h",
     ],
 )
 
@@ -6628,6 +6631,7 @@ filegroup(
         "//tensorflow/core/kernels/linalg:matrix_triangular_solve_op_impl.h",
         "//tensorflow/core/kernels/linalg:qr_op_impl.h",
         "//tensorflow/core/kernels/uniform_quant_ops:portable_all_op_kernels_headers",
+        "//tensorflow/core/util:bad_indices_policy.h",
         "//tensorflow/core/util:image_resizer_state.h",
     ],
 )
@@ -7026,6 +7030,7 @@ filegroup(
 )
 
 ANDROID_TEXTUAL_HDRS = [
+    "//tensorflow/core/util:bad_indices_policy.h",
     "@local_tsl//tsl/framework/convolution:eigen_convolution_helpers.h",
     "@local_tsl//tsl/framework/convolution:eigen_spatial_convolutions-inl.h",
     "gather_nd_op_cpu_impl.h",
@@ -7110,6 +7115,9 @@ filegroup(
         "conv_3d.h",
         "conv_ops_3d.cc",
         "conv_ops_gpu.h",
+        # Transitive dependencies of the ops with attributes "bad_indices_policy".
+        "//tensorflow/core/util:bad_indices_policy.cc",
+        "//tensorflow/core/util:bad_indices_policy.h",
     ],
     visibility = ["//visibility:public"],
 )

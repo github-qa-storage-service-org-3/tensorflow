@@ -45,9 +45,12 @@ cc_library(
         "//tensorflow/core/common_runtime/device:device_utils",
         "//tensorflow/core/platform:strcat",
         "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
         "@local_tsl//tsl/platform:status",
         "@local_xla//xla/stream_executor",
         "@local_xla//xla/stream_executor:platform",
+        "@local_xla//xla/stream_executor:stream_executor_common",
     ],
 )
 
@@ -67,7 +70,8 @@ cc_library(
         "//tensorflow/c:tf_status_helper",
         "@local_tsl//tsl/platform:statusor",
         "@local_xla//xla/stream_executor",
-        "@local_xla//xla/stream_executor:stream_executor_internal",
+        "@local_xla//xla/stream_executor:stream_common",
+        "@local_xla//xla/stream_executor:stream_executor_h",
     ],
 )
 

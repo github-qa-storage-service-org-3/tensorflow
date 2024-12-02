@@ -42,9 +42,9 @@ class ServiceExecutableRunOptions {
   ServiceExecutableRunOptions()
       : ServiceExecutableRunOptions(ExecutableRunOptions()) {}
 
-  explicit ServiceExecutableRunOptions(ExecutableRunOptions run_options,
+  explicit ServiceExecutableRunOptions(const ExecutableRunOptions& run_options,
                                        StreamBorrower stream_borrower = nullptr)
-      : run_options_(std::move(run_options)),
+      : run_options_(run_options),
         stream_borrower_(std::move(stream_borrower)) {}
 
   // Returns reference or pointer to `ExecutableRunOptions` member.
@@ -64,7 +64,8 @@ class ServiceExecutableRunOptions {
       int device_ordinal,
       se::StreamPriority priority = se::StreamPriority::Default) const {
     if (!stream_borrower_) {
-      return Status(absl::StatusCode::kUnimplemented, "No stream borrower");
+      return absl::Status(absl::StatusCode::kUnimplemented,
+                          "No stream borrower");
     }
 
     TF_ASSIGN_OR_RETURN(
@@ -79,7 +80,8 @@ class ServiceExecutableRunOptions {
       se::StreamPriority priority = se::StreamPriority::Default) const {
     return stream_borrower_
                ? stream_borrower_(device_ordinal, num_streams, priority)
-               : Status(absl::StatusCode::kUnimplemented, "No stream borrower");
+               : absl::Status(absl::StatusCode::kUnimplemented,
+                              "No stream borrower");
   }
 
  private:

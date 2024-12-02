@@ -1,8 +1,8 @@
 # Description: StreamExecutor Interface for TPUs
 
-load("//xla:xla.bzl", "xla_cc_test")
-load("@local_tsl//tsl:tsl.bzl", "internal_visibility")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla:xla.bzl", "xla_cc_test")
+load("//xla/tsl:tsl.bzl", "internal_visibility")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -76,6 +76,7 @@ cc_library(
         "//xla/stream_executor:device_memory",
         "//xla/stream_executor:device_memory_allocator",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
     ],
@@ -89,7 +90,6 @@ xla_cc_test(
         ":c_api_decl",
         "//xla:executable_run_options",
         "//xla:shape_util",
-        "//xla:statusor",
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
@@ -98,10 +98,10 @@ xla_cc_test(
         "//xla/service:hlo_proto_cc",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:protobuf",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -201,7 +201,8 @@ cc_library(
         ":tpu_stream_interface",
         ":tpu_topology_external",
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:stream_executor_common",
+        "//xla/stream_executor:stream_executor_h",
         "//xla/stream_executor/platform",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/functional:any_invocable",
@@ -232,7 +233,7 @@ cc_library(
         ":tpu_platform_interface",
         ":tpu_topology_external",
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:stream_executor_h",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -260,7 +261,9 @@ cc_library(
         ":tpu_executor_c_api_hdrs",
         ":tpu_topology_external",
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:stream_common",
+        "//xla/stream_executor:stream_executor_common",
+        "//xla/stream_executor:stream_executor_h",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
@@ -305,9 +308,16 @@ cc_library(
         ":tpu_platform_interface",
         ":tpu_stream_interface",
         ":tpu_topology_external",
-        "//xla:status",
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:device_description",
+        "//xla/stream_executor:device_memory",
+        "//xla/stream_executor:event",
+        "//xla/stream_executor:executor_cache",
+        "//xla/stream_executor:memory_allocation",
+        "//xla/stream_executor:platform",
+        "//xla/stream_executor:platform_manager",
+        "//xla/stream_executor:stream",
+        "//xla/stream_executor:stream_executor_h",
         "//xla/tsl/c:tsl_status_internal",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -320,6 +330,7 @@ cc_library(
         "@local_tsl//tsl/platform:casts",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:types",
     ],
 )
@@ -357,6 +368,7 @@ cc_library(
         "//xla/service:backend",
         "//xla/service:stream_pool",
         "//xla/stream_executor:device_memory_allocator",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:macros",
@@ -384,9 +396,12 @@ cc_library(
     deps = [
         ":noncopyable_buffer",
         ":tpu_platform_interface",
-        "//xla:status",
+        "//xla:literal",
+        "//xla:shape_util",
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -411,9 +426,7 @@ cc_library(
         ":c_api_conversions",
         ":c_api_decl",
         ":noncopyable_buffer",
-        ":proto_helper",
         ":status_helper",
-        ":tpu_api",
         ":tpu_executor_api",
         ":tpu_executor_base",
         ":tpu_executor_c_api_hdrs",
@@ -447,12 +460,14 @@ cc_library(
         ":tpu_executor_base",
         ":tpu_ops_c_api_hdrs",
         ":tpu_platform_interface",
-        "//xla:status",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:executable",
         "//xla/stream_executor",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:casts",
         "@local_tsl//tsl/platform:errors",
@@ -486,7 +501,7 @@ cc_library(
         ":tpu_platform_interface",
         ":tpu_topology_external",
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:stream_executor_common",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
     ],
@@ -523,7 +538,6 @@ cc_library(
         ":tpu_executor_hdrs",
         ":tpu_platform_id",
         "//xla:shape_util",
-        "//xla:statusor",
         "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/ir:hlo_module_group",
@@ -533,6 +547,8 @@ cc_library(
         "//xla/service:hlo_proto_cc",
         "//xla/stream_executor",
         "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/platform:statusor",
     ],
     alwayslink = True,
 )
@@ -543,7 +559,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//xla/stream_executor",
-        "//xla/stream_executor:stream_executor_internal",
+        "//xla/stream_executor:stream_common",
+        "//xla/stream_executor:stream_executor_h",
         "@com_google_absl//absl/status",
     ],
 )
@@ -555,7 +572,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//xla:shape_util",
-        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:util",
@@ -568,11 +584,13 @@ cc_library(
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -590,7 +608,6 @@ cc_library(
         ":tpu_executor",
         ":tpu_executor_api",
         ":tpu_executor_c_api_hdrs",
-        "//xla:status",
         "//xla:statusor",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
@@ -601,9 +618,12 @@ cc_library(
         "//xla/stream_executor:device_memory",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -633,7 +653,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":c_api_decl",
-        ":tpu_api",
         ":tpu_executor_api",
         "@local_tsl//tsl/platform:types",
     ],

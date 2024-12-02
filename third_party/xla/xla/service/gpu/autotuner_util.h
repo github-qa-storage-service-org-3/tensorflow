@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -38,6 +39,7 @@ limitations under the License.
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/gpu/redzone_allocator.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/xla.pb.h"
 
 namespace xla {
@@ -108,6 +110,14 @@ class AutotuneConfig {
     return require_complete_aot_autotune_results_;
   }
 
+  AutotuneConfig(const AutotuneConfig& right)
+      : config_(right.config_),
+        autotune_level_(right.autotune_level_),
+        should_crash_on_check_failure_(right.should_crash_on_check_failure_),
+        exhaustive_tiling_search_(right.exhaustive_tiling_search_),
+        require_complete_aot_autotune_results_(
+            right.require_complete_aot_autotune_results_) {}
+
   AutotuneConfig(const std::variant<DeviceConfig, DevicelessConfig>& config,
                  const DebugOptions& debug_options)
       : config_(config),
@@ -136,7 +146,14 @@ class AutotuneConfig {
   se::DeviceMemoryAllocator* GetAllocator() const {
     CHECK(std::holds_alternative<DeviceConfig>(config_));
     auto& cf = std::get<DeviceConfig>(config_);
-    return cf.allocator ? cf.allocator : GetExecutor()->GetAllocator();
+    if (cf.allocator != nullptr) {
+      return cf.allocator;
+    }
+    if (allocator_ == nullptr) {
+      allocator_ =
+          std::make_unique<se::StreamExecutorMemoryAllocator>(GetExecutor());
+    }
+    return allocator_.get();
   }
 
   absl::StatusOr<se::Stream*> GetStream() const {
@@ -163,6 +180,7 @@ class AutotuneConfig {
   bool should_crash_on_check_failure_;
   bool exhaustive_tiling_search_;
   bool require_complete_aot_autotune_results_;
+  mutable std::unique_ptr<se::DeviceMemoryAllocator> allocator_;
 };
 
 using AutotuneNoCacheFn = std::function<absl::StatusOr<AutotuneResult>()>;
@@ -196,11 +214,9 @@ struct AutotunerUtil {
   // Normally, we don't have to use this low level method.
   static bool AddResult(const AutotuneCacheKey& key, AutotuneResult result);
 
-  // Creates a RedzoneAllocator from a given config. If `force_stream` is
-  // provided, than it is used for checking redzones.
+  // Creates a RedzoneAllocator from a given config.
   static absl::StatusOr<se::RedzoneAllocator> CreateRedzoneAllocator(
-      const AutotuneConfig& config, const DebugOptions& opts,
-      se::Stream* force_stream = nullptr);
+      const AutotuneConfig& config, const DebugOptions& opts);
 
   // Functions to save/load XLA's autotuning results.
   //
@@ -244,16 +260,6 @@ struct AutotunerUtil {
   static absl::StatusOr<std::string> SerializeAutotuneResults(
       bool as_textproto = false);
 
-  // As above, but only performs serialization for instructions found in the
-  // module.
-  //
-  // Only serializes autotuning results for instructions found in the module:
-  // while this is more expensive than serializing all cache, this avoids
-  // quadratic blow-up when serializing cache for a large number of modules.
-  static absl::StatusOr<std::string> SerializeAutotuneResultsForModule(
-      const HloModule& module, const AutotuneConfig& autotune_config,
-      bool as_textproto = false);
-
   static absl::Status SerializeAutotuneResults(AutotuneResults* results);
   static absl::Status LoadAutotuneResults(absl::string_view data,
                                           bool as_textproto = false);
@@ -267,6 +273,11 @@ struct AutotunerUtil {
   static absl::Status SerializeAutotuneResultsToFile(
       absl::string_view file_path);
 
+  // As above, but if you already called SerializeAutotuneResults to get a
+  // proto.
+  static absl::Status SerializeAutotuneResultsToFile(
+      const AutotuneResults& results, absl::string_view file_path);
+
   // Loads autotune results from a file.
   //
   // If `file_path` ends with ".txt" or ".textproto", then the file is
@@ -275,6 +286,8 @@ struct AutotunerUtil {
   static absl::Status LoadAutotuneResultsFromFile(absl::string_view file_path);
 
   static void ClearAutotuneResults();
+
+  static bool ResultCacheIsEmpty();
 };
 
 }  // namespace gpu
