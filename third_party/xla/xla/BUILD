@@ -1,6 +1,3 @@
-# Placeholder: load py_proto_library
-load("//xla:xla.bzl", "xla_cc_test", "xla_py_proto_library")
-load("//third_party/compute_library:build_defs.bzl", "if_enable_acl")
 load("@local_tsl//tsl:tsl.bzl", "internal_visibility")
 load("@local_tsl//tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
 load(
@@ -8,6 +5,10 @@ load(
     "tf_proto_library",
 )
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//third_party/compute_library:build_defs.bzl", "if_enable_acl")
+
+# Placeholder: load py_proto_library
+load("//xla:xla.bzl", "xla_cc_test", "xla_py_proto_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -25,6 +26,7 @@ package_group(
         "//third_party/mira/...",
         "//third_party/mlcompass/...",
         "//third_party/mlir_edge/model_curriculum/...",
+        "//third_party/openxla/shardonnay/...",
         "//third_party/py/enzyme_ad/...",
         "//third_party/py/jax/...",
         "//third_party/py/t5x/...",
@@ -607,6 +609,7 @@ cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -869,11 +872,10 @@ cc_library(
     hdrs = ["test_helpers.h"],
     visibility = internal_visibility([":friends"]),
     deps = [
+        ":status",
         ":statusor",
         ":types",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/platform:protobuf",
-        "@local_tsl//tsl/platform:regexp",
         "@local_tsl//tsl/platform:test",
     ],
 )
