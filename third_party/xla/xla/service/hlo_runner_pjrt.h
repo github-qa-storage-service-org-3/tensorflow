@@ -16,13 +16,17 @@ limitations under the License.
 #ifndef XLA_SERVICE_HLO_RUNNER_PJRT_H_
 #define XLA_SERVICE_HLO_RUNNER_PJRT_H_
 
+#include <cstdint>
 #include <functional>
 #include <memory>
-#include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/service/hlo_runner_interface.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 
@@ -34,15 +38,17 @@ class HloRunnerPjRt : public HloRunnerInterface {
  public:
   explicit HloRunnerPjRt(
       std::unique_ptr<PjRtClient> pjrt_client,
-      DeviceShapeRepresentationFn device_shape_representation_fn);
+      DeviceShapeRepresentationFn device_shape_representation_fn,
+      DeviceShapeSizeFn device_shape_size_fn);
 
   ~HloRunnerPjRt() override;
 
   // Transfers data between the host and device.
   absl::StatusOr<std::unique_ptr<PjRtBuffer>> TransferLiteralToDevice(
-      const Literal& literal);
+      const Literal& literal, int64_t memory_space);
   absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
-  TransferLiteralsToDevice(absl::Span<const Literal* const> literals);
+  TransferLiteralsToDevice(const ComputationLayout& entry_layout,
+                           absl::Span<const Literal* const> literals);
   absl::StatusOr<Literal> TransferLiteralFromDevice(PjRtBuffer& buffer);
 
   // Executes the given module with given literals as input and returns the
@@ -56,7 +62,7 @@ class HloRunnerPjRt : public HloRunnerInterface {
   // buffers.
   absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
   ExecuteWithDeviceBuffers(
-      PjRtLoadedExecutable* executable,
+      PjRtLoadedExecutable* executable, const ExecuteOptions& execute_options,
       const std::vector<std::unique_ptr<PjRtBuffer>>& arguments);
 
   // Creates an executable object for an HloModule.
@@ -96,9 +102,18 @@ class HloRunnerPjRt : public HloRunnerInterface {
 
   absl::string_view Name() const override;
 
+  DeviceShapeRepresentationFn device_shape_representation_fn() const override {
+    return device_shape_representation_fn_;
+  }
+
+  DeviceShapeSizeFn device_shape_size_fn() const override {
+    return device_shape_size_fn_;
+  }
+
  private:
   std::unique_ptr<PjRtClient> pjrt_client_;
   DeviceShapeRepresentationFn device_shape_representation_fn_;
+  DeviceShapeSizeFn device_shape_size_fn_;
 
   std::vector<PjRtBuffer*> BufferVecToPointerVec(
       const std::vector<std::unique_ptr<PjRtBuffer>>& buffer);

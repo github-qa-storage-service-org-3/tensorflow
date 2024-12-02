@@ -15,8 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_TSL_PLATFORM_STATUS_TO_FROM_PROTO_H_
 #define TENSORFLOW_TSL_PLATFORM_STATUS_TO_FROM_PROTO_H_
 
+#include "xla/tsl/protobuf/status.pb.h"
 #include "tsl/platform/status.h"
-#include "tsl/protobuf/status.pb.h"
 
 namespace tsl {
 
@@ -28,11 +28,11 @@ namespace tsl {
 // Symbol not found: tensorflow11StatusProtoC1EPN6protobuf5ArenaEb
 
 // Converts a `Status` to a `StatusProto`.
-tensorflow::StatusProto StatusToProto(const Status& s);
+tensorflow::StatusProto StatusToProto(const absl::Status& s);
 
 #if defined(PLATFORM_GOOGLE)
 // Constructs a `Status` from a `StatusProto`.
-Status StatusFromProto(
+absl::Status StatusFromProto(
     const tensorflow::StatusProto& proto,
     absl::SourceLocation loc = absl::SourceLocation::current());
 #else

@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <utility>
@@ -34,73 +35,79 @@ limitations under the License.
 namespace xla {
 namespace spmd {
 
+EdgeReshardingCostMatrix Normalize(const EdgeReshardingCostMatrix& edge_cost) {
+  double min_communication_cost = std::numeric_limits<double>::max();
+  for (int i = 0; i < edge_cost.n_; ++i) {
+    for (int j = 0; j < edge_cost.m_; ++j) {
+      min_communication_cost =
+          std::min(min_communication_cost, edge_cost(i, j).communication_cost);
+    }
+  }
+  if (min_communication_cost >= 0) return edge_cost;
+  EdgeReshardingCostMatrix normalized_edge_cost = edge_cost;
+  for (int i = 0; i < edge_cost.n_; ++i) {
+    for (int j = 0; j < edge_cost.m_; ++j) {
+      normalized_edge_cost(i, j).communication_cost -= min_communication_cost;
+    }
+  }
+  return normalized_edge_cost;
+}
+
 CostGraph::CostGraph(const StrategyGroups& strategy_groups,
                      const AssociativeDotPairs& associative_dot_pairs) {
   node_lens_.reserve(strategy_groups.size());
   extra_node_costs_.reserve(strategy_groups.size());
-  adjacency_.assign(strategy_groups.size(), StableHashSet<int>());
+  adjacency_.assign(strategy_groups.size(), StableSet<int>());
 
   // Build the cost graph.
   for (StrategyGroup* strategy_group : strategy_groups) {
-    node_lens_.push_back(strategy_group->strategies.size());
+    node_lens_.push_back(strategy_group->GetStrategies().size());
     extra_node_costs_.push_back(
-        std::vector<double>(strategy_group->strategies.size(), 0.0));
+        std::vector<double>(strategy_group->GetStrategies().size(), 0.0));
 
     const auto& in_nodes = strategy_group->in_nodes;
     for (size_t i = 0; i < in_nodes.size(); ++i) {
       if (!in_nodes[i]->is_tuple) {
         NodeIdx src_idx = in_nodes[i]->node_idx;
         NodeIdx dst_idx = strategy_group->node_idx;
-        Matrix edge_communication_cost =
-            CreateEdgeCommunicationCost(src_idx, dst_idx, i, strategy_group);
-        Matrix edge_memory_cost =
-            CreateEdgeMemoryCost(src_idx, dst_idx, i, strategy_group);
-        AddEdgeCost(src_idx, dst_idx, edge_communication_cost,
-                    edge_memory_cost);
+        EdgeReshardingCostMatrix edge_cost =
+            CreateEdgeCost(src_idx, dst_idx, i, strategy_group);
+        AddEdgeCost(src_idx, dst_idx, edge_cost);
       } else if (in_nodes[i]->is_tuple && in_nodes.size() > 1) {
-        for (size_t l = 0; l < in_nodes[i]->childs.size(); ++l) {
-          NodeIdx src_idx = in_nodes[i]->childs[l]->node_idx;
+        for (const auto& child : in_nodes[i]->GetChildren()) {
+          NodeIdx src_idx = child->node_idx;
           NodeIdx dst_idx = strategy_group->node_idx;
-          Matrix edge_communication_cost = CreateEdgeCommunicationCost(
-              src_idx, dst_idx, i, strategy_group, true);
-          Matrix edge_memory_cost =
-              CreateEdgeMemoryCost(src_idx, dst_idx, i, strategy_group, true);
-          AddEdgeCost(src_idx, dst_idx, edge_communication_cost,
-                      edge_memory_cost);
+          EdgeReshardingCostMatrix edge_cost =
+              CreateEdgeCost(src_idx, dst_idx, i, strategy_group, true);
+          AddEdgeCost(src_idx, dst_idx, edge_cost);
         }
       } else {
         CHECK_EQ(in_nodes.size(), 1)
             << "Do not support instructions with more than one tuple "
                "operand. If this CHECK fails, we will need to fix "
                "b/233412625.";
-        for (size_t l = 0; l < in_nodes[i]->childs.size(); ++l) {
-          NodeIdx src_idx = in_nodes[i]->childs[l]->node_idx;
+        for (size_t l = 0; l < in_nodes[i]->GetChildren().size(); ++l) {
+          NodeIdx src_idx = in_nodes[i]->GetChildren()[l]->node_idx;
           NodeIdx dst_idx = strategy_group->node_idx;
           // TODO(b/233412625) Support more general case, e.g., multiple tuple
           // operands. If there is only one operand and it's a tuple, the
           // first index of communication_resharding_costs is for the tuple
           // element.
-          Matrix edge_communication_cost = CreateEdgeCommunicationCost(
+          EdgeReshardingCostMatrix edge_cost = CreateEdgeCost(
               src_idx, dst_idx, /*in_node_idx=*/l, strategy_group);
-          Matrix edge_memory_cost = CreateEdgeMemoryCost(
-              src_idx, dst_idx, /*in_node_idx=*/l, strategy_group);
-          AddEdgeCost(src_idx, dst_idx, edge_communication_cost,
-                      edge_memory_cost);
+          AddEdgeCost(src_idx, dst_idx, edge_cost);
         }
       }
     }
 
     if (strategy_group->following) {
-      if (strategy_group->strategies.size() ==
-          strategy_group->following->strategies.size()) {
-        to_merge_pairs_.push_back(
-            {strategy_group->node_idx, strategy_group->following->node_idx});
-      } else {
-        LOG(WARNING) << "Different strategy counts for instruction ID "
-                     << strategy_group->instruction_id
-                     << " and following instruction ID "
-                     << strategy_group->following->instruction_id;
-      }
+      CHECK_EQ(strategy_group->GetStrategies().size(),
+               strategy_group->following->GetStrategies().size())
+          << "Different strategy counts for instruction ID "
+          << strategy_group->instruction_id << " and following instruction ID "
+          << strategy_group->following->instruction_id;
+      to_merge_pairs_.push_back(
+          {strategy_group->node_idx, strategy_group->following->node_idx});
     }
   }
 
@@ -109,74 +116,56 @@ CostGraph::CostGraph(const StrategyGroups& strategy_groups,
   for (const auto& pair : associative_dot_pairs) {
     NodeIdx src_idx = pair.first->node_idx;
     NodeIdx dst_idx = pair.second->node_idx;
+    StrategyGroup& src_strategy_group = *strategy_groups[src_idx];
+    StrategyGroup& dst_strategy_group = *strategy_groups[dst_idx];
 
-    Matrix edge_communication_cost(node_lens_[src_idx], node_lens_[dst_idx]);
-    Matrix edge_memory_cost(node_lens_[src_idx], node_lens_[dst_idx]);
+    EdgeReshardingCostMatrix edge_cost(node_lens_[src_idx],
+                                       node_lens_[dst_idx]);
     absl::flat_hash_map<std::string, NodeStrategyIdx>
         src_strategy_name_to_idx_map;
-    for (NodeStrategyIdx i = 0; i < node_lens_[src_idx]; ++i) {
-      const ShardingStrategy& strategy =
-          strategy_groups[src_idx]->strategies[i];
+    const auto& src_strategy_input_shardings =
+        src_strategy_group.GetStrategyInputShardings();
+    for (size_t iid = 0; iid < src_strategy_input_shardings.size(); ++iid) {
+      const InputShardings& input_shardings = src_strategy_input_shardings[iid];
+      NodeStrategyIdx i =
+          src_strategy_group.GetStrategyIdxForInputShardings(iid);
+      const ShardingStrategy& strategy = src_strategy_group.GetStrategy(i);
       if (strategy.communication_cost > 0) {
-        src_strategy_name_to_idx_map[strategy.name] = i;
+        src_strategy_name_to_idx_map[input_shardings.name] = i;
       }
     }
-    for (NodeStrategyIdx i = 0; i < node_lens_[dst_idx]; ++i) {
-      const ShardingStrategy& dst_strategy =
-          strategy_groups[dst_idx]->strategies[i];
+    const auto& dst_strategy_input_shardings =
+        dst_strategy_group.GetStrategyInputShardings();
+    for (size_t iid = 0; iid < dst_strategy_input_shardings.size(); ++iid) {
+      const InputShardings& input_shardings = dst_strategy_input_shardings[iid];
+      NodeStrategyIdx i =
+          dst_strategy_group.GetStrategyIdxForInputShardings(iid);
+      const ShardingStrategy& dst_strategy = dst_strategy_group.GetStrategy(i);
       if (dst_strategy.communication_cost > 0) {
-        auto it = src_strategy_name_to_idx_map.find(dst_strategy.name);
+        auto it = src_strategy_name_to_idx_map.find(input_shardings.name);
         if (it != src_strategy_name_to_idx_map.end()) {
-          const ShardingStrategy& src_strategy =
-              strategy_groups[src_idx]->strategies[it->second];
+          const auto& src_strategy = src_strategy_group.GetStrategy(it->second);
           CHECK_LE(std::abs(src_strategy.communication_cost -
                             dst_strategy.communication_cost),
                    1e-6);
-          edge_communication_cost(it->second, i) =
+          edge_cost(it->second, i).communication_cost =
               -src_strategy.communication_cost;
         }
       }
     }
-    AddEdgeCost(src_idx, dst_idx, edge_communication_cost, edge_memory_cost);
+    AddEdgeCost(src_idx, dst_idx, edge_cost);
   }
 }
 
-Matrix CostGraph::CreateEdgeCommunicationCost(const NodeIdx src_idx,
-                                              const NodeIdx dst_idx,
-                                              const size_t in_node_idx,
-                                              StrategyGroup* strategy_group,
-                                              const bool zero_cost) {
+EdgeReshardingCostMatrix CostGraph::CreateEdgeCost(
+    const NodeIdx src_idx, const NodeIdx dst_idx, const size_t in_node_idx,
+    StrategyGroup* strategy_group, const bool zero_cost) {
   CHECK_LT(src_idx, node_lens_.size());
   CHECK_LT(dst_idx, node_lens_.size());
-  Matrix edge_communication_cost(node_lens_[src_idx], node_lens_[dst_idx]);
-  for (NodeStrategyIdx k = 0; k < strategy_group->strategies.size(); ++k) {
-    const ShardingStrategy& strategy = strategy_group->strategies[k];
-    size_t start_idx = 0;
-    if (strategy.communication_resharding_costs[in_node_idx].size() >
-        node_lens_[src_idx]) {
-      start_idx = strategy.communication_resharding_costs[in_node_idx].size() -
-                  node_lens_[src_idx];
-    }
-    for (size_t j = start_idx;
-         j < strategy.communication_resharding_costs[in_node_idx].size(); ++j) {
-      edge_communication_cost(j - start_idx, k) =
-          zero_cost ? 0
-                    : strategy.communication_resharding_costs[in_node_idx][j];
-    }
-  }
-  return edge_communication_cost;
-}
-
-Matrix CostGraph::CreateEdgeMemoryCost(const NodeIdx src_idx,
-                                       const NodeIdx dst_idx,
-                                       const size_t in_node_idx,
-                                       StrategyGroup* strategy_group,
-                                       const bool zero_cost) {
-  CHECK_LT(src_idx, node_lens_.size());
-  CHECK_LT(dst_idx, node_lens_.size());
-  Matrix edge_communication_cost(node_lens_[src_idx], node_lens_[dst_idx]);
-  for (NodeStrategyIdx k = 0; k < strategy_group->strategies.size(); ++k) {
-    const ShardingStrategy& strategy = strategy_group->strategies[k];
+  EdgeReshardingCostMatrix edge_cost(node_lens_[src_idx], node_lens_[dst_idx]);
+  const auto& strategies = strategy_group->GetStrategies();
+  for (NodeStrategyIdx k = 0; k < strategies.size(); ++k) {
+    const ShardingStrategy& strategy = strategies[k];
     size_t start_idx = 0;
     CHECK_LT(in_node_idx, strategy.memory_resharding_costs.size())
         << strategy_group->node_idx;
@@ -187,46 +176,43 @@ Matrix CostGraph::CreateEdgeMemoryCost(const NodeIdx src_idx,
     }
     for (size_t j = start_idx;
          j < strategy.memory_resharding_costs[in_node_idx].size(); ++j) {
-      edge_communication_cost(j - start_idx, k) =
-          zero_cost ? 0 : strategy.memory_resharding_costs[in_node_idx][j];
+      double communication_cost = 0;
+      double memory_cost = 0;
+      if (!zero_cost) {
+        communication_cost =
+            strategy.communication_resharding_costs[in_node_idx][j];
+        memory_cost = strategy.memory_resharding_costs[in_node_idx][j];
+      }
+      edge_cost(j - start_idx, k) =
+          EdgeReshardingCost(communication_cost, memory_cost);
     }
   }
-  return edge_communication_cost;
+  return edge_cost;
 }
 
-Matrix CostGraph::GetEdgeCommunicationCost(const NodeIdx i, const NodeIdx j) {
+EdgeReshardingCostMatrix CostGraph::GetEdgeCost(const NodeIdx i,
+                                                const NodeIdx j) {
   if (i <= j) {
-    return edge_communication_costs_[{i, j}];
+    return edge_costs_[{i, j}];
   }
-  return edge_communication_costs_[{j, i}].Transpose();
+  return edge_costs_[{j, i}].Transpose();
 }
 
-Matrix CostGraph::GetEdgeMemoryCost(const NodeIdx i, const NodeIdx j) {
-  if (i <= j) {
-    return edge_memory_costs_[{i, j}];
-  }
-  return edge_memory_costs_[{j, i}].Transpose();
-}
-
-void CostGraph::AddEdgeCost(NodeIdx i, NodeIdx j, Matrix& cost,
-                            Matrix& memory_cost) {
+void CostGraph::AddEdgeCost(NodeIdx i, NodeIdx j,
+                            EdgeReshardingCostMatrix& cost) {
   if (i > j) {
     std::swap(i, j);
     cost = cost.Transpose();
-    memory_cost = memory_cost.Transpose();
   }
 
-  if (edge_communication_costs_.contains({i, j})) {
+  if (edge_costs_.contains({i, j})) {
     CHECK(adjacency_[i].contains(j));
     CHECK(adjacency_[j].contains(i));
-    edge_communication_costs_[{i, j}] =
-        edge_communication_costs_[{i, j}] + cost;
-    edge_memory_costs_[{i, j}] = edge_memory_costs_[{i, j}] + memory_cost;
+    edge_costs_[{i, j}] = edge_costs_[{i, j}] + cost;
   } else {
     adjacency_[i].insert(j);
     adjacency_[j].insert(i);
-    edge_communication_costs_[{i, j}] = cost;
-    edge_memory_costs_[{i, j}] = memory_cost;
+    edge_costs_[{i, j}] = cost;
   }
 }
 
@@ -237,13 +223,11 @@ void CostGraph::RemoveEdge(NodeIdx i, NodeIdx j) {
 
   CHECK(adjacency_[i].contains(j));
   CHECK(adjacency_[j].contains(i));
-  CHECK(edge_communication_costs_.contains({i, j}));
-  CHECK(edge_memory_costs_.contains({i, j}));
+  CHECK(edge_costs_.contains({i, j}));
 
   adjacency_[i].erase(j);
   adjacency_[j].erase(i);
-  edge_communication_costs_.erase({i, j});
-  edge_memory_costs_.erase({i, j});
+  edge_costs_.erase({i, j});
 }
 
 void CostGraph::MergeNode(const NodeIdx src, const NodeIdx dst) {
@@ -253,7 +237,7 @@ void CostGraph::MergeNode(const NodeIdx src, const NodeIdx dst) {
   CHECK(!merged_to_.contains(dst));
   CHECK_NE(src, dst);
 
-  Matrix edge_communication_cost = GetEdgeCommunicationCost(dst, src);
+  EdgeReshardingCostMatrix edge_cost = GetEdgeCost(dst, src);
 
   std::vector<NodeStrategyIdx> reindexing(node_lens_[dst]);
   if (node_lens_[dst] == node_lens_[src]) {
@@ -277,7 +261,7 @@ void CostGraph::MergeNode(const NodeIdx src, const NodeIdx dst) {
       // as the last strategy in BuildStrategyAndCost.
       keys.reserve(node_lens_[src]);
       for (NodeStrategyIdx j = 0; j < node_lens_[src]; ++j) {
-        keys.push_back({edge_communication_cost(i, j), -j});
+        keys.push_back({edge_cost(i, j).communication_cost, -j});
       }
 
       std::sort(arange.begin(), arange.end(), [&keys](int l, int r) {
@@ -296,25 +280,19 @@ void CostGraph::MergeNode(const NodeIdx src, const NodeIdx dst) {
   for (const NodeIdx adj : adj_list) {
     if (adj == dst) {
       for (NodeStrategyIdx i = 0; i < node_lens_[dst]; ++i) {
-        extra_node_costs_[dst][i] += edge_communication_cost(i, reindexing[i]);
+        extra_node_costs_[dst][i] +=
+            edge_cost(i, reindexing[i]).communication_cost;
       }
     } else {
-      Matrix added_edge_communication_cost(node_lens_[dst], node_lens_[adj]);
-      Matrix added_edge_memory_cost(node_lens_[dst], node_lens_[adj]);
-      Matrix edge_communication_cost_src_adj =
-          GetEdgeCommunicationCost(src, adj);
-      Matrix edge_memory_cost_src_adj = GetEdgeMemoryCost(src, adj);
-
+      EdgeReshardingCostMatrix added_edge_cost(node_lens_[dst],
+                                               node_lens_[adj]);
+      EdgeReshardingCostMatrix edge_cost_src_adj = GetEdgeCost(src, adj);
       for (NodeStrategyIdx i = 0; i < node_lens_[dst]; ++i) {
         for (NodeStrategyIdx k = 0; k < node_lens_[adj]; ++k) {
-          added_edge_communication_cost(i, k) =
-              edge_communication_cost_src_adj(reindexing[i], k);
-          added_edge_memory_cost(i, k) =
-              edge_memory_cost_src_adj(reindexing[i], k);
+          added_edge_cost(i, k) = edge_cost_src_adj(reindexing[i], k);
         }
       }
-      AddEdgeCost(dst, adj, added_edge_communication_cost,
-                  added_edge_memory_cost);
+      AddEdgeCost(dst, adj, added_edge_cost);
     }
   }
   // Remove edges
@@ -380,7 +358,7 @@ std::string CostGraph::ToString() const {
   }
   absl::StrAppend(&str, "\n");
 
-  for (const auto& iter : edge_communication_costs_) {
+  for (const auto& iter : edge_costs_) {
     absl::StrAppend(&str, "Edge (", iter.first.first, ", ", iter.first.second,
                     "):\n");
     absl::StrAppend(&str, iter.second.ToString(), "\n");

@@ -30,7 +30,6 @@ limitations under the License.
 #include "xla/service/gpu/gpu_constants.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -39,9 +38,10 @@ namespace gpu {
 
 absl::StatusOr<KernelArguments> KernelArguments::Create(
     const BufferAssignment& buffer_assignment,
-    const HloFusionInstruction* fusion) {
+    const HloInstruction* hlo_instruction,
+    absl::Span<const HloInstruction* const> needed_operands, bool dedup) {
   std::vector<KernelArgument> kernel_arguments;
-  for (const HloInstruction* operand : fusion->operands()) {
+  for (const HloInstruction* operand : needed_operands) {
     TF_ASSIGN_OR_RETURN(BufferAllocation::Slice slice,
                         buffer_assignment.GetUniqueSlice(operand, {}));
     kernel_arguments.emplace_back(
@@ -49,22 +49,31 @@ absl::StatusOr<KernelArguments> KernelArguments::Create(
   }
 
   TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
-      fusion->shape(), [&](const Shape& subshape, const ShapeIndex& index) {
-        if (!subshape.IsArray()) {
-          return absl::OkStatus();
-        }
-        TF_ASSIGN_OR_RETURN(BufferAllocation::Slice slice,
-                            buffer_assignment.GetUniqueSlice(fusion, index));
+      hlo_instruction->shape(),
+      [&](const Shape& subshape, const ShapeIndex& index) {
+        if (!subshape.IsArray()) return absl::OkStatus();
+
+        TF_ASSIGN_OR_RETURN(
+            BufferAllocation::Slice slice,
+            buffer_assignment.GetUniqueSlice(hlo_instruction, index));
+
         kernel_arguments.emplace_back(
             KernelArgument(subshape, slice, /*written=*/true));
         return absl::OkStatus();
       }));
 
-  return KernelArguments{std::move(kernel_arguments)};
+  return KernelArguments{std::move(kernel_arguments), dedup};
+}
+
+absl::StatusOr<KernelArguments> KernelArguments::Create(
+    const BufferAssignment& buffer_assignment,
+    const HloFusionInstruction* fusion) {
+  return KernelArguments::Create(buffer_assignment, fusion, fusion->operands(),
+                                 /*dedup=*/true);
 }
 
 std::vector<KernelArgument> KernelArguments::ProcessArguments(
-    std::vector<KernelArgument> kernel_arguments) {
+    std::vector<KernelArgument> kernel_arguments, bool dedup) {
   absl::flat_hash_set<BufferAllocation::Slice> buffers_written;
   for (const KernelArgument& kernel_argument : kernel_arguments) {
     if (kernel_argument.written()) {
@@ -79,7 +88,7 @@ std::vector<KernelArgument> KernelArguments::ProcessArguments(
     KernelArgument& kernel_argument = kernel_arguments[i];
 
     auto& first_index = first_indices_for_slices[kernel_argument.slice_];
-    if (first_index) {
+    if (dedup && first_index) {
       const KernelArgument& same = kernel_arguments[*first_index];
       kernel_argument.first_with_same_slice_ = first_index;
       kernel_argument.alignment_ = same.alignment_;
@@ -123,35 +132,6 @@ std::vector<KernelArgument> KernelArguments::ProcessArguments(
     }();
   }
   return kernel_arguments;
-}
-
-absl::StatusOr<KernelArguments> KernelArguments::Create(
-    const BufferAssignment& buffer_assignment,
-    const HloInstruction* non_fusion_hlo,
-    absl::Span<const HloInstruction* const> needed_operands) {
-  std::vector<KernelArgument> kernel_arguments;
-  for (const HloInstruction* operand : needed_operands) {
-    TF_ASSIGN_OR_RETURN(BufferAllocation::Slice slice,
-                        buffer_assignment.GetUniqueSlice(operand, {}));
-    kernel_arguments.emplace_back(
-        KernelArgument(operand->shape(), slice, /*written=*/false));
-  }
-
-  TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
-      non_fusion_hlo->shape(),
-      [&](const Shape& subshape, const ShapeIndex& index) {
-        if (!subshape.IsArray()) return absl::OkStatus();
-
-        TF_ASSIGN_OR_RETURN(
-            BufferAllocation::Slice slice,
-            buffer_assignment.GetUniqueSlice(non_fusion_hlo, index));
-
-        kernel_arguments.emplace_back(
-            KernelArgument(subshape, slice, /*written=*/true));
-        return absl::OkStatus();
-      }));
-
-  return KernelArguments{std::move(kernel_arguments)};
 }
 
 }  // namespace gpu

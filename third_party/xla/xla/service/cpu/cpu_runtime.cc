@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -39,6 +40,7 @@ limitations under the License.
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "xla/executable_run_options.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/layout_util.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/computation_placer.h"
@@ -47,12 +49,11 @@ limitations under the License.
 #include "xla/service/cpu/in_process_collectives.h"
 #include "xla/service/cpu/xfeed_manager.h"
 #include "xla/service/global_device_id.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/status.h"
@@ -72,6 +73,17 @@ XfeedManager* GetXfeedManager(int device_ordinal) {
     it = managers->emplace(device_ordinal, new XfeedManager()).first;
   }
   return it->second;
+}
+
+// TODO(zhangqiaorjc): Prefer to make callers set and use device_ordinal
+// directly since callers may not have a Stream*.
+int GetDeviceOrdinal(const xla::ExecutableRunOptions* run_options) {
+  if (!run_options) {
+    return 0;
+  } else if (run_options->device_ordinal() != -1) {
+    return run_options->device_ordinal();
+  }
+  return run_options->stream()->parent()->device_ordinal();
 }
 
 extern const char* const kEigenMatMulF16SymbolName =
@@ -107,6 +119,10 @@ extern const char* const kEigenConv3DF32SymbolName =
 extern const char* const kDuccFftSymbolName = "__xla_cpu_runtime_DuccFft";
 extern const char* const kDuccSingleThreadedFftSymbolName =
     "__xla_cpu_runtime_DuccSingleThreadedFft";
+extern const char* const kEigenSingleThreadedMatMulF8E4M3FNSymbolName =
+    "__xla_cpu_runtime_EigenSingleThreadedMatMulF8E4M3FN";
+extern const char* const kEigenSingleThreadedMatMulF8E5M2SymbolName =
+    "__xla_cpu_runtime_EigenSingleThreadedMatMulF8E5M2";
 extern const char* const kEigenSingleThreadedMatMulF16SymbolName =
     "__xla_cpu_runtime_EigenSingleThreadedMatMulF16";
 extern const char* const kEigenSingleThreadedMatMulF32SymbolName =
@@ -119,6 +135,8 @@ extern const char* const kEigenSingleThreadedMatMulC128SymbolName =
     "__xla_cpu_runtime_EigenSingleThreadedMatMulC128";
 extern const char* const kEigenSingleThreadedMatMulS32SymbolName =
     "__xla_cpu_runtime_EigenSingleThreadedMatMulS32";
+extern const char* const kEigenSingleThreadedMatMulU8SymbolName =
+    "__xla_cpu_runtime_EigenSingleThreadedMatMulU8";
 extern const char* const kEigenSingleThreadedConv2DF16SymbolName =
     "__xla_cpu_runtime_EigenSingleThreadedConv2DF16";
 extern const char* const kEigenSingleThreadedConv2DF32SymbolName =
@@ -164,8 +182,12 @@ extern const char* const kOneDnnSoftmaxSymbolName =
     "__xla_cpu_runtime_OneDnnSoftmax";
 extern const char* const kOneDnnLayerNormSymbolName =
     "__xla_cpu_runtime_OneDnnLayerNorm";
+extern const char* const kOneDnnConvolutionSymbolName =
+    "__xla_cpu_runtime_OneDnnConvolution";
 extern const char* const kOneDnnMatMulReorderSymbolName =
     "__xla_cpu_runtime_OneDnnMatMulReorder";
+extern const char* const kHandleFfiCallSymbolName =
+    "__xla_cpu_runtime_HandleFfiCall";
 
 namespace {
 
@@ -191,17 +213,6 @@ std::string ShapeString(const void* shape_ptr, int32_t shape_length) {
     return ShapeUtil::HumanStringWithLayout(shape.value());
   }
   return "<invalid shape>";
-}
-
-// TODO(zhangqiaorjc): Prefer to make callers set and use device_ordinal
-// directly since callers may not have a Stream*.
-int GetDeviceOrdinal(const ExecutableRunOptions* run_options) {
-  if (!run_options) {
-    return 0;
-  } else if (run_options->device_ordinal() != -1) {
-    return run_options->device_ordinal();
-  }
-  return run_options->stream()->parent()->device_ordinal();
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY
@@ -543,9 +554,14 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY int __xla_cpu_runtime_PrintfToStderr(
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY int64_t __xla_cpu_runtime_TracingStart(
-    const void* /* ExecutableRunOptions*  run_options_ptr*/, const char* name) {
+    const void* /* ExecutableRunOptions*  run_options_ptr*/, const char* name,
+    const char* hlo_module, int64_t program_id) {
   VLOG(3) << "TracingStart " << name;
-  return tsl::profiler::TraceMe::ActivityStart(name);
+  auto trace_in =
+      tsl::profiler::TraceMeEncode(name, {{"hlo_op", name},
+                                          {"hlo_module", hlo_module},
+                                          {"program_id", program_id}});
+  return tsl::profiler::TraceMe::ActivityStart(trace_in);
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_TracingEnd(

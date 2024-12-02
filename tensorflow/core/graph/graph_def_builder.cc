@@ -22,7 +22,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-GraphDefBuilder::Options::Options(Graph* graph, Status* status)
+GraphDefBuilder::Options::Options(Graph* graph, absl::Status* status)
     : graph_(graph), status_(status) {}
 GraphDefBuilder::Options::~Options() {}
 
@@ -39,7 +39,7 @@ GraphDefBuilder::Options GraphDefBuilder::Options::WithControlInput(
   return Options(*this).WithControlInputImpl(control_input);
 }
 GraphDefBuilder::Options GraphDefBuilder::Options::WithControlInputs(
-    gtl::ArraySlice<Node*> control_inputs) const {
+    absl::Span<Node* const> control_inputs) const {
   return Options(*this).WithControlInputsImpl(control_inputs);
 }
 GraphDefBuilder::Options GraphDefBuilder::Options::WithNameImpl(
@@ -58,13 +58,13 @@ GraphDefBuilder::Options GraphDefBuilder::Options::WithControlInputImpl(
   return *this;
 }
 GraphDefBuilder::Options GraphDefBuilder::Options::WithControlInputsImpl(
-    gtl::ArraySlice<Node*> control_inputs) {
+    absl::Span<Node* const> control_inputs) {
   control_inputs_.insert(control_inputs_.end(), control_inputs.begin(),
                          control_inputs.end());
   return *this;
 }
 
-Status GraphDefBuilder::ToGraphDef(GraphDef* graph_def) const {
+absl::Status GraphDefBuilder::ToGraphDef(GraphDef* graph_def) const {
   if (status_.ok()) {
     graph_.ToGraphDef(graph_def);
     *graph_def->mutable_library() = flib_def_.ToProto();
@@ -89,7 +89,7 @@ Node* GraphDefBuilder::Options::FinalizeBuilder(NodeBuilder* builder) const {
   return returned_node;
 }
 
-void GraphDefBuilder::Options::UpdateStatus(const Status& status) const {
+void GraphDefBuilder::Options::UpdateStatus(const absl::Status& status) const {
   if (status_ == nullptr) {
     TF_CHECK_OK(status);
   } else {

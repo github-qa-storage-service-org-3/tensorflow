@@ -19,16 +19,13 @@ limitations under the License.
 #include <string>
 #include <utility>
 
-#include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "llvm/IR/LLVMContext.h"
-#include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/buffer_value.h"
 #include "xla/service/compiler.h"
 #include "xla/service/dump.h"
 #include "xla/service/executable.h"
-#include "xla/service/gpu/buffer_sharing.h"
 #include "xla/service/gpu/compile_module_to_llvm_ir.h"
 #include "xla/service/gpu/executable.pb.h"
 #include "xla/service/gpu/gpu_compiler.h"
@@ -36,11 +33,10 @@ limitations under the License.
 #include "xla/service/gpu/gpu_hlo_schedule.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/service/platform_util.h"
-#include "xla/statusor.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/platform/initialize.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/tools/hlo_opt/opt_lib.h"
-#include "xla/types.h"
+#include "xla/tools/hlo_opt/compiled_opt_lib.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -48,8 +44,10 @@ namespace xla {
 
 namespace {
 
-class GpuOptProvider : public OptProvider {
+class GpuOptProvider : public CompiledOptProvider {
  public:
+  GpuOptProvider() : CompiledOptProvider() {}
+
   absl::StatusOr<std::optional<std::string>> GenerateStage(
       std::unique_ptr<HloModule> module, absl::string_view s) override {
     if (s == "llvm-before-optimizations") {
@@ -76,8 +74,9 @@ class GpuOptProvider : public OptProvider {
           ->ToVerboseString(9999);
     } else {
       // Delegate to base class.
-      TF_ASSIGN_OR_RETURN(std::optional<std::string> out,
-                          OptProvider::GenerateStage(std::move(module), s));
+      TF_ASSIGN_OR_RETURN(
+          std::optional<std::string> out,
+          CompiledOptProvider::GenerateStage(std::move(module), s));
       return out;
     }
   }
@@ -85,11 +84,14 @@ class GpuOptProvider : public OptProvider {
   std::string GetPlatformName() override { return "gpu"; }
 
   std::set<std::string> SupportedStages() override {
-    std::set<std::string> supported = OptProvider::SupportedStages();
+    std::set<std::string> supported = CompiledOptProvider::SupportedStages();
     supported.insert({"ptx", "llvm", "buffer-assignment",
                       "llvm-before-optimizations", "llvm-after-optimizations"});
     return supported;
   }
+
+  // Register the GPU provider passes.
+  void RegisterProviderPasses(HloModule& module) override {}
 
  private:
   absl::StatusOr<std::string> LlvmIrBeforeOptimizations(
@@ -123,7 +125,8 @@ class GpuOptProvider : public OptProvider {
         xla::gpu::CompileModuleToLlvmIr(
             optimized_module, &llvm_context, gpu_compiler->GetTargetTriple(),
             gpu_compiler->GetDataLayout(), platform->Name(), platform->id(),
-            target_config.device_description, gpu_compiler->GetCanShareBuffer(),
+            target_config.device_description,
+            gpu_compiler->GetCanShareBuffer(target_config.device_description),
             gpu_compiler->BufferSizeBytesFunction()));
     return llvm_ir::DumpToString(results.llvm_module.get());
   }

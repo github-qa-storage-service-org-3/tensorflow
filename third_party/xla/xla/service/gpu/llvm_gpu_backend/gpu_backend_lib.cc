@@ -15,21 +15,36 @@ limitations under the License.
 
 #include "xla/service/gpu/llvm_gpu_backend/gpu_backend_lib.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <ios>
 #include <memory>
+#include <mutex>  // NOLINT
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>  // NOLINT
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "absl/base/call_once.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
+#include "llvm/ADT/Any.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/LazyCallGraph.h"
+#include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -39,42 +54,60 @@ limitations under the License.
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/PassRegistry.h"
+#include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 #include "llvm/Transforms/Scalar.h"
+#include "xla/service/gpu/llvm_gpu_backend/load_ir_module.h"
+#include "xla/service/gpu/llvm_gpu_backend/nvptx_libdevice_path.h"
 #include "xla/service/gpu/llvm_gpu_backend/utils.h"
 #include "xla/service/gpu/metrics.h"
 #include "xla/service/llvm_ir/llvm_command_line_options.h"
 #include "xla/service/llvm_ir/llvm_type_conversion_util.h"
-#include "xla/status_macros.h"
 #include "xla/stream_executor/device_description.h"
-#include "xla/types.h"
+#include "xla/stream_executor/semantic_version.h"
+#include "xla/tsl/util/env_var.h"
 #include "xla/util.h"
-#include "tsl/platform/cuda_libdevice_path.h"
+#include "xla/xla.pb.h"
 #include "tsl/platform/env.h"
+#include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/random.h"
 #include "tsl/platform/rocm_rocdl_path.h"
+#include "tsl/platform/status.h"
+#include "tsl/platform/statusor.h"
+#include "tsl/profiler/lib/scoped_annotation.h"
 #include "tsl/profiler/lib/traceme.h"
-#include "tsl/util/env_var.h"
 
 #if !defined(PLATFORM_GOOGLE) && TENSORFLOW_USE_ROCM
 #include "rocm/rocm_config.h"
 #endif
+
+#if GOOGLE_CUDA
+#include "third_party/gpus/cuda/include/cuda.h"
+#include "xla/stream_executor/cuda/subprocess_compilation.h"
+#endif
+
+#if TENSORFLOW_USE_SYCL
+#include "LLVMSPIRVLib.h"
+#include "LLVMSPIRVOpts.h"
+#endif  // TENSORFLOW_USE_SYCL
 
 namespace xla {
 namespace gpu {
@@ -88,47 +121,14 @@ const int kAMDGPUInlineThreshold = 0x100000;
 // Default inline threshold value to use in llvm.
 const int kDefaultInlineThreshold = 1100;
 
-// Gets the GPU name as it's known to LLVM for a given compute
-// capability.  If we see an unrecognized compute capability, we
-// return the highest one that is known and below the selected device.
-static std::string GetSmName(se::CudaComputeCapability compute_capability) {
-  int compute_capability_version =
-      compute_capability.major * 10 + compute_capability.minor;
-  int sm_version = 30;
-  // If the current compute capability isn't known, fallback to the
-  // most recent version before it.
-  int supported_versions[] = {90, 89, 87, 86, 80, 75, 72, 70, 62,
-                              61, 60, 53, 52, 50, 37, 35, 32, 30};
-  for (int v : supported_versions) {
-    if (v <= compute_capability_version) {
-      sm_version = v;
-      break;
-    }
-  }
-
-  // If the current CC isn't supported by LLVM and it is newer then
-  // the max supported LLVM version, do not warn about it. The end
-  // user can't do anything about this. E.g., PTX compiled for SM75 will
-  // run on SM80 too.
-  if (sm_version != compute_capability_version &&
-      compute_capability_version < supported_versions[0]) {
-    LOG(WARNING) << "Unknown compute capability "
-                 << compute_capability.ToString()
-                 << ". Defaulting to telling LLVM that we're compiling for sm_"
-                 << sm_version;
-  }
-  // If the target is sm_90, hard code it to sm_90a so that all instructions
-  // can be used. We don't need the portability that sm_90 gives.
-  std::string_view extension = sm_version == 90 ? "a" : "";
-  return absl::StrCat("sm_", sm_version, extension);
-}
-
+// NOLINTBEGIN: clang-diagnostic-unused-function
 // Convenience function for producing a name of a temporary compilation product
 // from the input filename.
 std::string MakeNameForTempProduct(absl::string_view input_filename,
                                    absl::string_view extension) {
   return ReplaceFilenameExtension(tsl::io::Basename(input_filename), extension);
 }
+// NOLINTEND: clang-diagnostic-unused-function
 
 // Initializes LLVM passes. Uses the PassRegistry mechanism.
 void InitializePasses(llvm::PassRegistry* pass_registry) {
@@ -190,6 +190,10 @@ std::unique_ptr<llvm::TargetMachine> GetTargetMachine(
 // for the NVPTX target.
 std::string EmitModuleToPTX(llvm::Module* module,
                             llvm::TargetMachine* target_machine) {
+  tsl::profiler::ScopedAnnotation annotation([&] {
+    return absl::StrFormat("XlaEmitGpuAsm:#module=%s#",
+                           module->getName().str());
+  });
   std::string ptx;
   llvm::raw_string_ostream stream(ptx);
   llvm::buffer_ostream pstream(stream);
@@ -200,21 +204,6 @@ std::string EmitModuleToPTX(llvm::Module* module,
                                       llvm::CodeGenFileType::AssemblyFile);
   pm.run(*module);
   return ptx;
-}
-
-// LLVM has an extensive flags mechanism of its own, which is only accessible
-// through the command line. Internal libraries within LLVM register parsers for
-// flags, with no other way to configure them except pass these flags.
-// To do this programmatically, we invoke ParseCommandLineOptions manually with
-// a "fake argv".
-// Note: setting flags with this method is stateful, since flags are just
-// static globals within LLVM libraries.
-void FeedLLVMWithFlags(const std::vector<std::string>& cl_opts) {
-  std::vector<const char*> fake_argv = {""};
-  for (const std::string& cl_opt : cl_opts) {
-    fake_argv.push_back(cl_opt.c_str());
-  }
-  llvm::cl::ParseCommandLineOptions(fake_argv.size(), fake_argv.data());
 }
 
 // Returns whether the module could use any device bitcode library functions.
@@ -265,14 +254,31 @@ absl::Status LinkWithBitcodeVector(
   return absl::OkStatus();
 }
 
+// Links libdevice into the given module if the module needs libdevice.
+absl::Status LinkLibdeviceIfNecessary(llvm::Module* module,
+                                      const std::string& libdevice_path) {
+  if (!CouldNeedDeviceBitcode(*module)) {
+    return absl::OkStatus();
+  }
+
+  if (!tsl::Env::Default()->FileExists(libdevice_path).ok()) {
+    LOG(WARNING)
+        << "libdevice is required by this HLO module but was not found at "
+        << libdevice_path;
+    return xla::Internal("libdevice not found at %s", libdevice_path);
+  }
+
+  VLOG(1) << "Linking with libdevice from: " << libdevice_path;
+  return LinkWithBitcodeVector(module, {libdevice_path});
+}
+
 absl::Status NVPTXTargetModuleLinker(llvm::Module* module,
                                      se::GpuComputeCapability gpu_version,
                                      const DebugOptions& debug_options,
                                      const std::string& device_bitcode_path) {
   // Link the input module with libdevice, to pull in implementations of some
   // builtins.
-  TF_RETURN_IF_ERROR(
-      nvptx::LinkLibdeviceIfNecessary(module, device_bitcode_path));
+  TF_RETURN_IF_ERROR(LinkLibdeviceIfNecessary(module, device_bitcode_path));
 
   // Set the flush-denormals-to-zero flag on the module so the NVVM reflect pass
   // can access it.
@@ -292,15 +298,41 @@ absl::Status NVPTXTargetModuleLinker(llvm::Module* module,
 std::unique_ptr<llvm::TargetMachine> NVPTXGetTargetMachine(
     llvm::Triple target_triple, se::CudaComputeCapability compute_capability,
     const DebugOptions& debug_options) {
-  // Figure out the exact name of the processor as known to the NVPTX backend
-  // from the gpu_architecture flag.
-  return GetTargetMachine(target_triple, GetSmName(compute_capability),
-                          debug_options, /*feature_str=*/"+ptx74");
+#ifdef GOOGLE_CUDA
+  absl::StatusOr<stream_executor::SemanticVersion> runtime_cuda_version =
+      stream_executor::GetAsmCompilerVersion(
+          debug_options.xla_gpu_cuda_data_dir());
+
+  constexpr stream_executor::SemanticVersion kCompileTimeCudaVersion{
+      CUDA_VERSION / 1000, (CUDA_VERSION / 10) % 100, CUDA_VERSION % 10};
+
+  auto highest_supported_cuda_version = [&] {
+    if (runtime_cuda_version.ok()) {
+      return std::min(runtime_cuda_version.value(), kCompileTimeCudaVersion);
+    }
+
+    return kCompileTimeCudaVersion;
+  }();
+
+  auto ptx_version = nvptx::DetermineHighestSupportedPtxVersionFromCudaVersion(
+      highest_supported_cuda_version);
+  int highest_supported_ptx_version =
+      ptx_version.major() * 10 + ptx_version.minor();
+
+  VLOG(1) << "Targeting PTX version: " << highest_supported_ptx_version;
+  std::string feature_str =
+      absl::StrFormat("+ptx%d", highest_supported_ptx_version);
+
+#else
+  std::string feature_str;
+#endif  // GOOGLE_CUDA
+  return GetTargetMachine(target_triple, nvptx::GetSmName(compute_capability),
+                          debug_options, feature_str);
 }
 
 using TargetModuleLinker =
-    std::function<Status(llvm::Module*, se::GpuComputeCapability,
-                         const DebugOptions&, const std::string&)>;
+    std::function<absl::Status(llvm::Module*, se::GpuComputeCapability,
+                               const DebugOptions&, const std::string&)>;
 
 void DumpModule(const std::string output_filename, const llvm::Module* module) {
   std::error_code ec;
@@ -356,6 +388,10 @@ absl::Status LinkAndOptimizeModule(
     const DebugOptions& debug_options, const std::string& device_bitcode_path,
     TargetModuleLinker module_linker, llvm::Triple default_target_triple,
     llvm::TargetMachine* target_machine, int inline_threshold) {
+  tsl::profiler::ScopedAnnotation annotation([&] {
+    return absl::StrFormat("XlaOptimizeLlvmIr:#module=%s#",
+                           module->getName().str());
+  });
   TF_RETURN_IF_ERROR(
       module_linker(module, gpu_version, debug_options, device_bitcode_path));
 
@@ -364,7 +400,9 @@ absl::Status LinkAndOptimizeModule(
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
 
-  fam.registerPass([&] { return target_machine->getTargetIRAnalysis(); });
+  if (target_machine) {
+    fam.registerPass([&] { return target_machine->getTargetIRAnalysis(); });
+  }
 
   llvm::PipelineTuningOptions pto;
   pto.SLPVectorization = true;
@@ -429,9 +467,24 @@ absl::Status LinkAndOptimizeModule(
 
 // One-time module initializer.
 // Must be called only once -- DO NOT CALL DIRECTLY.
-void NVPTXBackendInit(const DebugOptions& debug_options) {
+void NVPTXBackendInit() {
+  // Initialize the NVPTX target; it's the only target we link with, so call its
+  // specific initialization functions instead of the catch-all InitializeAll*.
+  LLVMInitializeNVPTXTarget();
+  LLVMInitializeNVPTXTargetInfo();
+  LLVMInitializeNVPTXTargetMC();
+  LLVMInitializeNVPTXAsmPrinter();
+
+  // Initialize the LLVM optimization passes.
+  llvm::PassRegistry* registry = llvm::PassRegistry::getPassRegistry();
+  InitializePasses(registry);
+}
+
+std::vector<std::string> GetNVPTXBackendOptions(
+    const DebugOptions& debug_options) {
   // Feed all customized flags here, so we can override them with llvm_cl_opts
   // without redeploy the compiler for development purpose.
+  std::vector<std::string> backend_llvm_opts;
 
   // This flag tunes a threshold in branch folding. The default threshold, which
   // is one, is not suitable for CUDA programs where branches are more expensive
@@ -446,109 +499,67 @@ void NVPTXBackendInit(const DebugOptions& debug_options) {
   // TODO(jingyue): The current threshold only considers the number of IR
   // instructions which do not accurately reflect the true cost. We need a
   // better cost model.
-  FeedLLVMWithFlags({"-bonus-inst-threshold=2"});
+  backend_llvm_opts.emplace_back("-bonus-inst-threshold=2");
 
   // Use div.full -- it matters for some float-division heavy benchmarks.
   // Using div.approx produces incorrect result for float32(max)/float32(max).
-  FeedLLVMWithFlags({"-nvptx-prec-divf32=1"});
+  backend_llvm_opts.emplace_back("-nvptx-prec-divf32=1");
 
   // SLPVectorizer is useful (vectorizes f16x2 ops) but slow.  Most of the
   // slowness appears to be in trying to form horizontal reductions, which don't
   // exist in PTX *anyway*.  Disable these.  While we're here, tweak
   // SLPVectorizer so it doesn't try to create large vectors -- f16x2 are the
   // only vectors supported in PTX.
-  FeedLLVMWithFlags({
-      "-slp-vectorize-hor=false",
-      "-slp-max-reg-size=32",
-  });
+  backend_llvm_opts.emplace_back("-slp-vectorize-hor=false");
+  backend_llvm_opts.emplace_back("-slp-max-reg-size=32");
 
-  llvm_ir::InitializeLLVMCommandLineOptions(
+  // Extra backend options must go after regular backend options in order to be
+  // able for the later to override the former.
+  auto backend_extra_llvm_opts = llvm_ir::ExtractXlaBackendExtraOptions(
       debug_options.xla_backend_extra_options());
+  backend_llvm_opts.insert(backend_llvm_opts.end(),
+                           backend_extra_llvm_opts.cbegin(),
+                           backend_extra_llvm_opts.cend());
 
-  // Initialize the NVPTX target; it's the only target we link with, so call its
-  // specific initialization functions instead of the catch-all InitializeAll*.
-  LLVMInitializeNVPTXTarget();
-  LLVMInitializeNVPTXTargetInfo();
-  LLVMInitializeNVPTXTargetMC();
-  LLVMInitializeNVPTXAsmPrinter();
-
-  // Initialize the LLVM optimization passes.
-  llvm::PassRegistry* registry = llvm::PassRegistry::getPassRegistry();
-  InitializePasses(registry);
+  return backend_llvm_opts;
 }
 
 }  // namespace
 
 namespace nvptx {
 
-std::string CantFindCudaMessage(absl::string_view msg,
-                                absl::string_view xla_gpu_cuda_data_dir) {
-  return absl::StrCat(
-      msg, "\nSearched for CUDA in the following directories:\n  ",
-      absl::StrJoin(tsl::CandidateCudaRoots(std::string{xla_gpu_cuda_data_dir}),
-                    "\n  "),
-      "\nYou can choose the search directory by setting xla_gpu_cuda_data_dir "
-      "in HloModule's DebugOptions.  For most apps, setting the environment "
-      "variable XLA_FLAGS=--xla_gpu_cuda_data_dir=/path/to/cuda will work.");
-}
-
-static std::string GetLibdeviceDir(absl::string_view xla_gpu_cuda_data_dir) {
-  for (const std::string& cuda_root :
-       tsl::CandidateCudaRoots(std::string{xla_gpu_cuda_data_dir})) {
-    std::string libdevice_dir =
-        tsl::io::JoinPath(cuda_root, "nvvm", "libdevice");
-    VLOG(2) << "Looking for libdevice at " << libdevice_dir;
-    if (tsl::Env::Default()->IsDirectory(libdevice_dir).ok()) {
-      VLOG(2) << "Found libdevice dir " << libdevice_dir;
-      return libdevice_dir;
+std::string GetSmName(se::CudaComputeCapability compute_capability) {
+  int compute_capability_version =
+      compute_capability.major * 10 + compute_capability.minor;
+  int sm_version = 30;
+  // If the current compute capability isn't known, fallback to the
+  // most recent version before it.
+  int supported_versions[] = {90, 89, 87, 86, 80, 75, 72, 70, 62,
+                              61, 60, 53, 52, 50, 37, 35, 32, 30};
+  for (int v : supported_versions) {
+    if (v <= compute_capability_version) {
+      sm_version = v;
+      break;
     }
   }
-  LOG(WARNING) << CantFindCudaMessage(
-      "Can't find libdevice directory ${CUDA_DIR}/nvvm/libdevice. This may "
-      "result in compilation or runtime failures, if the program we try to run "
-      "uses routines from libdevice.",
-      xla_gpu_cuda_data_dir);
 
-  // GetCudaRootCandidates always includes ".", but if everything fails, we
-  // return it anyway.  Better than returning the empty string.
-  return ".";
-}
-
-std::string LibDevicePath(absl::string_view xla_gpu_cuda_data_dir) {
-  static absl::Mutex libdevice_cache_mu(absl::kConstInit);
-  static auto& libdevice_dir_path_cache ABSL_GUARDED_BY(libdevice_cache_mu) =
-      *new absl::flat_hash_map<std::string, std::string>();
-  std::string libdevice_dir_path = [&] {
-    absl::MutexLock l(&libdevice_cache_mu);
-    auto it = libdevice_dir_path_cache.find(xla_gpu_cuda_data_dir);
-    if (it != libdevice_dir_path_cache.end()) {
-      return it->second;
-    }
-    auto [it2, inserted] = libdevice_dir_path_cache.emplace(
-        xla_gpu_cuda_data_dir, GetLibdeviceDir(xla_gpu_cuda_data_dir));
-    return it2->second;
-  }();
-  // CUDA 9+ uses a single libdevice file for all devices, and we don't support
-  // older CUDAs.
-  return tsl::io::JoinPath(libdevice_dir_path, "libdevice.10.bc");
-}
-
-// Links libdevice into the given module if the module needs libdevice.
-absl::Status LinkLibdeviceIfNecessary(llvm::Module* module,
-                                      const std::string& libdevice_path) {
-  if (!CouldNeedDeviceBitcode(*module)) {
-    return absl::OkStatus();
+  // If the current CC isn't supported by LLVM and it is newer then
+  // the max supported LLVM version, do not warn about it. The end
+  // user can't do anything about this. E.g., PTX compiled for SM75 will
+  // run on SM80 too.
+  if (sm_version != compute_capability_version &&
+      compute_capability_version < supported_versions[0]) {
+    LOG(WARNING) << "Unknown compute capability "
+                 << compute_capability.ToString()
+                 << ". Defaulting to telling LLVM that we're compiling for sm_"
+                 << sm_version;
   }
-
-  if (!tsl::Env::Default()->FileExists(libdevice_path).ok()) {
-    LOG(WARNING)
-        << "libdevice is required by this HLO module but was not found at "
-        << libdevice_path;
-    return xla::Internal("libdevice not found at %s", libdevice_path);
-  }
-
-  VLOG(1) << "Linking with libdevice from: " << libdevice_path;
-  return LinkWithBitcodeVector(module, {libdevice_path});
+  // On Hopper, default to sm_90a so that all instructions can be used. But
+  // only sm_90 is forward compatible, so don't use sm_90a with newer hardware:
+  // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#ptx-compatibility
+  std::string_view extension =
+      (compute_capability.major == 9 && sm_version == 90) ? "a" : "";
+  return absl::StrCat("sm_", sm_version, extension);
 }
 
 absl::StatusOr<std::string> CompileToPtx(
@@ -556,7 +567,9 @@ absl::StatusOr<std::string> CompileToPtx(
     const DebugOptions& debug_options,
     std::function<void(llvm::TargetMachine*)> configure_target) {
   static absl::once_flag backend_init_flag;
-  absl::call_once(backend_init_flag, NVPTXBackendInit, debug_options);
+  absl::call_once(backend_init_flag, NVPTXBackendInit);
+  auto llvm_opts = GetNVPTXBackendOptions(debug_options);
+  llvm_ir::LLVMCommandLineOptionsLock llvm_lock(llvm_opts);
 
   std::string ptx;
   std::unique_ptr<llvm::TargetMachine> target_machine;
@@ -613,6 +626,35 @@ absl::StatusOr<std::string> CompileToPtx(
   return ptx;
 }
 
+namespace {
+constexpr stream_executor::SemanticVersion kFallbackPtxVersion{6, 5, 0};
+constexpr stream_executor::SemanticVersion kMaxPtxVersion{8, 5, 0};
+}  // namespace
+
+stream_executor::SemanticVersion
+DetermineHighestSupportedPtxVersionFromCudaVersion(
+    stream_executor::SemanticVersion cuda_version) {
+  if (cuda_version < stream_executor::SemanticVersion{11, 0, 0}) {
+    // For everything below CUDA 11 we just fall back to PTX 6.5.
+    // We don't support CUDA below 11 anymore.
+    return kFallbackPtxVersion;
+  }
+
+  // Mapping determined from
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#release-notes
+  // Examples:
+  // CUDA 11.0 -> PTX 7.0
+  // CUDA 11.1 -> PTX 7.1
+  // CUDA 12.0 -> PTX 8.0
+  // CUDA 12.4 -> PTX 8.4
+  // This versioning scheme is valid until CUDA 12.6
+  if (cuda_version < stream_executor::SemanticVersion{12, 6, 0}) {
+    return {cuda_version.major() - 4, cuda_version.minor(), 0};
+  }
+
+  // Return maximum known PTX version.
+  return kMaxPtxVersion;
+}
 }  // namespace nvptx
 
 namespace {
@@ -625,7 +667,8 @@ std::vector<std::string> GetROCDLPaths(std::string gcn_arch_name,
       new std::vector<std::string>(
           {"opencl.bc", "ocml.bc", "ockl.bc", "oclc_finite_only_off.bc",
            "oclc_daz_opt_off.bc", "oclc_correctly_rounded_sqrt_on.bc",
-           "oclc_unsafe_math_off.bc", "oclc_wavefrontsize64_on.bc"});
+           "oclc_unsafe_math_off.bc", "oclc_wavefrontsize64_on.bc",
+           "oclc_abi_version_500.bc"});
 
   // Construct full path to ROCDL bitcode libraries.
   std::vector<std::string> result;
@@ -667,7 +710,7 @@ struct HsacoCache {
                   const std::vector<uint8_t>& hsaco);
 };
 
-static HsacoCache g_hsacoCache;
+static HsacoCache g_hsacoCache;  // NOLINT: static/global vars forbidden
 
 bool HsacoCache::Find(const std::string& ir, uint64_t& hash,
                       const std::string& gfx, std::vector<uint8_t>& hsaco) {
@@ -766,7 +809,12 @@ absl::StatusOr<std::vector<uint8_t>> EmitModuleToHsaco(
     ir_fs->flush();
   }
   // Locate lld.
-  std::string lld_path = tsl::io::JoinPath(tsl::RocmRoot(), "llvm/bin");
+  std::string lld_path;
+  if (std::getenv("LLVM_PATH")) {
+    lld_path = tsl::io::JoinPath(std::getenv("LLVM_PATH"), "bin");
+  } else {
+    lld_path = tsl::io::JoinPath(tsl::RocmRoot(), "llvm/bin");
+  }
   auto lld_program = llvm::sys::findProgramByName("ld.lld", {lld_path});
   if (!lld_program) {
     return xla::Internal("unable to find ld.lld in PATH: %s",
@@ -908,7 +956,7 @@ std::unique_ptr<llvm::TargetMachine> AMDGPUGetTargetMachine(
 // Returns the directory containing ROCm-Device-Libs files.
 std::string GetROCDLDir(const DebugOptions& debug_options) {
   std::vector<std::string> potential_rocdl_dirs;
-  const std::string datadir = debug_options.xla_gpu_cuda_data_dir();
+  const std::string& datadir = debug_options.xla_gpu_cuda_data_dir();
   if (!datadir.empty()) {
     potential_rocdl_dirs.push_back(datadir);
   }
@@ -931,9 +979,6 @@ std::string GetROCDLDir(const DebugOptions& debug_options) {
 
 void AMDGPUBackendInit(const DebugOptions& debug_options,
                        std::string& rocdl_dir_path) {
-  llvm_ir::InitializeLLVMCommandLineOptions(
-      debug_options.xla_backend_extra_options());
-
   // Initialize the AMDGPU target; it's the only target we link with, so call
   // its specific initialization functions instead of the catch-all
   // InitializeAll*.
@@ -941,6 +986,7 @@ void AMDGPUBackendInit(const DebugOptions& debug_options,
   LLVMInitializeAMDGPUTarget();
   LLVMInitializeAMDGPUTargetInfo();
   LLVMInitializeAMDGPUTargetMC();
+  LLVMInitializeAMDGPUAsmParser();
   LLVMInitializeAMDGPUAsmPrinter();
 #endif
 
@@ -949,9 +995,36 @@ void AMDGPUBackendInit(const DebugOptions& debug_options,
   InitializePasses(registry);
 }
 
+std::vector<std::string> GetAMDGPUBackendOptions(
+    const DebugOptions& debug_options) {
+  std::vector<std::string> backend_llvm_opts;
+
+  // Extra backend options must go after regular backend options in order to be
+  // able for the later to override the former.
+  auto backend_extra_llvm_opts = llvm_ir::ExtractXlaBackendExtraOptions(
+      debug_options.xla_backend_extra_options());
+  backend_llvm_opts.insert(backend_llvm_opts.end(),
+                           backend_extra_llvm_opts.cbegin(),
+                           backend_extra_llvm_opts.cend());
+
+  return backend_llvm_opts;
+}
+
 }  // namespace
 
 namespace amdgpu {
+
+std::string LibDevicePath(std::string gcn_arch_name,
+                          const std::string& rocdl_dir_path) {
+  auto libdevice_dir_paths = GetROCDLPaths(gcn_arch_name, rocdl_dir_path);
+  for (auto libdevice_dir_path : libdevice_dir_paths) {
+    if (libdevice_dir_path.find("ocml.bc")) {
+      return libdevice_dir_path;
+    }
+  }
+  return "";
+}
+
 absl::StatusOr<std::vector<uint8_t>> CompileToHsaco(
     llvm::Module* module, se::GpuComputeCapability gpu_version,
     const DebugOptions& debug_options,
@@ -959,9 +1032,11 @@ absl::StatusOr<std::vector<uint8_t>> CompileToHsaco(
   static absl::once_flag backend_init_flag;
   // TODO(rocm) Ideally this would be refreshed if xla_gpu_cuda_data_dir
   // changes.
-  static std::string rocdl_dir_path;
+  static std::string rocdl_dir_path;  // NOLINT: static/global vars forbidden
   absl::call_once(backend_init_flag, AMDGPUBackendInit, debug_options,
                   rocdl_dir_path);
+  auto llvm_opts = GetAMDGPUBackendOptions(debug_options);
+  llvm_ir::LLVMCommandLineOptionsLock llvm_lock(llvm_opts);
 
   std::vector<uint8_t> hsaco;
   std::unique_ptr<llvm::TargetMachine> target_machine;
@@ -1029,6 +1104,108 @@ absl::StatusOr<std::vector<uint8_t>> CompileToHsaco(
 }
 
 }  // namespace amdgpu
+
+namespace {
+
+std::unique_ptr<llvm::TargetMachine> SPIRGetTargetMachine(
+    llvm::Triple target_triple, se::GpuComputeCapability gpu_version,
+    const DebugOptions& debug_options) {
+  return nullptr;
+}
+
+absl::Status SPIRTargetModuleLinker(
+    llvm::Module* module, se::GpuComputeCapability gpu_version,
+    const DebugOptions& debug_options,
+    const std::string& device_bitcode_dir_path) {
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::string> EmitModuleToSpir(
+    llvm::Module* module, se::GpuComputeCapability gpu_version,
+    const DebugOptions& debug_options) {
+#if TENSORFLOW_USE_SYCL
+  SPIRV::TranslatorOpts::ExtensionsStatusMap ExtensionsStatus;
+  SPIRV::TranslatorOpts opts(SPIRV::VersionNumber::MaximumVersion,
+                             ExtensionsStatus);
+  opts.enableAllExtensions();  // enable all SPIR-V extension first
+
+  std::ostringstream oss;
+  std::string err;
+  bool success = llvm::writeSpirv(module, opts, oss, err);
+  if (!success) {
+    return xla::Internal("Fails to convert LLVM as SPIR-V: %s", err);
+  }
+  return oss.str();
+#else
+  return absl::UnimplementedError("Not implemented for SYCL");
+#endif
+}
+
+void SPIRBackendInit() {
+  llvm::PassRegistry* registry = llvm::PassRegistry::getPassRegistry();
+  InitializePasses(registry);
+}
+
+std::vector<std::string> GetSPIRBackendOptions(
+    const DebugOptions& debug_options) {
+  std::vector<std::string> backend_llvm_opts;
+
+  backend_llvm_opts.emplace_back("-slp-vectorize-hor=false");
+  backend_llvm_opts.emplace_back("-slp-min-reg-size=64");
+  backend_llvm_opts.emplace_back("-slp-max-reg-size=64");
+
+  // Extra backend options must go after regular backend options in order to be
+  // able for the later to override the former.
+  auto backend_extra_llvm_opts = llvm_ir::ExtractXlaBackendExtraOptions(
+      debug_options.xla_backend_extra_options());
+  backend_llvm_opts.insert(backend_llvm_opts.end(),
+                           backend_extra_llvm_opts.cbegin(),
+                           backend_extra_llvm_opts.cend());
+
+  return backend_llvm_opts;
+}
+
+}  // namespace
+
+namespace spir {
+
+absl::StatusOr<std::vector<uint8_t>> CompileToSpir(
+    llvm::Module* module, se::GpuComputeCapability gpu_version,
+    const DebugOptions& debug_options) {
+  std::string libdevice_dir_path;
+  static absl::once_flag backend_init_flag;
+  absl::call_once(backend_init_flag, SPIRBackendInit);
+  auto llvm_opts = GetSPIRBackendOptions(debug_options);
+  llvm_ir::LLVMCommandLineOptionsLock llvm_lock(llvm_opts);
+
+  std::string spir;
+  {
+    XLA_SCOPED_LOGGING_TIMER("Compile module " + module->getName().str());
+
+    // If the module has no functions or globals, there's nothing to compile.
+    if (module->empty() && module->global_empty()) {
+      VLOG(2) << "Module '" << module->getName().str()
+              << "' is empty. Skipping compilation.";
+      return std::vector<uint8_t>();
+    }
+
+    llvm::Triple default_target_triple("spir64-unknown-unknown");
+    std::unique_ptr<llvm::TargetMachine> target_machine =
+        SPIRGetTargetMachine(default_target_triple, gpu_version, debug_options);
+
+    TF_RETURN_IF_ERROR(LinkAndOptimizeModule(
+        module, gpu_version, debug_options, libdevice_dir_path,
+        SPIRTargetModuleLinker, default_target_triple, target_machine.get(),
+        kDefaultInlineThreshold));
+
+    // Lower optimized LLVM module to SPIR.
+    TF_ASSIGN_OR_RETURN(spir,
+                        EmitModuleToSpir(module, gpu_version, debug_options));
+  }
+  return std::vector<uint8_t>(spir.begin(), spir.end());
+}
+
+}  // namespace spir
 
 }  // namespace gpu
 }  // namespace xla

@@ -26,7 +26,7 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/service/buffer_assignment.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/shape.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
@@ -42,7 +42,7 @@ struct FftPlan {
   // protect each plan with a mutex.
   absl::Mutex mu;
   std::unique_ptr<se::fft::Plan> plan ABSL_GUARDED_BY(mu);
-  float scale_factor ABSL_GUARDED_BY(mu);
+  uint64_t scale_factor ABSL_GUARDED_BY(mu);
 };
 
 class FftPlanCache {

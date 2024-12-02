@@ -18,6 +18,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/graph.h"
@@ -76,9 +77,10 @@ Node* CondBuilder::switch_t() { return switch_t_; }
 
 Node* CondBuilder::control_successor() { return control_successor_; }
 
-Status CondBuilder::AddInput(const std::string& input_name,
-                             const DataType& type, const std::string& device,
-                             const NodeDebugInfo& debug, Node** input) {
+absl::Status CondBuilder::AddInput(const std::string& input_name,
+                                   const DataType& type,
+                                   const std::string& device,
+                                   const NodeDebugInfo& debug, Node** input) {
   auto b = IncompleteNodeDefBuilder::Switch(
       graph_->NewName(absl::StrCat(name_, "/", input_name)), type, debug);
   TF_RETURN_IF_ERROR(b.Device(device).Build(graph_, input));

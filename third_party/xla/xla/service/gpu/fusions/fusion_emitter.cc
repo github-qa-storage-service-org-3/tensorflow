@@ -26,6 +26,7 @@ limitations under the License.
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/STLExtras.h"
@@ -41,8 +42,8 @@ limitations under the License.
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/TargetParser/Triple.h"
-#include "mlir/IR/AffineExpr.h"  // from @llvm-project
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/layout_util.h"
 #include "xla/service/gpu/ir_emitter_context.h"
@@ -56,9 +57,7 @@ limitations under the License.
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
@@ -92,11 +91,15 @@ absl::Status AnnotateKernelLaunchDimensions(
     const se::DeviceDescription& device_info,
     const LaunchDimensions& launch_dims, const std::string& kernel_name,
     llvm::Module* llvm_module) {
-  TF_RET_CHECK(device_info.block_dim_limit().x == 0 ||
-               launch_dims.block_counts().x < device_info.block_dim_limit().x)
+  TF_RET_CHECK(
+      (device_info.block_dim_limit().x == 0 ||
+       launch_dims.block_counts().x < device_info.block_dim_limit().x) &&
+      (device_info.block_dim_limit().y == 0 ||
+       launch_dims.block_counts().y < device_info.block_dim_limit().y))
       << "Kernel '" << kernel_name << "' launch needs more blocks ("
-      << launch_dims.block_counts().x << ") than allowed by hardware ("
-      << device_info.block_dim_limit().x << ").";
+      << launch_dims.block_counts().x << ", " << launch_dims.block_counts().y
+      << ") than allowed by hardware (" << device_info.block_dim_limit().x
+      << ", " << device_info.block_dim_limit().y << ").";
   // Add __launch_bounds__ to metadata. This limits registers per thread to
   // avoid out-of-resources launching errors.
 
@@ -117,11 +120,10 @@ absl::Status AnnotateKernelLaunchDimensions(
   return absl::OkStatus();
 }
 
-IndexingMap KernelFusionInterface::GetDefaultThreadIdToOutputIndexingMap(
-    const LaunchDimensions& launch_dims, int unroll_factor,
-    const Shape& output_shape, IndexingContext* indexing_context) {
-  std::vector<mlir::AffineExpr> output_dims(output_shape.rank());
-  auto mlir_context = indexing_context->GetMLIRContext();
+IndexingMap KernelFusionInterface::GetDefaultThreadIdIndexingMap(
+    const LaunchDimensions& launch_dims, int unroll_factor, const Shape& shape,
+    mlir::MLIRContext* ctx) {
+  std::vector<mlir::AffineExpr> output_dims(shape.rank());
 
   std::array<uint64_t, 3> thread_counts{
       launch_dims.thread_counts_per_block().x,
@@ -144,20 +146,19 @@ IndexingMap KernelFusionInterface::GetDefaultThreadIdToOutputIndexingMap(
   // This means that this code supports some launch grids that the parallel
   // loop emitter doesn't support. This is safe, since the latter CHECK fails
   // if its assumptions are not fulfilled.
-  mlir::AffineExpr c0 = mlir::getAffineConstantExpr(0, mlir_context);
+  mlir::AffineExpr c0 = mlir::getAffineConstantExpr(0, ctx);
   mlir::AffineExpr linear_index = c0;
   uint64_t stride = 1;
   for (int i = 0; i < 3; ++i) {
-    auto coord =
-        mlir::getAffineDimExpr(kIndexingMapThreadIdxDims[i], mlir_context) +
-        mlir::getAffineDimExpr(kIndexingMapBlockIdxDims[i], mlir_context) *
-            thread_counts[i];
+    auto coord = mlir::getAffineDimExpr(kIndexingMapThreadIdxDims[i], ctx) +
+                 mlir::getAffineDimExpr(kIndexingMapBlockIdxDims[i], ctx) *
+                     thread_counts[i];
     auto linear_component = coord * stride;
     linear_index = linear_index + linear_component;
     stride *= total_sizes[i];
   }
-  mlir::AffineExpr chunk_id = mlir::getAffineSymbolExpr(0, mlir_context);
-  mlir::AffineExpr unroll_elem_id = mlir::getAffineSymbolExpr(1, mlir_context);
+  mlir::AffineExpr chunk_id = mlir::getAffineSymbolExpr(0, ctx);
+  mlir::AffineExpr unroll_elem_id = mlir::getAffineSymbolExpr(1, ctx);
 
   linear_index = linear_index * unroll_factor +
                  chunk_id * unroll_factor * launch_dims.launch_bound() +
@@ -165,43 +166,40 @@ IndexingMap KernelFusionInterface::GetDefaultThreadIdToOutputIndexingMap(
 
   // See IndexUtil::LinearIndexToMultidimensionalIndex.
   uint64_t divisor = 1;
-  for (auto dimension : LayoutUtil::MinorToMajor(output_shape)) {
-    output_dims[dimension] =
-        (linear_index.floorDiv(divisor)) %
-        static_cast<uint64_t>(output_shape.dimensions(dimension));
-    divisor *= output_shape.dimensions(dimension);
+  for (auto dimension : LayoutUtil::MinorToMajor(shape)) {
+    output_dims[dimension] = (linear_index.floorDiv(divisor)) %
+                             static_cast<uint64_t>(shape.dimensions(dimension));
+    divisor *= shape.dimensions(dimension);
   }
 
-  std::vector<DimVar> dim_vars = {
-      {{0, static_cast<int64_t>(launch_dims.thread_counts_per_block().x) - 1}},
-      {{0, static_cast<int64_t>(launch_dims.thread_counts_per_block().y) - 1}},
-      {{0, static_cast<int64_t>(launch_dims.thread_counts_per_block().z) - 1}},
-      {{0, static_cast<int64_t>(launch_dims.block_counts().x) - 1}},
-      {{0, static_cast<int64_t>(launch_dims.block_counts().y) - 1}},
-      {{0, static_cast<int64_t>(launch_dims.block_counts().z) - 1}},
-  };
-  std::vector<RangeVar> range_vars;
-  int64_t num_elements = ShapeUtil::ElementsIn(output_shape);
-  range_vars.push_back(
-      {{0, CeilOfRatio(num_elements,
-                       static_cast<int64_t>(launch_dims.launch_bound()) *
-                           unroll_factor) -
-               1}});
+  std::vector<IndexingMap::Variable> dim_vars = DimVarsFromGPUGrid(
+      {static_cast<int64_t>(launch_dims.thread_counts_per_block().x),
+       static_cast<int64_t>(launch_dims.thread_counts_per_block().y),
+       static_cast<int64_t>(launch_dims.thread_counts_per_block().z),
+       static_cast<int64_t>(launch_dims.block_counts().x),
+       static_cast<int64_t>(launch_dims.block_counts().y),
+       static_cast<int64_t>(launch_dims.block_counts().z)});
+  std::vector<IndexingMap::Variable> range_vars;
+  int64_t num_elements = ShapeUtil::ElementsIn(shape);
+  range_vars.push_back(IndexingMap::Variable{
+      {0, CeilOfRatio(num_elements,
+                      static_cast<int64_t>(launch_dims.launch_bound()) *
+                          unroll_factor) -
+              1}});
   range_vars.push_back({0, unroll_factor - 1});
   IndexingMap indexing_map(
-      indexing_context,
       mlir::AffineMap::get(/*dimCount=*/6,
-                           /*symbolCount=*/2, output_dims, mlir_context),
+                           /*symbolCount=*/2, output_dims, ctx),
       dim_vars, range_vars, /*rt_vars=*/{});
-  // Remove the unroll_elem_id symbol if unrolling divides num_elements.
-  if (num_elements % unroll_factor == 0) {
-    indexing_map.AddConstraint(linear_index.replace({{unroll_elem_id, c0}}),
-                               Interval{0, num_elements - unroll_factor});
-  } else {
-    indexing_map.AddConstraint(linear_index, Interval{0, num_elements - 1});
-  }
+  indexing_map.AddConstraint(linear_index, Interval{0, num_elements - 1});
   indexing_map.Simplify();
   return indexing_map;
+}
+
+std::string GetSanitizedUniqueName(IrEmitterContext& ir_emitter_context,
+                                   const std::string& suggested_name) {
+  return ir_emitter_context.name_uniquer()->GetUniqueName(
+      llvm_ir::SanitizeFunctionName(suggested_name));
 }
 
 absl::StatusOr<std::tuple<llvm::Function*, std::vector<llvm_ir::IrArray>,
@@ -211,7 +209,21 @@ BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
                      absl::Span<const KernelArgument> arguments,
                      size_t num_inputs,
                      const LaunchDimensions& launch_dimensions,
-                     llvm::IRBuilder<>* builder) {
+                     llvm::IRBuilderBase* builder) {
+  return BuildKernelPrototypeFromUniqueName(
+      ir_emitter_context,
+      GetSanitizedUniqueName(ir_emitter_context, suggested_name), arguments,
+      num_inputs, launch_dimensions, builder);
+}
+
+absl::StatusOr<std::tuple<llvm::Function*, std::vector<llvm_ir::IrArray>,
+                          std::vector<llvm_ir::IrArray>>>
+BuildKernelPrototypeFromUniqueName(IrEmitterContext& ir_emitter_context,
+                                   const std::string& unique_kernel_name,
+                                   absl::Span<const KernelArgument> arguments,
+                                   size_t num_inputs,
+                                   const LaunchDimensions& launch_dimensions,
+                                   llvm::IRBuilderBase* builder) {
   // If some arguments have the same buffer, we will pass them only once.
   llvm::SmallVector<int> to_llvm_arg_no(arguments.size());
   llvm::SmallVector<int> to_arg_no;
@@ -228,11 +240,6 @@ BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
   }
   const int kNumLlvmArgs = to_arg_no.size();
 
-  // Compute the kernel name. The opcode string may contain "-" which cannot be
-  // in a PTX function name, so sanitize the name before uniquifying it.
-  std::string kernel_name = ir_emitter_context.name_uniquer()->GetUniqueName(
-      llvm_ir::SanitizeFunctionName(suggested_name));
-
   // Create the kernel and add it to the module.
   auto* llvm_module = ir_emitter_context.llvm_module();
   llvm::LLVMContext& context = llvm_module->getContext();
@@ -244,12 +251,12 @@ BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
       /*isVarArg=*/false);
   llvm::Function* kernel =
       llvm::Function::Create(kernel_type, llvm::GlobalValue::ExternalLinkage,
-                             kernel_name, llvm_module);
+                             unique_kernel_name, llvm_module);
 
   AnnotateFunctionAsGpuKernel(llvm_module, kernel, builder);
   TF_RETURN_IF_ERROR(AnnotateKernelLaunchDimensions(
-      ir_emitter_context.gpu_device_info(), launch_dimensions, kernel_name,
-      llvm_module));
+      ir_emitter_context.gpu_device_info(), launch_dimensions,
+      unique_kernel_name, llvm_module));
 
   // TODO(b/65380986): Investigate if adding fast math flags for generated
   // kernels makes sense.
@@ -301,61 +308,6 @@ BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
   }
 
   return {{kernel, std::move(inputs), std::move(outputs)}};
-}
-
-absl::StatusOr<FusionEmissionResult> KernelFusionEmitterBase::Emit(
-    IrEmitterContext& ir_emitter_context,
-    const HloFusionInstruction& fusion) const {
-  llvm::IRBuilder<> builder(ir_emitter_context.llvm_module()->getContext());
-  std::string suggested_kernel_name = std::string(fusion.name());
-
-  TF_ASSIGN_OR_RETURN(
-      KernelArguments kernel_arguments,
-      KernelArguments::Create(ir_emitter_context.buffer_assignment(), &fusion));
-
-  auto* fused_computation = fusion.fused_instructions_computation();
-
-  TF_ASSIGN_OR_RETURN(auto result,
-                      EmitInitializers(ir_emitter_context, fusion));
-  auto launch_dims = launch_dimensions();
-  std::vector<llvm_ir::IrArray> inputs, outputs;
-  auto [status_or_entry, cached] =
-      ir_emitter_context.kernel_cache().GetWithStatus(
-          fused_computation, kernel_arguments.args(), /*discriminator=*/"",
-          [&]() -> absl::StatusOr<KernelReuseCache::Entry> {
-            llvm::Function* kernel;
-            TF_ASSIGN_OR_RETURN(
-                std::tie(kernel, inputs, outputs),
-                BuildKernelPrototype(ir_emitter_context, suggested_kernel_name,
-                                     kernel_arguments.args(),
-                                     fusion.operand_count(), launch_dims,
-                                     &builder));
-            if (ir_emitter_context.emit_kernels()) {
-              TF_RETURN_IF_ERROR(EmitKernel(ir_emitter_context, fusion,
-                                            launch_dims, std::move(inputs),
-                                            std::move(outputs), &builder));
-            } else {
-              VLOG(3) << "Skipped kernel compilation: "
-                      << suggested_kernel_name;
-            }
-            // TODO(jreiffers): Return shmem_bytes from EmitKernel when
-            // converting the Triton emitters to this infrastructure.
-            return KernelReuseCache::Entry{kernel->getName().str(), launch_dims,
-                                           /*cluster_dim=*/std::nullopt,
-                                           /*shmem_bytes=*/0};
-          });
-  TF_ASSIGN_OR_RETURN(const KernelReuseCache::Entry* entry, status_or_entry);
-
-  if (cached) {
-    VLOG(3) << "Reuse: " << suggested_kernel_name << " -> "
-            << entry->kernel_name;
-  }
-
-  result.thunks.emplace_back(std::make_unique<KernelThunk>(
-      &fusion, entry->kernel_name, kernel_arguments.args(), launch_dims,
-      entry->cluster_dim, entry->shmem_bytes));
-
-  return result;
 }
 
 }  // namespace gpu

@@ -13,6 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
+#include "xla/service/computation_placer.h"
+#include "xla/service/stream_pool.h"
+#include "xla/service/transfer_manager.h"
+#include "xla/stream_executor/platform.h"
+#include "tsl/platform/statusor.h"
 #define EIGEN_USE_THREADS
 
 #include "xla/service/backend.h"
@@ -24,12 +33,13 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "absl/status/statusor.h"
+#include "unsupported/Eigen/CXX11/Tensor"
 #include "xla/service/compiler.h"
 #include "xla/service/platform_util.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/host/host_platform_id.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/util.h"
 #include "tsl/platform/cpu_info.h"
 #include "tsl/platform/env.h"
@@ -198,7 +208,7 @@ absl::StatusOr<se::StreamExecutor*> Backend::stream_executor(
 }
 
 absl::StatusOr<bool> Backend::devices_equivalent(int device_ordinal_a,
-                                                 int device_ordinal_b) {
+                                                 int device_ordinal_b) const {
   // Use the name from device description to determine equivalence. This is a
   // bit crude but works for GPUs which is the important case where we compile
   // an executable for one GPU and want to know if it will run (well) on
@@ -211,7 +221,7 @@ absl::StatusOr<bool> Backend::devices_equivalent(int device_ordinal_a,
           executor_b->GetDeviceDescription().name());
 }
 
-Status Backend::ResetDevices() {
+absl::Status Backend::ResetDevices() {
   return transfer_manager_->ResetDevices(stream_executors_);
 }
 

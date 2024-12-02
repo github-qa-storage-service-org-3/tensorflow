@@ -16,7 +16,7 @@ limitations under the License.
 // clang-format off
 // Must be included first.
 #include "tensorflow/c/tf_datatype.h"
-#include "tsl/python/lib/core/numpy.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 // clang-format on
 
 #include "tensorflow/python/lib/core/ndarray_tensor_bridge.h"
@@ -24,10 +24,10 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/c/c_api.h"
+#include "xla/tsl/python/lib/core/ml_dtypes.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/python/lib/core/py_util.h"
-#include "tsl/python/lib/core/ml_dtypes.h"
 
 namespace tensorflow {
 
@@ -118,8 +118,8 @@ PyTypeObject TensorReleaserType = {
 };
 // clang-format on
 
-Status TF_DataType_to_PyArray_TYPE(TF_DataType tf_datatype,
-                                   int* out_pyarray_type) {
+absl::Status TF_DataType_to_PyArray_TYPE(TF_DataType tf_datatype,
+                                         int* out_pyarray_type) {
   const tsl::ml_dtypes::NumpyDtypes& custom_dtypes =
       tsl::ml_dtypes::GetNumpyDtypes();
   switch (tf_datatype) {
@@ -208,18 +208,19 @@ Status TF_DataType_to_PyArray_TYPE(TF_DataType tf_datatype,
       return errors::Internal("Tensorflow type ", tf_datatype,
                               " not convertible to numpy dtype.");
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status ArrayFromMemory(int dim_size, npy_intp* dims, void* data, DataType dtype,
-                       std::function<void()> destructor, PyObject** result) {
+absl::Status ArrayFromMemory(int dim_size, npy_intp* dims, void* data,
+                             DataType dtype, std::function<void()> destructor,
+                             PyObject** result) {
   if (dtype == DT_STRING || dtype == DT_RESOURCE) {
     return errors::FailedPrecondition(
         "Cannot convert string or resource Tensors.");
   }
 
   int type_num = -1;
-  Status s =
+  absl::Status s =
       TF_DataType_to_PyArray_TYPE(static_cast<TF_DataType>(dtype), &type_num);
   if (!s.ok()) {
     return s;
@@ -260,7 +261,7 @@ Status ArrayFromMemory(int dim_size, npy_intp* dims, void* data, DataType dtype,
     return errors::Unknown("Python array refused to use memory.");
   }
   *result = reinterpret_cast<PyObject*>(np_array);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

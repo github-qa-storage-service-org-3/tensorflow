@@ -28,6 +28,7 @@ limitations under the License.
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo  // IWYU pragma: keep
+#include "tensorflow/compiler/mlir/quantization/stablehlo/cc/permutation.h"
 
 namespace mlir::quant::stablehlo {
 
@@ -53,17 +54,6 @@ int64_t GetContiguousOffset(const ArrayRef<int64_t> indices,
   return contiguous_offset;
 }
 
-// Permutes `values` with `permutation`. Returns the permuted values. Sizes of
-// `values` and `permutation` must be equal.
-SmallVector<int64_t> Permute(const ArrayRef<int64_t> values,
-                             const ArrayRef<int64_t> permutation) {
-  SmallVector<int64_t> permuted_values(/*Size=*/values.size(), /*Value=*/0);
-  for (auto [i, permutation_idx] : llvm::enumerate(permutation)) {
-    permuted_values[i] = values[permutation_idx];
-  }
-  return permuted_values;
-}
-
 // Performs transposition of a tensor represented as a contiguous element array.
 // Assumes row-major order. The shape of the input tensor and the desired
 // permutation is registered during construction, and calling `TransposeValues`
@@ -74,7 +64,7 @@ class DenseElementsTransposer {
                           const ArrayRef<int64_t> permutation)
       : rank_(original_shape.size()),
         original_shape_(original_shape),
-        target_shape_(Permute(original_shape, permutation)),
+        target_shape_(Permute<int64_t>(original_shape, permutation)),
         permutation_(permutation) {}
 
   // Transposes `values` with the permutation. Returns the transposed values.
@@ -102,7 +92,7 @@ class DenseElementsTransposer {
           GetContiguousOffset(current_indices, original_shape_);
 
       const SmallVector<int64_t> target_indices =
-          Permute(current_indices, permutation_);
+          Permute<int64_t>(current_indices, permutation_);
       const int64_t target_index =
           GetContiguousOffset(target_indices, target_shape_);
 
@@ -137,12 +127,13 @@ class FoldTransposedConstantOp
     if (!const_op) return failure();
 
     // Only support float tensors.
-    auto tensor_type = const_op.getType().dyn_cast_or_null<TensorType>();
+    auto tensor_type = mlir::dyn_cast_or_null<TensorType>(const_op.getType());
     if (!tensor_type || !tensor_type.getElementType().isF32()) {
       return failure();
     }
 
-    return success(const_op.getValue().isa_and_nonnull<DenseFPElementsAttr>());
+    return success(
+        mlir::isa_and_nonnull<DenseFPElementsAttr>(const_op.getValue()));
   }
 
   void rewrite(mlir::stablehlo::TransposeOp op,
@@ -150,7 +141,8 @@ class FoldTransposedConstantOp
     auto const_op =
         cast<mlir::stablehlo::ConstantOp>(op.getOperand().getDefiningOp());
 
-    const auto value_attr = const_op.getValue().cast<DenseFPElementsAttr>();
+    const auto value_attr =
+        mlir::cast<DenseFPElementsAttr>(const_op.getValue());
     const ArrayRef<int64_t> original_shape =
         value_attr.getShapedType().getShape();
 

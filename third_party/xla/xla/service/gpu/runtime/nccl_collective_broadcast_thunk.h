@@ -19,22 +19,23 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/types/span.h"
+#include "xla/core/collectives/communicator.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/collective_ops_utils.h"
-#include "xla/service/gpu/nccl_api.h"
-#include "xla/service/gpu/nccl_collective_thunk.h"
-#include "xla/status.h"
+#include "xla/service/gpu/runtime/nccl_api.h"
+#include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/stream_executor/stream.h"
 
 namespace xla::gpu {
 // Thunk that performs a NCCL-based collective broadcast.
 class NcclCollectiveBroadcastStartThunk : public NcclCollectiveThunk {
  public:
-  static Status CheckImplementable(const HloInstruction* instr,
-                                   int64_t replica_count,
-                                   int64_t partition_count);
+  static absl::Status CheckImplementable(const HloInstruction* instr,
+                                         int64_t replica_count,
+                                         int64_t partition_count);
 
   static CollectiveOpGroupMode GetGroupMode(
       const HloCollectiveBroadcastInstruction* inst);
@@ -47,20 +48,21 @@ class NcclCollectiveBroadcastStartThunk : public NcclCollectiveThunk {
   NcclCollectiveBroadcastStartThunk(
       ThunkInfo thunk_info, NcclApi* nccl_api,
       const HloCollectiveBroadcastInstruction* instr,
-      std::vector<Buffer> buffers);
+      std::vector<Buffer> buffers, bool p2p_memcpy_enabled = false);
 
  protected:
-  Status RunNcclCollective(const ExecuteParams& params, se::Stream& stream,
-                           NcclApi::NcclCommHandle comm) override;
+  absl::Status RunNcclCollective(const ExecuteParams& params,
+                                 se::Stream& stream,
+                                 NcclCommHandleWrapper comm_wrapper) override;
 
  private:
   const NcclCollectiveConfig config_;
   const std::vector<Buffer> buffers_;
 };
 
-Status RunCollectiveBroadcast(std::vector<DeviceBufferPair>& buffers,
-                              se::Stream& stream, NcclApi::NcclCommHandle comm,
-                              NcclApi* nccl_api);
+absl::Status RunCollectiveBroadcast(std::vector<DeviceBufferPair>& buffers,
+                                    se::Stream& stream, Communicator* comm,
+                                    NcclApi* nccl_api);
 
 }  // namespace xla::gpu
 

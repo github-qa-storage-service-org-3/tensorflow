@@ -212,6 +212,7 @@ def _tf_library(
             ] + freeze_saver_srcs,
             outs = [freeze_file],
             cmd = (
+                "PYWRAP_TARGET='//tensorflow/python:_pywrap_tensorflow' " +
                 "CUDA_VISIBLE_DEVICES='' " +
                 "$(location " +
                 "//tensorflow/python/tools:freeze_graph)" +
@@ -319,8 +320,6 @@ def _tf_library(
         ] or []) + (include_standard_runtime_deps and [
             # TODO(cwhipkey): only depend on kernel code that the model actually
             # needed.
-            "@local_xla//xla/service/cpu/runtime:convolution_ffi",
-            "@local_xla//xla/service/cpu/runtime:rng_ffi",
             "@local_xla//xla/service/cpu:runtime_conv2d",
             "@local_xla//xla/service/cpu:runtime_custom_call_status",
             "@local_xla//xla/service/cpu:runtime_key_value_sort",

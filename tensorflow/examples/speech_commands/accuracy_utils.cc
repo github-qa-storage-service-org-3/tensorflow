@@ -19,13 +19,17 @@ limitations under the License.
 #include <iomanip>
 #include <unordered_set>
 
-#include "tensorflow/core/lib/io/path.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/numbers.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
-Status ReadGroundTruthFile(const string& file_name,
-                           std::vector<std::pair<string, int64_t>>* result) {
+absl::Status ReadGroundTruthFile(
+    const string& file_name, std::vector<std::pair<string, int64_t>>* result) {
   std::ifstream file(file_name);
   if (!file) {
     return tensorflow::errors::NotFound("Ground truth file '", file_name,

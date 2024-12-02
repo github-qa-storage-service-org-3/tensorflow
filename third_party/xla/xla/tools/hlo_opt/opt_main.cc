@@ -16,12 +16,10 @@ limitations under the License.
 // A tool for reading a HloModule from a HloProto file and execute the module on
 // given platform(s). See kUsage for details.
 
-#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,23 +30,18 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/hlo_runner.h"
-#include "xla/service/platform_util.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
 #include "xla/tools/hlo_module_loader.h"
 #include "xla/tools/hlo_opt/opt_lib.h"
-#include "xla/tools/run_hlo_module.h"
+#include "xla/tsl/util/command_line_flags.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/path.h"
-#include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/util/command_line_flags.h"
 
 namespace {
 const char* const kUsage = R"(
@@ -69,12 +62,13 @@ struct HloOptConfig {
   // Optional flags.
   bool help{false};
   bool split_input_file{false};
-  std::string platform{"gpu"};
+  std::string platform{"transforms"};
   std::string input_file{""};
   std::string input_format{""};
   std::string output_file{"-"};
   std::string stage{"hlo"};
   bool list_stages{false};
+  std::string passes{""};
 };
 
 }  // namespace
@@ -151,19 +145,29 @@ absl::StatusOr<std::vector<std::unique_ptr<HloModule>>> GetModules(
 absl::StatusOr<std::string> TranslateToStage(int argc, char** argv,
                                              const HloOptConfig& opts) {
   TF_ASSIGN_OR_RETURN(OptProvider * provider,
-                      OptProvider::ProviderForPlatform(opts.platform));
+                      OptProvider::GetProviderForPlatform(opts.platform));
 
   if (opts.list_stages) {
     return absl::StrJoin(provider->SupportedStages(), "\n");
   }
   TF_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<HloModule>> modules,
                       GetModules(opts, argc, argv));
+  // Registration can be done using HloModuleConfig, but some
+  // GPU pipelines APIs expects HloModule.
+  // Assumption: All input modules have same HloModuleConfig.
+  provider->RegisterProviderPasses(*modules[0].get());
 
   std::string out_combined;
 
   for (std::unique_ptr<HloModule>& m : modules) {
-    TF_ASSIGN_OR_RETURN(std::optional<std::string> out,
-                        provider->GenerateStage(std::move(m), opts.stage));
+    std::optional<std::string> out;
+    if (!opts.passes.empty()) {
+      TF_ASSIGN_OR_RETURN(out, provider->BuildAndRunTransformPipeline(
+                                   std::move(m), opts.passes));
+    } else {
+      TF_ASSIGN_OR_RETURN(out,
+                          provider->GenerateStage(std::move(m), opts.stage));
+    }
     if (!out.has_value()) {
       return absl::UnimplementedError("Stage not supported");
     }
@@ -173,7 +177,7 @@ absl::StatusOr<std::string> TranslateToStage(int argc, char** argv,
   return out_combined;
 }
 
-Status RunOpt(int argc, char** argv, const HloOptConfig& opts) {
+absl::Status RunOpt(int argc, char** argv, const HloOptConfig& opts) {
   TF_ASSIGN_OR_RETURN(std::string output, TranslateToStage(argc, argv, opts));
   if (opts.output_file == "-") {
     std::cout << output << std::endl;
@@ -181,7 +185,7 @@ Status RunOpt(int argc, char** argv, const HloOptConfig& opts) {
     TF_RETURN_IF_ERROR(
         tsl::WriteStringToFile(tsl::Env::Default(), opts.output_file, output));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -209,12 +213,15 @@ int main(int argc, char** argv) {
                 "\t\t\t * llvm : LLVM IR\n"
                 "\t\t\t * ptx : PTX dump\n"
                 "\t\t\t * buffer-assignment: Buffer Assignment\n"
-                "\t\t\t * hlo-backend: HLO after backend passes\n"),
+                "\t\t\t * hlo-backend: HLO after backend passes\n"
+                "\t\t\t * html: HTML dump\n"),
       tsl::Flag("list-stages", &opts.list_stages,
                 "Print all supported stages for a given platform and exit"),
       tsl::Flag("split-input-file", &opts.split_input_file,
                 "Splits the input file in pieces based on '// -----' "
-                "substring, and processes each chunk independently")};
+                "substring, and processes each chunk independently"),
+      tsl::Flag("passes", &opts.passes,
+                "Comma-separated list of passes to run.")};
   // Modifies global DebugOptions, populates flags with every flag available
   // from xla.proto.
   xla::AppendDebugOptionsFlags(&flag_list);
@@ -229,7 +236,7 @@ int main(int argc, char** argv) {
     LOG(QFATAL) << kUsageString;
   }
 
-  xla::Status s = xla::RunOpt(argc, argv, opts);
+  absl::Status s = xla::RunOpt(argc, argv, opts);
   if (!s.ok()) {
     std::cerr << s;
     return 1;

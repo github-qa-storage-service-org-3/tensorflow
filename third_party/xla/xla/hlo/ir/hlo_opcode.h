@@ -20,8 +20,8 @@ limitations under the License.
 #include <iosfwd>
 #include <optional>
 
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "xla/statusor.h"
 
 namespace xla {
 
@@ -127,6 +127,8 @@ namespace xla {
   V(kPartitionId, "partition-id", 0)                                           \
   V(kPopulationCount, "popcnt", 1)                                             \
   V(kPower, "power", 2)                                                        \
+  V(kRaggedAllToAll, "ragged-all-to-all", 6)                                   \
+  V(kRaggedDot, "ragged-dot", 3)                                               \
   V(kReal, "real", 1)                                                          \
   V(kRecv, "recv", 1)                                                          \
   V(kRecvDone, "recv-done", 1)                                                 \
@@ -187,7 +189,7 @@ enum {
 absl::string_view HloOpcodeString(HloOpcode opcode);
 
 // Retrieves the opcode enum by name if the opcode exists.
-StatusOr<HloOpcode> StringToHloOpcode(absl::string_view opcode_name);
+absl::StatusOr<HloOpcode> StringToHloOpcode(absl::string_view opcode_name);
 
 inline std::ostream& operator<<(std::ostream& os, HloOpcode opcode) {
   return os << HloOpcodeString(opcode);

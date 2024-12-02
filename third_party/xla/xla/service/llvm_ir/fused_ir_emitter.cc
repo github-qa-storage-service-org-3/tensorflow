@@ -15,29 +15,27 @@ limitations under the License.
 
 #include "xla/service/llvm_ir/fused_ir_emitter.h"
 
-#include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <utility>
+#include <vector>
 
+#include "absl/status/statusor.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/TargetParser/Triple.h"
-#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/elemental_ir_emitter.h"
-#include "xla/service/fusion_node_indexing_evaluation.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_util.h"
-#include "xla/service/llvm_ir/tuple_ops.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
-#include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
 
@@ -70,7 +68,7 @@ absl::StatusOr<FusedIrEmitter::IndexedGenerator> FusedIrEmitter::DefaultAction(
         // LLVM's CSE or GVN should be able to easily merge common
         // subexpressions that would be regenerated without caching. But this
         // might increase the JIT compilation time.
-        llvm::IRBuilder<>* b = elemental_emitter_.b();
+        llvm::IRBuilderBase* b = elemental_emitter_.b();
 
         if (bb == b->GetInsertBlock()) {
           VLOG(3) << "The cached generated value is reused.";
@@ -94,7 +92,7 @@ absl::StatusOr<FusedIrEmitter::IndexedGenerator> FusedIrEmitter::DefaultAction(
 FusedIrEmitter::IndexedGenerator FusedIrEmitter::HandleConstant(
     const HloInstruction& constant) {
   llvm::Module* module = elemental_emitter_.module();
-  llvm::IRBuilder<>* b = elemental_emitter_.b();
+  llvm::IRBuilderBase* b = elemental_emitter_.b();
 
   // Explicitly set global addrspace for SPIR backend.
   int addrspace = llvm::Triple(module->getTargetTriple()).isSPIR() ? 1 : 0;
@@ -128,7 +126,7 @@ absl::StatusOr<FusedIrEmitter::IndexedGenerator> FusedIrEmitter::HandleTuple(
         operand->shape().element_type(), elemental_emitter_.module()));
   }
 
-  llvm::IRBuilder<>* b = elemental_emitter_.b();
+  llvm::IRBuilderBase* b = elemental_emitter_.b();
   llvm::Type* type = llvm::StructType::get(b->getContext(), element_ir_types);
 
   return absl::StatusOr<IndexedGenerator>([&, b,
