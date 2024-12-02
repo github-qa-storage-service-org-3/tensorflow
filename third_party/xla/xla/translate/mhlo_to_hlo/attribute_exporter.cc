@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <utility>
 
+#include "mlir/Support/LLVM.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/service/hlo_parser.h"
 #include "xla/shape_util.h"
@@ -58,10 +59,10 @@ ConvolutionDimensionNumbers ConvertConvDimensionNumbers(
 
 // Convert replica group from MLIR encoding to HLO.
 // See HloFunctionImporter::ConvertReplicaGroups for the MLIR encoding.
-StatusOr<std::vector<ReplicaGroup>> ConvertReplicaGroups(
+absl::StatusOr<std::vector<ReplicaGroup>> ConvertReplicaGroups(
     mlir::DenseIntElementsAttr input) {
   mlir::RankedTensorType type =
-      input.getType().dyn_cast<mlir::RankedTensorType>();
+      mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
   if (!type || type.getRank() != 2 ||
       !type.getElementType().isInteger(/*width=*/64)) {
     return Internal("Execpted replica group to be a rank 2 tensor of i64");
@@ -85,12 +86,12 @@ StatusOr<std::vector<ReplicaGroup>> ConvertReplicaGroups(
 
 // Convert a (N, 2) dense attribute to a list of tuples. This is the way padding
 // and source-target pairs are defined in HLO.
-StatusOr<std::vector<std::pair<int64_t, int64_t>>> ConvertNx2Attribute(
+absl::StatusOr<std::vector<std::pair<int64_t, int64_t>>> ConvertNx2Attribute(
     std::optional<mlir::DenseIntElementsAttr> optional_attr) {
   if (!optional_attr.has_value())
     return std::vector<std::pair<int64_t, int64_t>>{};
   mlir::DenseIntElementsAttr attr = *optional_attr;
-  auto type = attr.getType().dyn_cast<mlir::RankedTensorType>();
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
   if (!type || type.getRank() != 2 || type.getShape()[1] != 2)
     return Internal("expected Nx2 attribute to be a tensor of shape Nx2");
   auto it = attr.getValues<int64_t>().begin();
@@ -105,26 +106,7 @@ StatusOr<std::vector<std::pair<int64_t, int64_t>>> ConvertNx2Attribute(
   return out;
 }
 
-StatusOr<FftType> ConvertFftType(llvm::StringRef type_string) {
-  std::optional<mlir::mhlo::FftType> type =
-      mlir::mhlo::symbolizeEnum<mlir::mhlo::FftType>(type_string);
-  if (!type) return InvalidArgument("Unknown FFT type %s", type_string.str());
-
-  switch (*type) {
-    case mlir::mhlo::FftType::FFT:
-      return xla::FftType::FFT;
-    case mlir::mhlo::FftType::IFFT:
-      return xla::FftType::IFFT;
-    case mlir::mhlo::FftType::RFFT:
-      return xla::FftType::RFFT;
-    case mlir::mhlo::FftType::IRFFT:
-      return xla::FftType::IRFFT;
-    default:
-      return InvalidArgument("Unknown FFT type enum #%d", *type);
-  }
-}
-
-StatusOr<TriangularSolveOptions::Transpose> ConvertTranspose(
+absl::StatusOr<TriangularSolveOptions::Transpose> ConvertTranspose(
     llvm::StringRef transpose_string) {
   std::optional<mlir::mhlo::Transpose> transpose =
       mlir::mhlo::symbolizeTranspose(transpose_string);
@@ -145,7 +127,7 @@ StatusOr<TriangularSolveOptions::Transpose> ConvertTranspose(
   }
 }
 
-StatusOr<xla::CustomCallSchedule> ConvertCustomCallSchedule(
+absl::StatusOr<xla::CustomCallSchedule> ConvertCustomCallSchedule(
     mlir::mhlo::CustomCallSchedule schedule) {
   switch (schedule) {
     case mlir::mhlo::CustomCallSchedule::NONE:
@@ -160,7 +142,7 @@ StatusOr<xla::CustomCallSchedule> ConvertCustomCallSchedule(
   }
 }
 
-StatusOr<xla::CustomCallApiVersion> ConvertCustomCallApiVersion(
+absl::StatusOr<xla::CustomCallApiVersion> ConvertCustomCallApiVersion(
     mlir::mhlo::CustomCallApiVersion api_version) {
   switch (api_version) {
     case mlir::mhlo::CustomCallApiVersion::API_VERSION_UNSPECIFIED:
@@ -179,11 +161,12 @@ StatusOr<xla::CustomCallApiVersion> ConvertCustomCallApiVersion(
   }
 }
 
-StatusOr<std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>>
+absl::StatusOr<
+    std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>>
 ConvertOutputOperandAliasing(mlir::ArrayAttr aliasArrayAttr) {
   std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>> aliasInfo;
   for (auto attr : aliasArrayAttr.getValue()) {
-    auto alias = attr.cast<mlir::mhlo::OutputOperandAliasAttr>();
+    auto alias = mlir::cast<mlir::mhlo::OutputOperandAliasAttr>(attr);
     ShapeIndex outputShapeIndex(alias.getOutputTupleIndices());
     ShapeIndex operandShapeIndex(alias.getOperandTupleIndices());
     aliasInfo.push_back(std::make_pair(
@@ -196,69 +179,10 @@ ConvertOutputOperandAliasing(mlir::ArrayAttr aliasArrayAttr) {
 std::optional<xla::OpSharding> ConvertSharding(llvm::StringRef sharding) {
   xla::OpSharding sharding_proto;
   if (sharding_proto.ParseFromString(sharding.str())) return sharding_proto;
-  StatusOr<xla::HloSharding> sharding_cpp = xla::ParseSharding(sharding.str());
+  absl::StatusOr<xla::HloSharding> sharding_cpp =
+      xla::ParseSharding(sharding.str());
   if (sharding_cpp.ok()) return sharding_cpp->ToProto();
   return std::nullopt;
 }
 
-DotDimensionNumbers ConvertDotDimensionNumbers(
-    mlir::mhlo::DotDimensionNumbersAttr input) {
-  DotDimensionNumbers output;
-
-  for (auto v : input.getLhsBatchingDimensions()) {
-    output.add_lhs_batch_dimensions(v);
-  }
-
-  for (auto v : input.getRhsBatchingDimensions()) {
-    output.add_rhs_batch_dimensions(v);
-  }
-
-  for (auto v : input.getLhsContractingDimensions()) {
-    output.add_lhs_contracting_dimensions(v);
-  }
-
-  for (auto v : input.getRhsContractingDimensions()) {
-    output.add_rhs_contracting_dimensions(v);
-  }
-
-  return output;
-}
-
-DotDimensionNumbers ConvertDotDimensionNumbers(
-    absl::Span<const int64_t> lhs_batch, absl::Span<const int64_t> lhs_contract,
-    absl::Span<const int64_t> rhs_batch,
-    absl::Span<const int64_t> rhs_contract) {
-  DotDimensionNumbers output;
-  for (auto v : lhs_batch) {
-    output.add_lhs_batch_dimensions(v);
-  }
-
-  for (auto v : rhs_batch) {
-    output.add_rhs_batch_dimensions(v);
-  }
-
-  for (auto v : lhs_contract) {
-    output.add_lhs_contracting_dimensions(v);
-  }
-
-  for (auto v : rhs_contract) {
-    output.add_rhs_contracting_dimensions(v);
-  }
-
-  return output;
-}
-
-StatusOr<std::vector<int64_t>> ConvertMlirArrayAttrToInt64Array(
-    const mlir::ArrayAttr& array) {
-  int rank = array.size();
-  std::vector<int64_t> converted_array(rank);
-  for (int i = 0; i < rank; i++) {
-    mlir::IntegerAttr attr = array[i].dyn_cast<mlir::IntegerAttr>();
-    if (!attr) {
-      return Internal("Type Error: Expected layout integer attribute");
-    }
-    converted_array[i] = attr.getInt();
-  }
-  return converted_array;
-}
 }  // namespace xla

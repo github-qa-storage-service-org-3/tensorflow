@@ -13,18 +13,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <array>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/str_replace.h"
 #include "absl/types/span.h"
 #include "xla/literal.h"
+#include "xla/literal_util.h"
 #include "xla/primitive_util.h"
+#include "xla/service/computation_placer.h"
+#include "xla/service/executable.h"
+#include "xla/service/hlo_module_config.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/literal_test_util.h"
 #include "xla/tests/test_macros.h"
 #include "xla/tests/test_utils.h"
+#include "xla/tests/verified_hlo_module.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/blocking_counter.h"
 #include "tsl/platform/env.h"
@@ -151,6 +160,25 @@ class CollectiveOpsTest : public HloTestBase {
         "minimum",
         /*input_value=*/input_value.Clone(),
         /*expected_value=*/to_literal({cast(1), cast(2), cast(3)}));
+    if constexpr (std::numeric_limits<LiteralType>::is_signed) {
+      input_value = to_literal({cast(-1), cast(-2), cast(-3)});
+      TestTwoReplicasOneOperand<LiteralType>(
+          "add",
+          /*input_value=*/input_value.Clone(),
+          /*expected_value=*/to_literal({cast(-2), cast(-4), cast(-6)}));
+      TestTwoReplicasOneOperand<LiteralType>(
+          "multiply",
+          /*input_value=*/input_value.Clone(),
+          /*expected_value=*/to_literal({cast(1), cast(4), cast(9)}));
+      TestTwoReplicasOneOperand<LiteralType>(
+          "maximum",
+          /*input_value=*/input_value.Clone(),
+          /*expected_value=*/to_literal({cast(-1), cast(-2), cast(-3)}));
+      TestTwoReplicasOneOperand<LiteralType>(
+          "minimum",
+          /*input_value=*/input_value.Clone(),
+          /*expected_value=*/to_literal({cast(-1), cast(-2), cast(-3)}));
+    }
   }
 
  protected:
@@ -703,6 +731,77 @@ XLA_TEST_F(CollectiveOpsTest, CollectivePermute_Simple) {
   // Nothing writes to replica 3, so it is memzero'ed.
   EXPECT_TRUE(LiteralTestUtil::Equal(LiteralUtil::CreateR1<uint32_t>({0, 0}),
                                      results[3]));
+}
+
+XLA_TEST_F(CollectiveOpsTest,
+           CollectivePermute_CircularPipelinePreOptimization) {
+  const absl::string_view kModuleStr = R"(
+  HloModule test
+
+  while_cond {
+    param = (u32[], f32[2,2], f32[2,2]) parameter(0)
+    iter = u32[] get-tuple-element(param), index=0
+    max_iter = u32[] constant(3)
+    ROOT cmp = pred[] compare(iter, max_iter), direction=LT
+  }
+
+  while_body {
+    param = (u32[], f32[2,2], f32[2,2]) parameter(0)
+    iter = u32[] get-tuple-element(param), index=0
+    data = f32[2,2] get-tuple-element(param), index=1
+    weights = f32[2,2] get-tuple-element(param), index=2
+    matmul = f32[2,2] dot(weights, data), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+    cp = f32[2,2] collective-permute(matmul), source_target_pairs={{0,1}, {1,2}, {2,3}, {3,0}}
+    iter_increment = u32[] constant(1)
+    next_iter = u32[] add(iter, iter_increment)
+    ROOT result = (u32[], f32[2,2], f32[2,2]) tuple(next_iter, cp, weights)
+  }
+
+  ENTRY test_computation {
+    iter = u32[] constant(0)
+    data = f32[2,2] parameter(0)
+    weights = f32[2,2] parameter(1)
+    input = (u32[], f32[2,2], f32[2,2]) tuple(iter, data, weights)
+    while_res = (u32[], f32[2,2], f32[2,2]) while(input), condition=while_cond, body=while_body
+    ROOT data_out = f32[2,2] get-tuple-element(while_res), index=1
+  }
+  )";
+  const int64_t kNumReplicas = 4;
+  SKIP_TEST_IF_NUM_DEVICES_LESS_THAN(kNumReplicas)
+
+  HloModuleConfig config =
+      GetModuleConfigForTest(/*replica_count=*/kNumReplicas);
+  std::unique_ptr<VerifiedHloModule> module;
+  TF_ASSERT_OK_AND_ASSIGN(module,
+                          ParseAndReturnVerifiedModule(kModuleStr, config));
+
+  // input for replica i is
+  // {{i, i},
+  //  {i, i}}
+  std::vector<Literal> replica_inputs;
+  for (float i = 1; i < kNumReplicas + 1; ++i) {
+    replica_inputs.push_back({LiteralUtil::CreateR2<float>({{i, i}, {i, i}})});
+    replica_inputs.push_back(LiteralUtil::CreateR2<float>({{0, 0}, {0, 1}}));
+  }
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Executable> executable,
+                          test_runner_.CreateExecutable(
+                              std::unique_ptr<HloModule>(std::move(module)),
+                              /*run_hlo_passes=*/true));
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::vector<Literal> results,
+      ExecuteReplicated(
+          /*executable_provider=*/[&](int64_t) { return executable.get(); },
+          /*argument_count_provider=*/[](int64_t) { return 2; },
+          /*argument_provider=*/
+          [&](int64_t replica, int64_t index) -> const Literal* {
+            return &replica_inputs[replica * 2 + index];
+          },
+          kNumReplicas, /*run_hlo_passes=*/true,
+          /*device_assignment=*/nullptr));
+  LiteralTestUtil::ExpectR2Equal<float>({{0, 0}, {2, 2}}, results[0]);
+  LiteralTestUtil::ExpectR2Equal<float>({{0, 0}, {3, 3}}, results[1]);
+  LiteralTestUtil::ExpectR2Equal<float>({{0, 0}, {4, 4}}, results[2]);
+  LiteralTestUtil::ExpectR2Equal<float>({{0, 0}, {1, 1}}, results[3]);
 }
 
 XLA_TEST_F(CollectiveOpsTest, CollectivePermute_Degenerate) {
@@ -1985,18 +2084,30 @@ XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(SendRecv_TwoConcurrentChains)) {
       channel_id=0, frontend_attributes={
         _xla_send_recv_source_target_pairs="{{0,1}}"
       }
-    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0
+
+    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="1"
+      }
     recv-data.0 = u32[2] get-tuple-element(recv-done.0), index=0
-    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0
+    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     recv-data.1 = u32[2] get-tuple-element(recv-done.1), index=0
 
     compare0 = pred[] compare(replica, c0), direction=EQ
     compare = pred[2] broadcast(compare0), dimensions={}
     recv-data = u32[2] select(compare, recv-data.0, recv-data.1)
 
-    send-done.0 = token[] send-done(send.0), channel_id=0
-    send-done.1 = token[] send-done(send.1), channel_id=0
-
+    send-done.0 = token[] send-done(send.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="1"
+      }
+    send-done.1 = token[] send-done(send.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     c1b = u32[2] broadcast(c1), dimensions={}
     ROOT result = u32[2] add(c1b, recv-data)
   })";
@@ -2042,9 +2153,15 @@ XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(SendRecv_ValidationAttr1)) {
         _xla_send_recv_source_target_pairs="{{1,0}}",
         _xla_send_recv_validation="invalid"
       }
-    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0
+    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     recv-data.0 = u32[2] get-tuple-element(recv-done.0), index=0
-    send-done.0 = token[] send-done(send.0), channel_id=0
+    send-done.0 = token[] send-done(send.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
 
     after-all.1 = token[] after-all()
     recv.1 = (u32[2], u32[], token[]) recv(after-all.1), channel_id=0,
@@ -2055,13 +2172,19 @@ XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(SendRecv_ValidationAttr1)) {
       channel_id=0, frontend_attributes={
         _xla_send_recv_source_target_pairs="{{0,1}}"
       }
-    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0
+    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     recv-data.1 = u32[2] get-tuple-element(recv-done.1), index=0
 
     compare0 = pred[] compare(replica, c0), direction=EQ
     compare = pred[2] broadcast(compare0), dimensions={}
     recv-data = u32[2] select(compare, recv-data.0, recv-data.1)
-    send-done.1 = token[] send-done(send.1), channel_id=0
+    send-done.1 = token[] send-done(send.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
 
     c1b = u32[2] broadcast(c1), dimensions={}
     ROOT result = u32[2] add(c1b, recv-data)
@@ -2113,9 +2236,15 @@ body {
         _xla_send_recv_source_target_pairs="{{1,0}}",
         _xla_send_recv_validation="{{0,1}}"
       }
-    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0
+    recv-done.0 = (u32[2], token[]) recv-done(recv.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     recv-data.0 = u32[2] get-tuple-element(recv-done.0), index=0
-    send-done.0 = token[] send-done(send.0), channel_id=0
+    send-done.0 = token[] send-done(send.0), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
 
     after-all.1 = token[] after-all()
     recv.1 = (u32[2], u32[], token[]) recv(after-all.1), channel_id=0,
@@ -2127,7 +2256,10 @@ body {
       frontend_attributes={
         _xla_send_recv_source_target_pairs="{{0,1}}"
       }
-    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0
+    recv-done.1 = (u32[2], token[]) recv-done(recv.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     recv-data.1 = u32[2] get-tuple-element(recv-done.1), index=0
 
     replica = u32[] replica-id()
@@ -2142,7 +2274,10 @@ body {
     r = u32[2] broadcast(c1), dimensions={}
     s = u32[2] add(r, recv-data)
 
-    send-done.1 = token[] send-done(send.1), channel_id=0
+    send-done.1 = token[] send-done(send.1), channel_id=0,
+    frontend_attributes={
+        _xla_send_recv_pipeline="0"
+      }
     ROOT result = (u32[], u32[2]) tuple(new_count, s)
   }
 

@@ -32,6 +32,7 @@ limitations under the License.
 #include "xla/service/buffer_value.h"
 #include "xla/service/heap_simulator/heap_simulator.h"
 #include "xla/service/hlo_value.h"
+#include "xla/service/memory_space_assignment/buffer_interval_comparator.h"
 #include "xla/service/memory_space_assignment/cost_analysis.h"
 #include "xla/service/memory_space_assignment/memory_space_assignment.pb.h"
 #include "xla/service/memory_space_assignment/prefetch_interval_picker.h"
@@ -54,43 +55,8 @@ using ReservedScopedMemoryFunction = std::function<int64_t(
     const absl::flat_hash_set<
         std::pair<int, ShapeIndex>>& /*operands_in_alternate_memory*/,
     const absl::flat_hash_set<ShapeIndex>& /*outputs_in_alternate_memory*/)>;
-using MsaBufferInterval =
-    GlobalDecreasingSizeBestFitHeap<HloValue>::BufferInterval;
-using MsaBufferIntervalCompare =
-    GlobalDecreasingSizeBestFitHeap<HloValue>::BufferIntervalCompare;
 using PositionRequiresContiguousAllocationFunction =
     std::function<bool(const HloPosition&)>;
-
-// The BufferInterval sorting interface that MemorySpaceAssignment expects.
-class BufferIntervalComparator {
- public:
-  virtual ~BufferIntervalComparator() = default;
-
-  // A logging string explaining the sorting criteria. E.g., [ -size, offset ]
-  // indicates we sort (desc) size, then (asc) offset.
-  virtual std::string DescribeComparisonCriteria() const = 0;
-
-  // A logging string containing the values used to sort buffer_interval.
-  // E.g., we might return [ -1024, 100 ], if the criteria is [ -size,
-  // offset ].
-  virtual std::string CriteriaToString(
-      const MsaBufferInterval& buffer_interval) = 0;
-
-  // comparator.LessThan(lhs, rhs) will be used for BufferIntervalCompare.
-  virtual bool LessThan(const MsaBufferInterval& lhs,
-                        const MsaBufferInterval& rhs) = 0;
-
-  // Used to create a functor that can be passed to a method like std::sort.
-  // E.g., absl::c_sort(v, comparator.GetComparisonFunctor());
-  MsaBufferIntervalCompare GetComparisonFunctor() {
-    return [this](const MsaBufferInterval& lhs, const MsaBufferInterval& rhs) {
-      return LessThan(lhs, rhs);
-    };
-  }
-
- protected:
-  BufferIntervalComparator() = default;
-};
 
 // The different options to be passed to the Run() API.
 struct Options {
@@ -181,10 +147,6 @@ struct Options {
   // This is only useful for testing, repack after every allocation.
   bool repack_after_every_allocation = false;
 
-  // If true, tries allocating buffers across (e.g., before and inside a while
-  // loop body) sequential calls (kWhile, kCall, and kConditional).
-  bool allocate_across_sequential_calls = false;
-
   // If true, verifies the memory space assignment against overlapping
   // buffers.
   bool verify = false;
@@ -226,6 +188,10 @@ struct Options {
   // If true, enforces the FIFO order for prefetches.
   bool enforce_prefetch_fifo_order = false;
 
+  // If true, tries to replace synchronous copy instructions with asynchronous
+  // ones. If it fails to replace the copy, it keeps the sync version.
+  bool enable_sync_copy_replacement = false;
+
   // The ratio of use bytes to copy bytes for a given allocation site below
   // which we consider the site to be inefficient. A value of 0 would treat all
   // sites as efficient and a value of 1 would require the amount of bytes used
@@ -239,7 +205,7 @@ struct Options {
   float inefficient_use_to_copy_ratio = 0.0;
 
   // This is mostly used for testing, it allows a test case to inject its own
-  // logic for AlternateMemoryBestFitHeap::GetInefficientAllocationSites.
+  // logic for MsaAlgorithm::GetInefficientAllocationSites.
   std::function<std::vector<std::variant<HloPosition, HloUse>>(
       absl::Span<HloPosition>)>
       get_inefficient_allocation_sites_fn = nullptr;

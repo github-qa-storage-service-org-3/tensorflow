@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "xla/service/hlo_creation_utils.h"
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+#include "xla/service/cpu/onednn_convolution_rewriter.h"
 #include "xla/service/cpu/onednn_matmul_rewriter.h"
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 
@@ -63,8 +64,12 @@ absl::StatusOr<bool> ChangeOpDataType::Run(
         continue;
       }
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
-      if (instr->opcode == HloOpcode::kDot &&
-          OneDnnMatMulRewriter::ShouldRewrite(instr)) {
+      if (instr->opcode() == HloOpcode::kDot &&
+          cpu::OneDnnMatMulRewriter::ShouldRewrite(instr)) {
+        continue;
+      }
+      if (instr->opcode() == HloOpcode::kConvolution &&
+          cpu::OneDnnConvolutionRewriter::ShouldRewrite(instr)) {
         continue;
       }
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3

@@ -1,7 +1,7 @@
 # Description:
 #   Gloo is a collective communications library
 
-load("//third_party/bazel_skylib/rules:expand_template.bzl", "expand_template")
+load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -57,8 +57,8 @@ cc_library(
         "gloo/rendezvous/prefix_store.cc",
         "gloo/rendezvous/store.cc",
     ] + select({
-        "@local_tsl//tsl:macos": [],
-        "@local_tsl//tsl:windows": [],
+        "@local_xla//xla/tsl:macos": [],
+        "@local_xla//xla/tsl:windows": [],
         "//conditions:default": [
             "gloo/common/linux.cc",
         ],

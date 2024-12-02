@@ -22,10 +22,13 @@ limitations under the License.
 #include <cstdio>
 #include <list>
 #include <memory>
+#include <string>
 #include <system_error>  // NOLINT
 #include <utility>
+#include <vector>
 
 #include "absl/functional/any_invocable.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
@@ -39,7 +42,7 @@ limitations under the License.
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Process.h"
 #include "llvm/TargetParser/Host.h"
-#include "mlir/ExecutionEngine/CRunnerUtils.h"  // from @llvm-project
+#include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "xla/service/cpu/cpu_runtime.h"
 #include "xla/service/cpu/orc_jit_memory_mapper.h"
 #include "xla/service/cpu/runtime_conv2d.h"
@@ -50,6 +53,7 @@ limitations under the License.
 #include "xla/service/cpu/runtime_fft.h"
 #include "xla/service/cpu/runtime_fork_join.h"
 #include "xla/service/cpu/runtime_fp16.h"
+#include "xla/service/cpu/runtime_handle_ffi_call.h"  // NOLINT
 #include "xla/service/cpu/runtime_key_value_sort.h"
 #include "xla/service/cpu/runtime_matmul.h"
 #include "xla/service/cpu/runtime_matmul_acl.h"
@@ -66,6 +70,7 @@ limitations under the License.
 #include "tsl/platform/logging.h"
 
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+#include "xla/service/cpu/onednn_convolution.h"
 #include "xla/service/cpu/onednn_layer_norm.h"
 #include "xla/service/cpu/onednn_matmul.h"
 #include "xla/service/cpu/onednn_softmax.h"
@@ -79,19 +84,16 @@ extern "C" uint16_t __truncdfbf2(double);
 
 namespace xla {
 namespace cpu {
-namespace {
 
-llvm::SmallVector<std::string, 0> DetectMachineAttributes() {
-  llvm::SmallVector<std::string, 0> result;
-  llvm::StringMap<bool> host_features;
-  if (llvm::sys::getHostCPUFeatures(host_features)) {
-    for (auto& feature : host_features) {
-      result.push_back((feature.second ? '+' : '-') +
-                       std::string(feature.first()));
-    }
+std::vector<std::string> DetectMachineAttributes() {
+  std::vector<std::string> result;
+  for (const auto& [feature, enabled] : llvm::sys::getHostCPUFeatures()) {
+    result.push_back((enabled ? '+' : '-') + std::string(feature));
   }
   return result;
 }
+
+namespace {
 
 class DefaultMemoryMapper final
     : public llvm::SectionMemoryManager::MemoryMapper {
@@ -293,6 +295,8 @@ bool ContiguousSectionMemoryManager::finalizeMemory(std::string* err_msg) {
 SimpleOrcJIT::InferTargetMachineForJIT(
     const llvm::TargetOptions& target_options,
     llvm::CodeGenOptLevel opt_level) {
+  std::vector<std::string> attrs = DetectMachineAttributes();
+  llvm::SmallVector<std::string, 0> llvm_attrs(attrs.begin(), attrs.end());
   std::unique_ptr<llvm::TargetMachine> target_machine(
       llvm::EngineBuilder()
           .setTargetOptions(target_options)
@@ -300,7 +304,7 @@ SimpleOrcJIT::InferTargetMachineForJIT(
           .selectTarget(
               /*TargetTriple=*/llvm::Triple(), /*MArch=*/"",
               /*MCPU=*/llvm::sys::getHostCPUName(),
-              /*MAttrs=*/DetectMachineAttributes()));
+              /*MAttrs=*/llvm_attrs));
   CHECK(target_machine != nullptr);
   return target_machine;
 }
@@ -526,6 +530,7 @@ bool RegisterKnownJITSymbols() {
   REGISTER_CPU_RUNTIME_SYMBOL(EigenSingleThreadedMatMulC64);
   REGISTER_CPU_RUNTIME_SYMBOL(EigenSingleThreadedMatMulC128);
   REGISTER_CPU_RUNTIME_SYMBOL(EigenSingleThreadedMatMulS32);
+  REGISTER_CPU_RUNTIME_SYMBOL(EigenSingleThreadedMatMulU8);
   REGISTER_CPU_RUNTIME_SYMBOL(ParallelForkJoin);
   REGISTER_CPU_RUNTIME_SYMBOL(PrintfToStderr);
   REGISTER_CPU_RUNTIME_SYMBOL(ReleaseInfeedBufferAfterDequeue);
@@ -535,10 +540,12 @@ bool RegisterKnownJITSymbols() {
   REGISTER_CPU_RUNTIME_SYMBOL(TopKF32);
   REGISTER_CPU_RUNTIME_SYMBOL(TracingStart);
   REGISTER_CPU_RUNTIME_SYMBOL(TracingEnd);
+  REGISTER_CPU_RUNTIME_SYMBOL(HandleFfiCall);
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
   REGISTER_CPU_RUNTIME_SYMBOL(OneDnnMatMul);
   REGISTER_CPU_RUNTIME_SYMBOL(OneDnnSoftmax);
   REGISTER_CPU_RUNTIME_SYMBOL(OneDnnLayerNorm);
+  REGISTER_CPU_RUNTIME_SYMBOL(OneDnnConvolution);
   REGISTER_CPU_RUNTIME_SYMBOL(OneDnnMatMulReorder);
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 

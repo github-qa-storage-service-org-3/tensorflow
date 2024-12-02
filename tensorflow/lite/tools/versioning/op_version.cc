@@ -22,13 +22,13 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_split.h"
+#include "tensorflow/compiler/mlir/lite/schema/mutable/schema_generated.h"
+#include "tensorflow/compiler/mlir/lite/schema/schema_generated.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/builtin_op_data.h"
 #include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
-#include "tensorflow/lite/schema/mutable/schema_generated.h"
-#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/schema/schema_utils.h"
 
 namespace tflite {
@@ -145,6 +145,13 @@ int GetBuiltinOperatorVersion(const OpSignature& op_sig) {
       if (depthwise_conv_params->dilation_width_factor != 1 ||
           depthwise_conv_params->dilation_height_factor != 1) {
         return 2;
+      }
+      return 1;
+    }
+
+    case BuiltinOperator_EMBEDDING_LOOKUP: {
+      if (op_sig.inputs.at(1).type == kTfLiteInt4) {
+        return 4;
       }
       return 1;
     }
@@ -1032,6 +1039,9 @@ int GetBuiltinOperatorVersion(const OpSignature& op_sig) {
           op_sig.inputs.at(0).type == kTfLiteInt16) {
         return 2;
       }
+      return 1;
+    case BuiltinOperator_DYNAMIC_UPDATE_SLICE:
+      if (op_sig.inputs.at(2).type == kTfLiteInt64) return 2;
       return 1;
 
     // The version one of broadcast to op won't be not supported since the
