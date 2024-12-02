@@ -16,18 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_FRAMEWORK_RESOURCE_HANDLE_H_
 #define TENSORFLOW_CORE_FRAMEWORK_RESOURCE_HANDLE_H_
 
+#include <optional>
 #include <string>
 
 #include "tensorflow/core/framework/resource_base.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/type_index.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/platform/casts.h"
 #include "tensorflow/core/platform/intrusive_ptr.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/tensor_coding.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/managed_stack_trace.h"
+#include "tsl/platform/casts.h"
 
 namespace tensorflow {
 
@@ -48,8 +49,8 @@ class ResourceHandle {
 
   // Use this factory method if the `proto` comes from user controlled input, to
   // prevent a denial of service.
-  static Status BuildResourceHandle(const ResourceHandleProto& proto,
-                                    ResourceHandle* out);
+  static absl::Status BuildResourceHandle(const ResourceHandleProto& proto,
+                                          ResourceHandle* out);
 
   // Unique name for the device containing the resource.
   const std::string& device() const { return device_; }
@@ -96,7 +97,7 @@ class ResourceHandle {
 
   // Conversion to and from ResourceHandleProto
   void AsProto(ResourceHandleProto* proto) const;
-  Status FromProto(const ResourceHandleProto& proto);
+  absl::Status FromProto(const ResourceHandleProto& proto);
 
   // Serialization via ResourceHandleProto
   std::string SerializeAsString() const;
@@ -155,7 +156,7 @@ class ResourceHandle {
   template <typename T>
   StatusOr<T*> GetResource() const {
     TF_RETURN_IF_ERROR(ValidateType<T>());
-    return down_cast<T*>(resource_.get());
+    return tsl::down_cast<T*>(resource_.get());
   }
 
   // Returns True if the resource handle is ref-counting.
@@ -164,11 +165,11 @@ class ResourceHandle {
 
   // Validates that the resource type in `handle` is `T`.
   template <typename T>
-  Status ValidateType() const {
+  absl::Status ValidateType() const {
     return ValidateType(TypeIndex::Make<T>());
   }
 
-  Status ValidateType(const TypeIndex& type_index) const;
+  absl::Status ValidateType(const TypeIndex& type_index) const;
 
   // Generates unique IDs (e.g. for names of anonymous variables)
   static int64_t GenerateUniqueId();
@@ -180,7 +181,7 @@ class ResourceHandle {
   uint64 hash_code_ = 0;
   std::string maybe_type_name_;
   std::vector<DtypeAndPartialTensorShape> dtypes_and_shapes_;
-  absl::optional<ManagedStackTrace> definition_stack_trace_;
+  std::optional<ManagedStackTrace> definition_stack_trace_;
   // A smart pointer to the actual resource. When this field is not empty, the
   // handle is in a "ref-counting" mode, owning the resource; otherwise it's in
   // a "weak-ref" mode, only containing the name of the resource (conceptually a

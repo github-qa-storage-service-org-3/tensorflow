@@ -16,8 +16,8 @@ limitations under the License.
 #include "tensorflow/compiler/jit/xla_compiler_options_util.h"
 
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/tsl/framework/device_id_utils.h"
 #include "tensorflow/core/framework/function.h"
-#include "tsl/framework/device_id_utils.h"
 
 namespace tensorflow {
 namespace {
@@ -105,8 +105,8 @@ XlaCompiler::Options GenerateCompilerOptionsForPjRt(
   absl::StatusOr<int> platform_device_id =
       tsl::GetPlatformDeviceIdFromDeviceParsedName(
           device_base->parsed_name(),
-          DeviceType(tensorflow::down_cast<const Device*>(device_base)
-                         ->device_type()));
+          DeviceType(
+              tsl::down_cast<const Device*>(device_base)->device_type()));
   if (platform_device_id.ok()) {
     options.device_ordinal = *platform_device_id;
   } else {

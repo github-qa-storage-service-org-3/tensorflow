@@ -41,8 +41,8 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tsl/platform/casts.h"
 
 namespace tensorflow {
 namespace data {
@@ -97,7 +97,7 @@ class ExecutorTest : public ::testing::Test {
           TF_RETURN_IF_ERROR(CreateNonCachedKernel(device_.get(), nullptr,
                                                    props, version, kernel));
           if ((*kernel)->type_string_view() == "Mock") {
-            down_cast<MockOp*>(*kernel)->SetCompute(mock_fn);
+            tsl::down_cast<MockOp*>(*kernel)->SetCompute(mock_fn);
           }
           return absl::OkStatus();
         };
@@ -110,14 +110,14 @@ class ExecutorTest : public ::testing::Test {
     rendez_ = NewLocalRendezvous();
   }
 
-  Status Run(Rendezvous* rendez) {
+  absl::Status Run(Rendezvous* rendez) {
     Executor::Args args;
     args.rendezvous = rendez;
     args.runner = runner_;
     return exec_->Run(args);
   }
 
-  Status Run(CallFrameInterface* call_frame) {
+  absl::Status Run(CallFrameInterface* call_frame) {
     Executor::Args args;
     args.call_frame = call_frame;
     args.runner = runner_;

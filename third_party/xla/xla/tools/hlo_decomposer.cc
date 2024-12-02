@@ -31,7 +31,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/call_graph.h"
 #include "xla/service/compilation_environments.h"
-#include "xla/status.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {

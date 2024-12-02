@@ -17,7 +17,7 @@ limitations under the License.
 // Must be included first.
 #include "tensorflow/python/lib/core/py_func.h"
 
-#include "tsl/python/lib/core/numpy.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 // clang-format: on
 
 #include <Python.h>
@@ -155,7 +155,7 @@ tensorflow::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
                                                 TFE_Context* ctx,
                                                 const Device* expected_device,
                                                 const Tensor** output_tensor) {
-  tensorflow::TensorHandle* handle = down_cast<tensorflow::TensorHandle*>(
+  tensorflow::TensorHandle* handle = tsl::down_cast<tensorflow::TensorHandle*>(
       tensorflow::unwrap(ctx)->TFTensorHandleFromInterface(
           tensorflow::unwrap(EagerTensor_Handle(eager_tensor))));
 
@@ -214,7 +214,7 @@ Status DoCallPyFunc(PyCall* call, bool* out_log_on_error) {
   CHECK(args);
 
   // Invokes the trampoline.
-  PyObject* result = PyEval_CallObject(trampoline, args);
+  PyObject* result = PyObject_Call(trampoline, args, nullptr);
   Py_DECREF(args);
   Status s = OkStatus();
   if (result == nullptr) {

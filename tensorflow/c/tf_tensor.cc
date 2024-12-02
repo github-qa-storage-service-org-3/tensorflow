@@ -29,7 +29,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/coding.h"
-#include "tensorflow/core/platform/casts.h"
+#include "tsl/platform/casts.h"
 
 using tensorflow::Status;
 using tensorflow::Tensor;
@@ -153,8 +153,8 @@ TF_DataType TF_TensorType(const TF_Tensor* t) {
 }
 
 void TF_SetShape(TF_Tensor* t, const int64_t* dims, int num_dims) {
-  tensorflow::down_cast<tensorflow::TensorInterface*>(t->tensor)->SetShape(
-      dims, num_dims);
+  tsl::down_cast<tensorflow::TensorInterface*>(t->tensor)->SetShape(dims,
+                                                                    num_dims);
 }
 
 int TF_NumDims(const TF_Tensor* t) { return t->tensor->NumDims(); }
@@ -181,10 +181,9 @@ void TF_TensorBitcastFrom(const TF_Tensor* from, TF_DataType type,
                           int num_new_dims, TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   Status cc_status(
-      tensorflow::down_cast<tensorflow::TensorInterface*>(to->tensor)
+      tsl::down_cast<tensorflow::TensorInterface*>(to->tensor)
           ->BitcastFrom(
-              *tensorflow::down_cast<const tensorflow::TensorInterface*>(
-                  from->tensor),
+              *tsl::down_cast<const tensorflow::TensorInterface*>(from->tensor),
               static_cast<tensorflow::DataType>(type), new_dims, num_new_dims));
   tsl::Set_TF_Status_from_Status(status, cc_status);
 }
@@ -249,8 +248,10 @@ void TensorInterface::SetShape(const int64_t* dims, int num_dims) {
   tensor_.set_shape(s);
 }
 
-Status TensorInterface::BitcastFrom(const TensorInterface& from, DataType type,
-                                    const int64_t* new_dims, int num_new_dims) {
+absl::Status TensorInterface::BitcastFrom(const TensorInterface& from,
+                                          DataType type,
+                                          const int64_t* new_dims,
+                                          int num_new_dims) {
   tensorflow::TensorShape s;
   for (int i = 0; i < num_new_dims; ++i) {
     TF_RETURN_IF_ERROR(s.AddDimWithStatus(new_dims[i]));
@@ -258,9 +259,9 @@ Status TensorInterface::BitcastFrom(const TensorInterface& from, DataType type,
   return tensor_.BitcastFrom(from.tensor_, type, s);
 }
 
-Status TensorInterface::FromProto(const tensorflow::TensorProto& from) {
+absl::Status TensorInterface::FromProto(const tensorflow::TensorProto& from) {
   bool success = tensor_.FromProto(from);
-  if (success) return OkStatus();
+  if (success) return absl::OkStatus();
   return errors::InvalidArgument("Unparseable tensor proto");
 }
 
@@ -295,8 +296,8 @@ static TF_Tensor* EmptyTensor(TF_DataType dtype,
 namespace tensorflow {
 
 AbstractTensorInterface* TensorInterfaceFromTensor(const Tensor& src,
-                                                   Status* status) {
-  *status = OkStatus();
+                                                   absl::Status* status) {
+  *status = absl::OkStatus();
   if (!src.IsInitialized()) {
     *status = FailedPrecondition(
         "attempt to use a tensor with an uninitialized value");
@@ -318,13 +319,14 @@ AbstractTensorInterface* TensorInterfaceFromTensor(const Tensor& src,
 }
 
 // Non-static for testing.
-TF_Tensor* TF_TensorFromTensor(const tensorflow::Tensor& src, Status* status) {
+TF_Tensor* TF_TensorFromTensor(const tensorflow::Tensor& src,
+                               absl::Status* status) {
   return new TF_Tensor{TensorInterfaceFromTensor(src, status)};
 }
 
 TF_Tensor* TF_TensorFromTensorShallow(const tensorflow::Tensor& src,
-                                      Status* status) {
-  *status = OkStatus();
+                                      absl::Status* status) {
+  *status = absl::OkStatus();
   if (!src.IsInitialized()) {
     *status = FailedPrecondition(
         "attempt to use a tensor with an uninitialized value");
@@ -336,14 +338,14 @@ TF_Tensor* TF_TensorFromTensorShallow(const tensorflow::Tensor& src,
   return new TF_Tensor{new tensorflow::TensorInterface(src)};
 }
 
-Status TF_TensorToTensor(const TF_Tensor* src, Tensor* dst) {
-  return tensorflow::down_cast<const tensorflow::TensorInterface*>(src->tensor)
+absl::Status TF_TensorToTensor(const TF_Tensor* src, Tensor* dst) {
+  return tsl::down_cast<const tensorflow::TensorInterface*>(src->tensor)
       ->ToTensor(dst);
 }
 
-Status TensorInterface::ToTensor(tensorflow::Tensor* dst) const {
+absl::Status TensorInterface::ToTensor(tensorflow::Tensor* dst) const {
   *dst = tensor_;
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 bool TensorInterface::IsAligned() const { return tensor_.IsAligned(); }

@@ -503,15 +503,14 @@ TEST_P(CSavedModelAPITest, LoadSavedModelWithUninitializedVariable) {
   EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
 
   tensorflow::TFSavedModelAPI* model_api =
-      tensorflow::down_cast<tensorflow::TFSavedModelAPI*>(
+      tsl::down_cast<tensorflow::TFSavedModelAPI*>(
           tensorflow::unwrap(saved_model));
   tensorflow::Variable* uninitialized_variable;
-  ASSERT_EQ(::tensorflow::OkStatus(),
-            model_api->GetVariable("uninitialized_variable",
-                                   &uninitialized_variable));
+  ASSERT_EQ(absl::OkStatus(), model_api->GetVariable("uninitialized_variable",
+                                                     &uninitialized_variable));
   ASSERT_EQ(tensorflow::DT_FLOAT, uninitialized_variable->dtype());
 
-  ASSERT_EQ(::tensorflow::OkStatus(),
+  ASSERT_EQ(absl::OkStatus(),
             model_api->GetVariable("sub_module.uninitialized_variable",
                                    &uninitialized_variable));
   ASSERT_EQ(tensorflow::DT_INT64, uninitialized_variable->dtype());

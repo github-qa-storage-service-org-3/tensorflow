@@ -56,7 +56,7 @@ void DeepCopy(const Tensor& input, Tensor* output) {
   }
 }
 
-Status Concat(const gtl::ArraySlice<Tensor>& tensors, Tensor* result) {
+absl::Status Concat(const absl::Span<const Tensor> tensors, Tensor* result) {
   if (tensors.empty()) {
     return errors::InvalidArgument("Cannot concatenate zero tensors");
   }
@@ -116,11 +116,11 @@ Status Concat(const gtl::ArraySlice<Tensor>& tensors, Tensor* result) {
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
-Status Split(const Tensor& tensor, const gtl::ArraySlice<int64_t>& sizes,
-             std::vector<Tensor>* result) {
+absl::Status Split(const Tensor& tensor, const absl::Span<const int64_t> sizes,
+                   std::vector<Tensor>* result) {
   if (tensor.dims() == 0) {
     return errors::InvalidArgument("Cannot split a zero-dimensional tensor");
   }
@@ -178,7 +178,7 @@ Status Split(const Tensor& tensor, const gtl::ArraySlice<int64_t>& sizes,
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 namespace internal {
@@ -425,7 +425,7 @@ bool CompressTensorProtoInPlace(int64_t min_num_elements,
 
 #undef HANDLE_COMPRESS_CASE
 
-Status MakeShape(const Tensor& shape, TensorShape* out) {
+absl::Status MakeShape(const Tensor& shape, TensorShape* out) {
   if (!TensorShapeUtils::IsVector(shape.shape())) {
     return errors::InvalidArgument(
         "shape must be a vector of {int32,int64}, got shape ",

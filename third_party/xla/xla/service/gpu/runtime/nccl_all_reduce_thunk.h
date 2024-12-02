@@ -23,8 +23,8 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/collective_ops_utils.h"
-#include "xla/service/gpu/nccl_api.h"
-#include "xla/service/gpu/nccl_collective_thunk.h"
+#include "xla/service/gpu/runtime/nccl_api.h"
+#include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/stream_executor/stream.h"
 
 namespace xla {
@@ -63,7 +63,8 @@ class NcclAllReduceStartThunk : public NcclAllReduceReduceScatterThunkBase {
  public:
   NcclAllReduceStartThunk(ThunkInfo thunk_info, NcclApi* nccl_api,
                           const HloAllReduceInstruction* inst,
-                          std::vector<Buffer> buffers);
+                          std::vector<Buffer> buffers,
+                          bool p2p_memcpy_enabled = false);
 
   static const char* GetHloOpName() { return "all-reduce-start"; }
 
@@ -77,7 +78,7 @@ class NcclAllReduceStartThunk : public NcclAllReduceReduceScatterThunkBase {
  protected:
   absl::Status RunNcclCollective(const ExecuteParams& params,
                                  se::Stream& stream,
-                                 NcclApi::NcclCommHandle comm) override;
+                                 NcclCommHandleWrapper comm_wrapper) override;
 };
 
 // -----------------------------------------------------------------------------
@@ -87,7 +88,8 @@ class NcclReduceScatterStartThunk : public NcclAllReduceReduceScatterThunkBase {
  public:
   NcclReduceScatterStartThunk(ThunkInfo thunk_info, NcclApi* nccl_api,
                               const HloReduceScatterInstruction* inst,
-                              std::vector<Buffer> buffers);
+                              std::vector<Buffer> buffers,
+                              bool p2p_memcpy_enabled = false);
 
   static const char* GetHloOpName() { return "reduce-scatter-start"; }
 
@@ -101,7 +103,7 @@ class NcclReduceScatterStartThunk : public NcclAllReduceReduceScatterThunkBase {
  protected:
   absl::Status RunNcclCollective(const ExecuteParams& params,
                                  se::Stream& stream,
-                                 NcclApi::NcclCommHandle comm) override;
+                                 NcclCommHandleWrapper comm_wrapper) override;
 };
 
 // -----------------------------------------------------------------------------

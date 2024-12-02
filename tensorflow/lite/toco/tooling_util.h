@@ -327,7 +327,7 @@ void UseArraysExtraInfo(Model* model, bool quantize_output);
 // doesn't have enough range to represent the sum of elements, an error is
 // returned.
 template <typename T, typename U>
-tensorflow::Status NumElements(const std::vector<T>& shape, U* num_elements) {
+absl::Status NumElements(const std::vector<T>& shape, U* num_elements) {
   static_assert(
       std::numeric_limits<T>::max() <= std::numeric_limits<uint64_t>::max(),
       "vector type exceed capabilities of NumElements");
@@ -349,7 +349,7 @@ tensorflow::Status NumElements(const std::vector<T>& shape, U* num_elements) {
     }
     *num_elements *= dim;
   }
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 // A model file may have shuffled FC weights.

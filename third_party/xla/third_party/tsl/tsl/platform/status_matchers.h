@@ -19,10 +19,10 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 // Defines the following utilities:
 //
@@ -115,10 +115,12 @@ void PrintTo(const StatusOr<T>& status_or, std::ostream* os) {
 namespace testing {
 namespace internal_status {
 
-inline const Status& GetStatus(const Status& status) { return status; }
+inline const absl::Status& GetStatus(const absl::Status& status) {
+  return status;
+}
 
 template <typename T>
-inline const Status& GetStatus(const StatusOr<T>& status) {
+inline const absl::Status& GetStatus(const StatusOr<T>& status) {
   return status.status();
 }
 
@@ -211,7 +213,7 @@ class StatusIsMatcherCommonImpl {
 
   void DescribeNegationTo(std::ostream* os) const;
 
-  bool MatchAndExplain(const Status& status,
+  bool MatchAndExplain(const absl::Status& status,
                        ::testing::MatchResultListener* result_listener) const;
 
  private:

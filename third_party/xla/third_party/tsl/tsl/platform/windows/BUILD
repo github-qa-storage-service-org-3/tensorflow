@@ -1,14 +1,15 @@
-# Tensorflow windows-specific implementations of tensorflow/core/platform libraries.
-load(
-    "//tsl:tsl.bzl",
-    "internal_visibility",
-    "tsl_copts",
-)
-load("//tsl:tsl.default.bzl", "filegroup")
 load(
     "@local_tsl//tsl/platform:rules_cc.bzl",
     "cc_library",
 )
+
+# Tensorflow windows-specific implementations of tensorflow/core/platform libraries.
+load(
+    "@local_xla//xla/tsl:tsl.bzl",
+    "internal_visibility",
+    "tsl_copts",
+)
+load("@local_xla//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -70,11 +71,11 @@ cc_library(
         "//tsl/platform:threadpool_interface",
         "//tsl/platform:tracing",
         "//tsl/platform:types",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:optional",
         "@eigen_archive//:eigen3",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 

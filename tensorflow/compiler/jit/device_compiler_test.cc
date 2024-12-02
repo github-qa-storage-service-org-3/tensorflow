@@ -110,7 +110,7 @@ class MockXlaDeviceExecutablePersistor
       : DeviceExecutablePersistor<xla::LocalExecutable, xla::LocalClient>(
             Config{testing::TmpDir(), false, "xla"},
             DeviceType(DEVICE_CPU_XLA_JIT)) {}
-  MOCK_METHOD(Status, TryToPersistExecutable,
+  MOCK_METHOD(absl::Status, TryToPersistExecutable,
               (uint64, const std::string&, const XlaCompiler::Options&,
                const XlaCompiler::CompilationResult&,
                const xla::LocalExecutable&,
@@ -124,7 +124,7 @@ class MockDeviceCompilationProfiler : public DeviceCompilationProfiler {
               (const NameAttrList& function, DeviceCompileMode compile_mode,
                int64_t current_request_count),
               (override));
-  MOCK_METHOD(Status, RegisterCompilation,
+  MOCK_METHOD(absl::Status, RegisterCompilation,
               (const NameAttrList& function, int64_t compile_time_us,
                bool used_persistent_cache),
               (override));
@@ -452,7 +452,7 @@ TEST_F(DeviceCompilerTest, CompileStrictPersistentCacheFailedToPersist) {
   const XlaCompiler::CompilationResult* compilation_result = nullptr;
   xla::LocalExecutable* xla_executable = nullptr;
 
-  auto persistor = down_cast<MockXlaDeviceExecutablePersistor*>(
+  auto persistor = tsl::down_cast<MockXlaDeviceExecutablePersistor*>(
       xla_device_compiler->persistor());
   TF_ASSERT_OK_AND_ASSIGN(auto signature, Signature::Build(fn, args));
   EXPECT_CALL(*persistor,

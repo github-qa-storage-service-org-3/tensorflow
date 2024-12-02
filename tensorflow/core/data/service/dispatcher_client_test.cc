@@ -22,6 +22,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/data_transfer.h"
 #include "tensorflow/core/data/service/dataset_store.h"
@@ -41,7 +42,6 @@ limitations under the License.
 #include "tsl/platform/env.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/test.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -55,6 +55,7 @@ using ::tensorflow::data::testing::LocalTempFilename;
 using ::tensorflow::data::testing::RangeDataset;
 using ::tensorflow::testing::StatusIs;
 using ::testing::AllOf;
+using ::testing::ContainsRegex;
 using ::testing::HasSubstr;
 
 constexpr const char kProtocol[] = "grpc";
@@ -383,7 +384,7 @@ TEST_F(DispatcherClientTest, NamedJobsDoNotMatch) {
       StatusIs(error::INVALID_ARGUMENT,
                AllOf(HasSubstr("but found an existing job with different "
                                "parameters: "),
-                     HasSubstr("Existing processing mode: <>"),
+                     ContainsRegex("Existing processing mode: <\\w*/*\\w* *>"),
                      HasSubstr("Existing cross-trainer cache: <disabled>"))));
 }
 

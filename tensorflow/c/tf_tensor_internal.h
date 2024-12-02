@@ -28,8 +28,8 @@ limitations under the License.
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/platform/casts.h"
 #include "tensorflow/core/platform/status.h"
+#include "tsl/platform/casts.h"
 
 // Internal structures used by the C API. These are likely to change and should
 // not be depended on.
@@ -113,10 +113,10 @@ class TensorInterface : public AbstractTensorInterface {
   std::string SummarizeValue() const override;
 
   void SetShape(const int64_t* dims, int num_dims);
-  Status ToTensor(tensorflow::Tensor* dst) const;
-  Status BitcastFrom(const TensorInterface& from, DataType type,
-                     const int64_t* new_dims, int num_new_dims);
-  Status FromProto(const tensorflow::TensorProto& from);
+  absl::Status ToTensor(tensorflow::Tensor* dst) const;
+  absl::Status BitcastFrom(const TensorInterface& from, DataType type,
+                           const int64_t* new_dims, int num_new_dims);
+  absl::Status FromProto(const tensorflow::TensorProto& from);
 
   tensorflow::Tensor& Tensor() { return tensor_; }
 
@@ -125,11 +125,11 @@ class TensorInterface : public AbstractTensorInterface {
 };
 
 inline Tensor& TensorFromInterface(AbstractTensorInterface* tensor) {
-  return down_cast<TensorInterface*>(tensor)->Tensor();
+  return tsl::down_cast<TensorInterface*>(tensor)->Tensor();
 }
 
 AbstractTensorInterface* TensorInterfaceFromTensor(const Tensor& src,
-                                                   Status* status);
+                                                   absl::Status* status);
 
 }  // namespace tensorflow
 

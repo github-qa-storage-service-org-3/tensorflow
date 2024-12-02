@@ -20,9 +20,10 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/literal_util.h"
 #include "xla/pjrt/cpu/cpu_client.h"
-#include "xla/service/hlo_parser.h"
+#include "tsl/platform/casts.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/file_system.h"
 #include "tsl/platform/test.h"
@@ -96,8 +97,7 @@ TEST(TfClientTest, ExecuteAndHloSnapshot) {
       *Literal::CreateFromProto(snapshot.result()),
       LiteralUtil::CreateR2<float>({{11.0, 22.0}, {33.0, 44.0}, {55.0, 66.0}}));
 
-  auto* tf_pjrt_client =
-      tensorflow::down_cast<xla::TfPjRtClient*>(client.get());
+  auto* tf_pjrt_client = tsl::down_cast<xla::TfPjRtClient*>(client.get());
   tf_pjrt_client->DestroyWrappedBuffersAndClient();
 }
 

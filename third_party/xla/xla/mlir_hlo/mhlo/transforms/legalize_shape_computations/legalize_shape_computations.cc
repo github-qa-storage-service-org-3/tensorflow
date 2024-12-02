@@ -16,10 +16,8 @@ limitations under the License.
 // This file implements logic for lowering HLO/LHLO dialect to scalar shape
 // operations.
 
-#include <algorithm>
 #include <memory>
-#include <numeric>
-#include <string>
+#include <optional>
 #include <utility>
 
 #include "llvm/ADT/STLExtras.h"
@@ -46,6 +44,7 @@ limitations under the License.
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -62,7 +61,7 @@ namespace {
 bool opIsShapeComputation(Operation *op) {
   bool foundFromElements = false;
   for (auto operand : op->getOperands()) {
-    auto shapedTy = operand.getType().template cast<ShapedType>();
+    auto shapedTy = mlir::cast<ShapedType>(operand.getType());
     if (!shapedTy.hasRank() || shapedTy.getRank() > 1) return false;
     if (auto fromElements =
             operand.template getDefiningOp<tensor::FromElementsOp>()) {
@@ -82,14 +81,14 @@ class MhloElementwiseConverter : public OpRewritePattern<OpTy> {
                                 PatternRewriter &rewriter) const final {
     if (!opIsShapeComputation(op)) return failure();
 
-    auto resultTy = op.getType().template cast<ShapedType>();
+    auto resultTy = mlir::cast<ShapedType>(op.getType());
 
     Location loc = op.getLoc();
     SmallVector<Value> operands;
     for (int i = 0, s = resultTy.getNumElements(); i < s; i++) {
       SmallVector<Value> extracts;
       for (auto operand : op->getOperands()) {
-        ShapedType operandTy = operand.getType().template cast<ShapedType>();
+        ShapedType operandTy = mlir::cast<ShapedType>(operand.getType());
         if (operandTy.getRank() == 0) {
           Value extract =
               rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange({}));
@@ -102,7 +101,8 @@ class MhloElementwiseConverter : public OpRewritePattern<OpTy> {
       }
 
       Value scalarOp = mhlo::MhloOpToStdScalarOp::mapOp(
-          op, resultTy.getElementType(), extracts, &rewriter);
+          op, resultTy.getElementType(), extracts, /*attributes=*/std::nullopt,
+          &rewriter);
       operands.push_back(scalarOp);
     }
 
@@ -121,12 +121,12 @@ class ConcatenateConverter : public OpRewritePattern<mhlo::ConcatenateOp> {
     if (!opIsShapeComputation(op)) return failure();
 
     Location loc = op.getLoc();
-    auto resultTy = op.getType().cast<ShapedType>();
+    auto resultTy = mlir::cast<ShapedType>(op.getType());
     llvm::SmallVector<Value> elements;
     elements.reserve(resultTy.getNumElements());
 
     for (auto operand : op->getOperands()) {
-      ShapedType operandTy = operand.getType().template cast<ShapedType>();
+      ShapedType operandTy = mlir::cast<ShapedType>(operand.getType());
       if (operandTy.getRank() == 0) {
         Value extract =
             rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange({}));
@@ -174,10 +174,10 @@ class ReshapeConverter : public OpRewritePattern<mhlo::ReshapeOp> {
   LogicalResult matchAndRewrite(mhlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const final {
     auto operand = op.getOperand();
-    auto shapedTy = operand.getType().template cast<ShapedType>();
+    auto shapedTy = mlir::cast<ShapedType>(operand.getType());
     if (!shapedTy.hasRank() || shapedTy.getRank() > 1) return failure();
 
-    auto resultTy = op.getType().cast<ShapedType>();
+    auto resultTy = mlir::cast<ShapedType>(op.getType());
 
     auto fromElements = op.getOperand().getDefiningOp<tensor::FromElementsOp>();
     if (!fromElements) return failure();

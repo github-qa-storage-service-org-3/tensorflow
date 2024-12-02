@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/eager/placement_utils.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
 #include "tensorflow/core/platform/errors.h"
+#include "tsl/platform/casts.h"
 
 namespace {
 
@@ -37,7 +38,7 @@ namespace tensorflow {
 
 // TODO(b/152902651): This should not depend on EagerContext. This can be
 // resolved by storing ctx->HostCPU() in the TensorHandle class.
-AbstractTensorInterface* TensorHandle::Resolve(Status* status) {
+AbstractTensorInterface* TensorHandle::Resolve(absl::Status* status) {
   *status = WaitUnknownDevice();
   if (!status->ok()) {
     return nullptr;
@@ -102,7 +103,7 @@ AbstractTensorInterface* TensorHandle::Resolve(Status* status) {
 
 ImmediateExecutionTensorHandle* EagerContext::CopyTensorHandleToDevice(
     ImmediateExecutionTensorHandle* handle, const char* device_name,
-    Status* status) {
+    absl::Status* status) {
   ImmediateExecutionTensorHandle* result = nullptr;
   Device* device;
   *status = this->FindDeviceFromName(device_name, &device);
@@ -155,11 +156,12 @@ ImmediateExecutionOperation* EagerContext::CreateOperation() {
 
 // TODO(b/152902651): Once we move many execute.cc functions into
 // eager_operation.cc we can avoid a circular dependency between them.
-Status EagerOperation::Execute(absl::Span<AbstractTensorHandle*> retvals,
-                               int* num_retvals) {
+absl::Status EagerOperation::Execute(absl::Span<AbstractTensorHandle*> retvals,
+                                     int* num_retvals) {
   for (ImmediateExecutionTensorHandle* handle : inputs_) {
     if (TensorHandle::classof(handle)) {
-      TF_RETURN_IF_ERROR(down_cast<TensorHandle*>(handle)->WaitUnknownDevice());
+      TF_RETURN_IF_ERROR(
+          tsl::down_cast<TensorHandle*>(handle)->WaitUnknownDevice());
     }
   }
 

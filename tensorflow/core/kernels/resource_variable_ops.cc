@@ -49,6 +49,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tsl/platform/casts.h"
 #define EIGEN_USE_THREADS
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -99,10 +100,11 @@ ReadVariableOp::ReadVariableOp(OpKernelConstruction* c) : OpKernel(c) {
 
 namespace {
 
-Status CopyVariable(int output_idx, OpKernelContext* ctx, const Tensor* t) {
+absl::Status CopyVariable(int output_idx, OpKernelContext* ctx,
+                          const Tensor* t) {
   Tensor* output;
   Notification n;
-  Status status;
+  absl::Status status;
   AllocatorAttributes attr;
   if (t->dtype() == DT_VARIANT) {
     attr.set_on_host(true);
@@ -112,11 +114,11 @@ Status CopyVariable(int output_idx, OpKernelContext* ctx, const Tensor* t) {
   if (t->dtype() == DT_VARIANT) {
     output->flat<Variant>() = t->flat<Variant>();
   } else if (ctx->op_device_context() != nullptr) {
-    // TODO(apassos): remove the down_cast by just returning Device* from
+    // TODO(apassos): remove the tsl::down_cast by just returning Device* from
     // OpKernelContext
-    Device* device = down_cast<Device*>(ctx->device());
+    Device* device = tsl::down_cast<Device*>(ctx->device());
     ctx->op_device_context()->CopyTensorInSameDevice(
-        t, device, output, [&n, &status](const Status& s) {
+        t, device, output, [&n, &status](const absl::Status& s) {
           status = s;
           n.Notify();
         });
@@ -325,7 +327,7 @@ REGISTER_KERNEL_BUILDER(
         .HostMemory("resources")
         .TypeConstraint("dtypes", {DT_INT64, DT_COMPLEX64, DT_COMPLEX128,
                                    DT_HALF, DT_FLOAT, DT_DOUBLE, DT_BOOL,
-                                   DT_VARIANT, DT_BFLOAT16}),
+                                   DT_VARIANT, DT_BFLOAT16, DT_INT8}),
     ResourceHandlesOp<Var>);
 
 REGISTER_KERNEL_BUILDER(
@@ -357,7 +359,7 @@ DestroyResourceOp::DestroyResourceOp(OpKernelConstruction* ctx)
 
 void DestroyResourceOp::Compute(OpKernelContext* ctx) {
   const ResourceHandle& p = HandleFromInput(ctx, 0);
-  Status status = DeleteResource(ctx, p);
+  absl::Status status = DeleteResource(ctx, p);
   if (ignore_lookup_error_ && errors::IsNotFound(status)) {
     return;
   }
@@ -501,7 +503,7 @@ class AssignVariableOp<Device, Variant> : public OpKernel {
                                 [](Var** ptr) {
                                   // Created on host.
                                   *ptr = new Var(DT_VARIANT);
-                                  return OkStatus();
+                                  return absl::OkStatus();
                                 }));
 
     // For purposes of forwarding DT_VARIANT, we want the least
@@ -688,7 +690,8 @@ class VarIsInitializedOp : public OpKernel {
                    context->allocate_output(0, TensorShape({}), &output));
     auto output_tensor = output->tensor<bool, 0>();
     core::RefCountPtr<Var> variable;
-    Status s = LookupResource(context, HandleFromInput(context, 0), &variable);
+    absl::Status s =
+        LookupResource(context, HandleFromInput(context, 0), &variable);
     if (!s.ok()) {
       output_tensor() = false;
       return;
@@ -973,12 +976,14 @@ bool ValidateInput<Variant>(const Tensor& updates) {
 }
 
 template <typename Device, typename T, typename Index, scatter_op::UpdateOp op>
-Status DoScatter(OpKernelContext* c, Tensor* params, const Tensor& indices,
-                 const Tensor& updates, Index num_indices);
+absl::Status DoScatter(OpKernelContext* c, Tensor* params,
+                       const Tensor& indices, const Tensor& updates,
+                       Index num_indices);
 
 template <typename T, typename Index, scatter_op::UpdateOp Op>
-Status DoScatterOnCpu(OpKernelContext* c, Tensor* params, const Tensor& indices,
-                      const Tensor& updates, Index num_indices);
+absl::Status DoScatterOnCpu(OpKernelContext* c, Tensor* params,
+                            const Tensor& indices, const Tensor& updates,
+                            Index num_indices);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
@@ -1046,8 +1051,9 @@ Status DoScatterOnCpu(OpKernelContext* c, Tensor* params, const Tensor& indices,
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 template <typename Device, typename T, typename Index, scatter_op::UpdateOp op>
-Status DoScatter(OpKernelContext* c, Tensor* params, const Tensor& indices,
-                 const Tensor& updates, Index num_indices) {
+absl::Status DoScatter(OpKernelContext* c, Tensor* params,
+                       const Tensor& indices, const Tensor& updates,
+                       Index num_indices) {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   if (std::is_same<Device, GPUDevice>::value &&
       tensorflow::OpDeterminismRequired() && !DisableScatterOpDeterminism()) {
@@ -1107,7 +1113,7 @@ class ResourceScatterUpdateOp : public OpKernel {
   explicit ResourceScatterUpdateOp(OpKernelConstruction* c) : OpKernel(c) {
     // We use the same kernel for many operations.
     // Each operation has a different set of attributes defined in its nodes.
-    Status s = c->GetAttr("use_locking", &use_exclusive_lock_);
+    absl::Status s = c->GetAttr("use_locking", &use_exclusive_lock_);
     if (!s.ok()) {
       use_exclusive_lock_ = false;
     }
@@ -1124,25 +1130,22 @@ class ResourceScatterUpdateOp : public OpKernel {
                     "DType of scatter resource and updates does not match."));
 
     OP_REQUIRES_OK(c, EnsureSparseVariableAccess<Device, T>(c, v.get()));
-    const bool is_non_pod_dtype = c->input_dtype(0) == DT_RESOURCE ||
-                                  c->input_dtype(0) == DT_STRING ||
-                                  c->input_dtype(0) == DT_VARIANT;
+    const bool is_non_pod_dtype =
+        update_dtype == DT_STRING || update_dtype == DT_VARIANT;
     if (is_non_pod_dtype || use_exclusive_lock_) {
       mutex_lock ml(*v->mu());
-      DoCompute(c);
+      DoCompute(c, v.get());
     } else {
       // For POD dtypes, we can safely run the update without the mutex.
       tf_shared_lock ml(*v->mu());
-      DoCompute(c);
+      DoCompute(c, v.get());
     }
   }
 
  private:
   bool use_exclusive_lock_;
 
-  void DoCompute(OpKernelContext* c) {
-    core::RefCountPtr<Var> v;
-    OP_REQUIRES_OK(c, LookupResource(c, HandleFromInput(c, 0), &v));
+  void DoCompute(OpKernelContext* c, Var* v) {
     Tensor* params = v->tensor();
     const Tensor& indices = c->input(1);
     const Tensor& updates = c->input(2);

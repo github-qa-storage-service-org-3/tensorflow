@@ -17,7 +17,7 @@ limitations under the License.
 
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -140,7 +140,7 @@ void PrepareQuantizePass::runOnOperation() {
   MLIRContext* ctx = module_op.getContext();
 
   auto func_op_quant_spec = GetStableHloOpQuantSpec;
-  auto func_op_quant_scale_spec = GetStableHloQuantScaleSpec;
+  auto func_op_quant_scale_spec = GetStableHloQuantConstraints;
 
   for (auto func_op : module_op.getOps<func::FuncOp>()) {
     // The function might contain more stats ops than required, and it will

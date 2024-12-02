@@ -1,11 +1,11 @@
 # Description:
 # Cloud file system implementation.
 
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
-    "@local_tsl//tsl:tsl.bzl",
+    "@local_xla//xla/tsl:tsl.bzl",
     "tsl_copts",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -155,6 +155,10 @@ cc_library(
     name = "http_request",
     hdrs = ["http_request.h"],
     copts = tsl_copts(),
+    visibility = [
+        ":dependency_allowlist",
+        "//learning/brain/research/meta_architect/hub/pythia:__pkg__",
+    ],
     deps = [
         "//tensorflow/core:framework_headers_lib",
         "//tensorflow/core:lib_internal",
@@ -207,6 +211,10 @@ cc_library(
         "google_auth_provider.h",
     ],
     copts = tsl_copts(),
+    visibility = [
+        ":dependency_allowlist",
+        "//learning/brain/research/meta_architect/hub/pythia:__pkg__",
+    ],
     deps = [
         ":compute_engine_metadata_client",
         ":oauth_client",

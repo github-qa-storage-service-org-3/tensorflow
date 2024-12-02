@@ -40,7 +40,8 @@ class XlaCompileOptionsSerDes
     return "xla::ifrt::XlaCompileOptions";
   }
 
-  absl::StatusOr<std::string> Serialize(Serializable& serializable) override {
+  absl::StatusOr<std::string> Serialize(
+      Serializable& serializable, std::unique_ptr<SerializeOptions>) override {
     const auto& options = llvm::cast<XlaCompileOptions>(serializable);
 
     XlaCompileOptionsProto proto;
@@ -82,7 +83,6 @@ bool register_xla_compile_options_serdes = ([]{
 
 }  // namespace
 
-char XlaProgram::ID = 0;
 char XlaCompileOptions::ID = 0;
 char XlaDeserializeExecutableOptions::ID = 0;
 

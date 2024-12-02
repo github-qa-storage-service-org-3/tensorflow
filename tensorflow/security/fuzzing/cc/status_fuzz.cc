@@ -17,6 +17,7 @@ limitations under the License.
 #include <string_view>
 
 #include "fuzztest/fuzztest.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/security/fuzzing/cc/fuzz_domains.h"
 
@@ -30,7 +31,7 @@ limitations under the License.
 namespace {
 
 void FuzzTest(absl::StatusCode error_code, std::string_view error_message) {
-  tensorflow::Status s = tensorflow::Status(error_code, error_message);
+  absl::Status s = absl::Status(error_code, error_message);
   const std::string actual_message = s.ToString();
   const std::size_t pos = actual_message.rfind(error_message);
   assert(pos != std::string::npos);  // Suffix is error message
