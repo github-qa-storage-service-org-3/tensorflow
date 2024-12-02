@@ -202,7 +202,8 @@ class BatchResourceBase : public ResourceBase {
       int32_t low_priority_max_batch_size,
       int32_t low_priority_batch_timeout_micros,
       int32_t low_priority_max_enqueued_batches,
-      const std::vector<int32>& low_priority_allowed_batch_sizes);
+      const std::vector<int32>& low_priority_allowed_batch_sizes,
+      MixedPriorityBatchingPolicy mixed_priority_batching_policy);
 
   static AdaptiveBatcherT::QueueOptions GetAdaptiveBatcherQueueOptions(
       int32_t max_batch_size, int32_t batch_timeout_micros,
@@ -266,10 +267,15 @@ class BatchResourceBase : public ResourceBase {
   // Assumes the batch is non-empty.
   static Status ValidateBatch(const BatchT& batch);
 
+  // Returns a boolean indicating whether a batch is formed from low priority
+  // tasks only or not.
+  bool IsLowPriorityBatch(const BatchT& batch) const;
+
   // Returns the smallest entry in 'allowed_batch_sizes_' that is greater than
   // or equal to 'batch_size'. If 'allowed_batch_sizes_' is empty, simply
   // returns 'batch_size'.
-  int RoundToLowestAllowedBatchSize(int batch_size) const;
+  int RoundToLowestAllowedBatchSize(int batch_size,
+                                    bool is_low_priority_batch = false) const;
 
   // Helper function to propagate the status to the task's context and call the
   // done callback on the task.

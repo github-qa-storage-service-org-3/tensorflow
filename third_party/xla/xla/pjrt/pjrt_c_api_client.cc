@@ -37,6 +37,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -130,6 +131,7 @@ PjRtCApiClient::PjRtCApiClient(
       platform_name_(::pjrt::GetPlatformName(c_client, c_api)),
       platform_id_(tsl::Fingerprint64(platform_name_)) {
   InitDevicesAndMemorySpaces();
+  InitAttributes();
   LOG(INFO) << "PjRtCApiClient created.";
 }
 
@@ -251,6 +253,15 @@ void PjRtCApiClient::InitDevicesAndMemorySpaces() {
   }
 }
 
+void PjRtCApiClient::InitAttributes() {
+  PJRT_Plugin_Attributes_Args args;
+  args.struct_size = PJRT_Plugin_Attributes_Args_STRUCT_SIZE;
+  args.extension_start = nullptr;
+  pjrt::LogFatalIfPjrtError(c_api_->PJRT_Plugin_Attributes(&args), c_api_);
+  attributes_ =
+      pjrt::ConvertFromPjRtNamedValueList(args.attributes, args.num_attributes);
+}
+
 int PjRtCApiClient::device_count() const { return devices_.size(); }
 
 int PjRtCApiClient::addressable_device_count() const {
@@ -278,6 +289,12 @@ int PjRtCApiClient::process_index() const {
 
 absl::string_view PjRtCApiClient::platform_version() const {
   return platform_version_;
+}
+
+std::optional<PjRtPluginAttributes> PjRtCApiClient::plugin_attributes() const {
+  return PjRtPluginAttributes{c_api_->pjrt_api_version.major_version,
+                              c_api_->pjrt_api_version.minor_version,
+                              attributes_};
 }
 
 static DeviceAssignment CalculateDefaultAssignment(
@@ -393,8 +410,11 @@ StatusOr<std::unique_ptr<PjRtLoadedExecutable>> PjRtCApiClient::Compile(
 StatusOr<std::unique_ptr<PjRtLoadedExecutable>> PjRtCApiClient::Compile(
     mlir::ModuleOp module, CompileOptions options) {
   // TODO: Once plugins are ready, use SerializeUsingVersionedStablehlo.
-  TF_ASSIGN_OR_RETURN(std::string serialized,
-                      xla::SerializeUsingNativeBytecode(module));
+  if (!pjrt_c_api()) llvm::report_fatal_error("pjrt_c_api is null");
+  TF_ASSIGN_OR_RETURN(
+      std::string serialized,
+      xla::SerializeUsingNativeBytecode(
+          module, plugin_attributes()->pjrt_c_api_minor_version));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompile(this, c_api_, c_client_.get(), options,
                                   serialized, format);
@@ -464,13 +484,13 @@ PjRtCApiClient::BufferFromHostBufferInternalImpl(
     std::variant<PjRtDevice*, PjRtMemorySpace*> device_or_memory,
     const Layout* device_layout) {
   if (host_buffer_semantics != HostBufferSemantics::kImmutableOnlyDuringCall &&
-      host_buffer_semantics != HostBufferSemantics::kZeroCopy &&
+      host_buffer_semantics != HostBufferSemantics::kImmutableZeroCopy &&
       host_buffer_semantics !=
           HostBufferSemantics::kImmutableUntilTransferCompletes) {
     return Unimplemented(
         "PJRT C API does not support HostBufferSemantics other than "
         "HostBufferSemantics::kImmutableOnlyDuringCall, "
-        "HostBufferSemantics::kZeroCopy and "
+        "HostBufferSemantics::kImmutableZeroCopy and "
         "HostBufferSemantics::kImmutableUntilTransferCompletes.");
   }
 
@@ -1923,7 +1943,7 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtCApiBuffer::CopyToDevice(
         literal_pointer->untyped_data(),
         literal_pointer->shape().element_type(),
         literal_pointer->shape().dimensions(), byte_strides,
-        PjRtClient::HostBufferSemantics::kZeroCopy,
+        PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
         [literal{std::move(literal)}]() { /* frees literal */ }, dst_device);
   }
 }
@@ -1955,7 +1975,7 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtCApiBuffer::CopyToMemorySpace(
         literal_pointer->untyped_data(),
         literal_pointer->shape().element_type(),
         literal_pointer->shape().dimensions(), byte_strides,
-        PjRtClient::HostBufferSemantics::kZeroCopy,
+        PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
         [literal{std::move(literal)}]() { /* frees literal */ }, dst_memory,
         /*device_layout=*/nullptr);
   }
@@ -2191,8 +2211,12 @@ StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCApiCompiler::Compile(
     CompileOptions options, mlir::ModuleOp module,
     const PjRtTopologyDescription& topology, PjRtClient* client) {
   // TODO: Once plugins are ready, use SerializeUsingVersionedStablehlo.
-  TF_ASSIGN_OR_RETURN(std::string serialized,
-                      xla::SerializeUsingNativeBytecode(module));
+  std::optional<int64_t> plugin_version;
+  if (client) {
+    plugin_version = client->plugin_attributes()->pjrt_c_api_minor_version;
+  }
+  TF_ASSIGN_OR_RETURN(std::string serialized, xla::SerializeUsingNativeBytecode(
+                                                  module, plugin_version));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompileAot(c_api_, client, options, topology,
                                      serialized, format);

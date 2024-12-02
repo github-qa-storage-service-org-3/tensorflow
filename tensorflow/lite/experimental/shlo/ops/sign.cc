@@ -29,20 +29,21 @@ struct Sign {
   template <class T>
   T operator()(T v) const {
     constexpr T one = static_cast<T>(1);
+    constexpr T minus_one = static_cast<T>(-1);
     constexpr T zero = static_cast<T>(0);
-    return v < zero ? -one : (v > zero ? one : v);
-  }
-
-  template <>
-  F16 operator()(F16 v) const {
-    return static_cast<F16>(operator()(static_cast<float>(v)));
-  }
-
-  template <>
-  BF16 operator()(BF16 v) const {
-    return static_cast<BF16>(operator()(static_cast<float>(v)));
+    return v < zero ? minus_one : (v > zero ? one : v);
   }
 };
+
+template <>
+F16 Sign::operator()(F16 v) const {
+  return static_cast<F16>(operator()(static_cast<float>(v)));
+}
+
+template <>
+BF16 Sign::operator()(BF16 v) const {
+  return static_cast<BF16>(operator()(static_cast<float>(v)));
+}
 
 SignOp Create(SignOp::Attributes) { return {}; }
 

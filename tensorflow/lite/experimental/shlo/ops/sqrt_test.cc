@@ -48,17 +48,17 @@ struct Sqrt {
   T operator()(T v) const {
     return std::sqrt(v);
   }
-
-  template <>
-  F16 operator()<F16>(F16 val) const {
-    return F16(operator()(static_cast<float>(val)));
-  }
-
-  template <>
-  BF16 operator()<BF16>(BF16 val) const {
-    return BF16(operator()(static_cast<float>(val)));
-  }
 } sqrt_ref;
+
+template <>
+F16 Sqrt::operator()<F16>(F16 val) const {
+  return F16(operator()(static_cast<float>(val)));
+}
+
+template <>
+BF16 Sqrt::operator()<BF16>(BF16 val) const {
+  return BF16(operator()(static_cast<float>(val)));
+}
 
 INSTANTIATE_TYPED_TEST_SUITE_P(Sqrt, UnaryElementwiseOpShapePropagationTest,
                                SqrtOp, TestParamNames);
@@ -113,9 +113,9 @@ TYPED_TEST(QuantizedSqrtTest, PerTensorWorks) {
 
   const Shape shape({2, 3, 4});
   const ExpressedT scale = static_cast<ExpressedT>(1.5);
-  const StorageT zero_point = static_cast<StorageT>(5);
-  Vector<StorageT> input_data = RandomBuffer<TypeParam::kStorage>(
-      shape, /*min=*/static_cast<StorageT>(zero_point));
+  const StorageT zero_point = static_cast<StorageT>(4);
+  Vector<StorageT> input_data =
+      RandomBuffer<TypeParam::kStorage>(shape, /*min=*/zero_point + 1);
   Vector<StorageT> output_data(shape.NumElements());
   const QuantizedTensorElementType tensor_type =
       QuantizedTensorElementType::PerTensor<TypeParam::kStorage,
