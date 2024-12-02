@@ -37,6 +37,7 @@ from typing import (
 
 import numpy as np
 
+from . import ifrt_programs
 from . import ifrt_proxy
 from . import jax_jit
 from . import mlir
@@ -267,6 +268,7 @@ def register_custom_call_partitioner(
     partition: Callable,
     infer_sharding_from_operands: Callable,
     can_side_effecting_have_replicated_sharding: bool,
+    c_api: Optional[Any],
 ) -> None: ...
 def encode_inspect_sharding_callback(handler: Any) -> bytes: ...
 
@@ -507,6 +509,11 @@ class Client:
       computation: Union[str, bytes],
       compile_options: CompileOptions = ...,
       host_callbacks: Sequence[Any] = ...,
+  ) -> LoadedExecutable: ...
+  def compile_ifrt_program(
+      self,
+      program: ifrt_programs.Program,
+      program_options: ifrt_programs.CompileOptions,
   ) -> LoadedExecutable: ...
   def serialize_executable(self, executable: LoadedExecutable) -> bytes: ...
   def deserialize_executable(
