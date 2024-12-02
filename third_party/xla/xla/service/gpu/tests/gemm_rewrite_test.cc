@@ -42,6 +42,7 @@ limitations under the License.
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
 #include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/test.h"
 #include "xla/tests/filecheck.h"
 #include "xla/xla.pb.h"
@@ -230,11 +231,12 @@ ENTRY AddDotsFunc {
     return ParseAndReturnVerifiedModule(hlo_text, config);
   };
 
+  se::StreamExecutorMemoryAllocator allocator(
+      backend().default_stream_executor());
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<HloModule> optimized_module,
       backend().compiler()->RunHloPasses(
-          *get_module(), backend().default_stream_executor(),
-          backend().default_stream_executor()->GetAllocator()));
+          *get_module(), backend().default_stream_executor(), &allocator));
 
   absl::StatusOr<bool> filecheck_result =
       RunFileCheck(optimized_module->ToString(),
@@ -1478,6 +1480,67 @@ class LegacyCublasGemmRewriteTest : public GemmRewriteTest {
     return debug_options;
   }
 };
+
+TEST_F(LegacyCublasGemmRewriteTest, MatrixVectorMultiplication) {
+  const char* hlo_text = R"(
+HloModule m
+
+ENTRY e {
+  p0 = f32[2048] parameter(0)
+  p1 = f32[2048, 16384] parameter(1)
+  ROOT d = f32[16384] dot(p0, p1),
+    lhs_contracting_dims={0}, rhs_contracting_dims={0}
+})";
+
+  RunAndFilecheckHloRewrite(hlo_text,
+                            GemmRewriter(se::CudaComputeCapability{
+                                se::CudaComputeCapability::AMPERE, 0}),
+                            R"(
+; CHECK:  %[[P0:.+]] = f32[2048]{0} parameter(0)
+; CHECK:  %[[P1:.+]] = f32[2048,16384]{1,0} parameter(1)
+; CHECK:  %[[CUSTOM_CALL:.+]] = (f32[16384]{0}, s8[4194304]{0}) custom-call(%[[P0]], %[[P1]]), custom_call_target="__cublas$gemm"
+)");
+}
+
+TEST_F(LegacyCublasGemmRewriteTest, MatrixVectorMultiplicationWithBatch) {
+  const char* hlo_text = R"(
+HloModule m
+
+ENTRY e {
+  p0 = f32[10, 10, 2048] parameter(0)
+  p1 = f32[10, 10, 2048, 16384] parameter(1)
+  ROOT d = f32[10, 10, 16384] dot(p0, p1),
+   lhs_batch_dims={0, 1}, rhs_batch_dims={0, 1},
+   lhs_contracting_dims={2}, rhs_contracting_dims={2}
+})";
+
+  RunAndFilecheckHloRewrite(hlo_text,
+                            GemmRewriter(se::CudaComputeCapability{
+                                se::CudaComputeCapability::AMPERE, 0}),
+                            R"(
+; CHECK:  %[[P0:.+]] = f32[10,10,2048]{2,1,0} parameter(0)
+; CHECK:  %[[P1:.+]] = f32[10,10,2048,16384]{3,2,1,0} parameter(1)
+; CHECK:  %[[CUSTOM_CALL:.+]] = (f32[10,10,16384]{2,1,0}, s8[4194304]{0}) custom-call(%[[P0]], %[[P1]]), custom_call_target="__cublas$gemm"
+)");
+}
+
+TEST_F(LegacyCublasGemmRewriteTest, SparseDotNotSupported) {
+  const char* hlo_text = R"(
+HloModule test
+
+ENTRY main {
+  lhs = f16[5,16] parameter(0)
+  rhs = f16[32,10] parameter(1)
+  meta = u16[5,2] parameter(2)
+  ROOT dot = f32[5,10] dot(lhs, rhs, meta),
+      lhs_contracting_dims={1}, rhs_contracting_dims={0}, sparsity=L.1@2:4
+})";
+  auto hlo_pass = GemmRewriter(
+      se::CudaComputeCapability{se::CudaComputeCapability::AMPERE, 0});
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo_text));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, RunHloPass(&hlo_pass, module.get()));
+  EXPECT_FALSE(changed);
+}
 
 // Test that the alpha and beta fields of the GemmBackendConfig are updated.
 // A bias must be present for the beta value to be set.
@@ -4627,9 +4690,10 @@ class ParameterizedFp8GemmRewriteTest : public ParameterizedGemmRewriteTest {
     }
   }
 
-  StatusOr<std::unique_ptr<VerifiedHloModule>> ParseAndReturnVerifiedModule(
-      absl::string_view hlo_text, int64_t replica_count = 1,
-      int64_t num_partitions = 1) {
+  absl::StatusOr<std::unique_ptr<VerifiedHloModule>>
+  ParseAndReturnVerifiedModule(absl::string_view hlo_text,
+                               int64_t replica_count = 1,
+                               int64_t num_partitions = 1) {
     return GemmRewriteTest::ParseAndReturnVerifiedModule(
         absl::StrReplaceAll(hlo_text, replacements_));
   }
@@ -4776,6 +4840,61 @@ TEST_P(ParameterizedFp8GemmRewriteTest, UnscaledABUnscaledDF8) {
 ; CHECK-DAG:         }
 ; CHECK-DAG:         "epilogue":"DEFAULT"
 ; CHECK:           }
+      )");
+}
+
+// Do not fuse FP8 matrix bias.
+TEST_P(ParameterizedFp8GemmRewriteTest, UnscaledABUnscaledDMatrixBiasF8) {
+#if GOOGLE_CUDA && CUDA_VERSION < 12000
+  GTEST_SKIP() << "F8 gemm rewrite is only supported in CUDA 12 and above.";
+#endif  // CUDA_VERSION < 12000
+
+#if TENSORFLOW_USE_ROCM && TF_ROCM_VERSION < 60000
+  GTEST_SKIP() << "F8 gemm rewrite is only supported in ROCm 6.0 and above.";
+#endif  // TF_ROCM_VERSION < 60000
+
+  const char* hlo_text = R"(
+    HloModule test
+
+    ENTRY test {
+      x = <<F8E4M3>>[16,32] parameter(0)
+      y = <<F8E4M3>>[32,16] parameter(1)
+      dot_a = <<F8E4M3>>[16,16] dot(x, y), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+      b = <<F8E4M3>>[16,16] parameter(2)
+      ROOT out = <<F8E4M3>>[16,16] add(dot_a, b)
+          }
+
+)";
+
+  CheckFp8IfSupported(hlo_text);
+  RunAndFilecheckHloRewrite(
+      hlo_text, GemmRewriter(CudaHopperOrRocmMI300(), /*f8_rewrite=*/true),
+      R"(
+; CHECK-LABEL: ENTRY %test ({{.*}}: <<F8E4M3>>[16,32], {{.*}}: <<F8E4M3>>[32,16], {{.*}}: <<F8E4M3>>[16,16]) -> <<F8E4M3>>[16,16] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = <<F8E4M3>>[16,32]{1,0} parameter(0)
+; CHECK-NEXT:    [[P1:%[^ ]+]] = <<F8E4M3>>[32,16]{1,0} parameter(1)
+; CHECK-NEXT:    [[P1_TRANSPOSE:%[^ ]+]] = <<F8E4M3>>[16,32]{1,0} transpose([[P1]]), dimensions={1,0}
+; CHECK-NEXT:    [[C1:[^ ]+]] = f32[] constant(1)
+; CHECK-GCN-NEXT:    [[DOT:%[^ ]+]] = f32[16,16]{1,0} custom-call([[P0]], [[P1_TRANSPOSE]], [[C1]], [[C1]], [[C1]], /*index=5*/[[C1]]),
+; CHECK-PTX-NEXT:    [[DOT:%[^ ]+]] = <<F8E4M3>>[16,16]{1,0} custom-call([[P0]], [[P1_TRANSPOSE]], [[C1]], [[C1]], [[C1]], /*index=5*/[[C1]]),
+; CHECK:           custom_call_target="__cublas$lt$matmul$f8",
+; CHECK:           backend_config={
+; CHECK-DAG:         "alpha_real":1
+; CHECK-DAG:         "alpha_imag":0
+; CHECK-DAG:         "beta":0
+; CHECK-DAG:         "dot_dimension_numbers":{
+; CHECK-DAG:           "lhs_contracting_dimensions":["1"]
+; CHECK-DAG:           "rhs_contracting_dimensions":["1"]
+; CHECK-DAG:           "lhs_batch_dimensions":[]
+; CHECK-DAG:           "rhs_batch_dimensions":[]
+; CHECK-DAG:         }
+; CHECK-DAG:         "precision_config":{
+; CHECK-DAG:           "operand_precision":["DEFAULT","DEFAULT"]
+; CHECK-DAG:         }
+; CHECK-DAG:         "epilogue":"DEFAULT"
+; CHECK:           }
+; CHECK-NEXT:    [[P2:%[^ ]+]] = <<F8E4M3>>[16,16]{1,0} parameter(2)
+; CHECK-NEXT:    [[ROOT:%[^ ]+]] = <<F8E4M3>>[16,16]{1,0} add([[DOT]], [[P2]])
       )");
 }
 
@@ -5425,6 +5544,10 @@ TEST_P(ParameterizedFp8GemmRewriteTest,
 )";
 
   CheckFp8IfSupported(hlo_text);
+
+// Fusing gelu into FP8 cublas matmuls is disabled on CUDA versions less
+// than 12.4.
+#if (GOOGLE_CUDA && CUDA_VERSION >= 12040) || TENSORFLOW_USE_ROCM
   RunAndFilecheckHloRewrite(
       hlo_text, GemmRewriter(CudaHopperOrRocmMI300(), /*f8_rewrite=*/true),
       R"(
@@ -5458,6 +5581,7 @@ TEST_P(ParameterizedFp8GemmRewriteTest,
 ; CHECK-GCN-DAG:         "epilogue":"DEFAULT"
 ; CHECK:           }
       )");
+#endif  // (GOOGLE_CUDA && CUDA_VERSION >= 12040) || TENSORFLOW_USE_ROCM
 }
 
 TEST_P(ParameterizedFp8GemmRewriteTest,
@@ -5505,6 +5629,10 @@ TEST_P(ParameterizedFp8GemmRewriteTest,
 )";
 
   CheckFp8IfSupported(hlo_text);
+
+// Fusing gelu into FP8 cublas matmuls is disabled on CUDA versions less
+// than 12.4.
+#if (GOOGLE_CUDA && CUDA_VERSION >= 12040) || TENSORFLOW_USE_ROCM
   // Currently, hipBlasLt does not support output datatype bf16 for fp8 matmul.
   // And no fusion was done for such cases.
   RunAndFilecheckHloRewrite(
@@ -5539,6 +5667,7 @@ TEST_P(ParameterizedFp8GemmRewriteTest,
 ; CHECK-GCN-DAG:         "epilogue":"DEFAULT"
 ; CHECK:           }
       )");
+#endif  // (GOOGLE_CUDA && CUDA_VERSION >= 12040) || TENSORFLOW_USE_ROCM
 }
 
 TEST_P(ParameterizedFp8GemmRewriteTest, InvScaledABUnscaledDF8) {
@@ -7505,11 +7634,15 @@ class GemmRewriteAllocationTest : public GpuCodegenTest {
                                 int expected_number_of_allocations) {
     TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> optimized_module,
                             GetOptimizedModule(hlo));
+    if (allocator_ == nullptr) {
+      allocator_ = std::make_unique<se::StreamExecutorMemoryAllocator>(
+          backend().default_stream_executor());
+    }
     TF_ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<Executable> executable,
-        backend().compiler()->RunBackend(
-            std::move(optimized_module), backend().default_stream_executor(),
-            backend().default_stream_executor()->GetAllocator()));
+        backend().compiler()->RunBackend(std::move(optimized_module),
+                                         backend().default_stream_executor(),
+                                         allocator_.get()));
     GpuExecutable* gpu_executable =
         static_cast<GpuExecutable*>(executable.get());
     absl::Span<const BufferAllocation> allocations =
@@ -7523,6 +7656,9 @@ class GemmRewriteAllocationTest : public GpuCodegenTest {
     debug_options.set_xla_gpu_gemm_rewrite_size_threshold(0);
     return debug_options;
   }
+
+ private:
+  std::unique_ptr<se::DeviceMemoryAllocator> allocator_;
 };
 
 TEST_F(GemmRewriteAllocationTest, SharedBufferAssignment) {

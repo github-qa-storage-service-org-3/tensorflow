@@ -68,6 +68,7 @@ limitations under the License.
 #include "mlir/IR/Verifier.h"  // from @llvm-project
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/cc/saved_model/constants.h"
 #include "tensorflow/cc/saved_model/loader_util.h"
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
@@ -1228,7 +1229,7 @@ absl::StatusOr<mlir::Type> ImporterBase::InferOutputType(
         TF_ASSIGN_OR_RETURN(
             auto etype, ConvertToMlirTensorType(shape_proto, dtype, &builder));
         return mlir::UnrankedTensorType::get(mlir::TF::ResourceType::get(
-            {etype.cast<TensorType>()}, builder.getContext()));
+            {mlir::cast<TensorType>(etype)}, builder.getContext()));
       } else {
         return mlir::UnrankedTensorType::get(
             mlir::TF::ResourceType::get(builder.getContext()));
@@ -2000,7 +2001,7 @@ mlir::Operation* ImporterBase::CreateOperation(
         record_resource = [&](mlir::Type type) {
           type.walk([&](mlir::Type t) {
             if (resource) return mlir::WalkResult::interrupt();
-            if (type.isa<mlir::TF::ResourceType>()) {
+            if (mlir::isa<mlir::TF::ResourceType>(type)) {
               resource = true;
               return mlir::WalkResult::interrupt();
             }
@@ -3187,10 +3188,10 @@ void StructuredValueLinearizer::RecursivelyFindLeaves(
          << " at index path: <value>";
       for (auto path_element : current_index_path_) {
         os << ".";
-        if (auto integer = path_element.dyn_cast<mlir::IntegerAttr>()) {
+        if (auto integer = mlir::dyn_cast<mlir::IntegerAttr>(path_element)) {
           os << integer.getValue();
         } else {
-          auto str = path_element.cast<mlir::StringAttr>();
+          auto str = mlir::cast<mlir::StringAttr>(path_element);
           os << str.getValue();
         }
       }
@@ -4280,17 +4281,13 @@ SavedModelMLIRImportInput::~SavedModelMLIRImportInput() {}
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertGraphdefToMlir(
     const GraphDef& graphdef, const GraphDebugInfo& debug_info,
-    const GraphImportConfig& specs, mlir::MLIRContext* context,
-    bool add_default_attributes) {
+    const GraphImportConfig& specs, mlir::MLIRContext* context) {
   GraphConstructorOptions options;
   options.allow_internal_ops = true;
-  options.add_default_attributes = add_default_attributes;
   Graph graph(OpRegistry::Global());
-
   GraphDef preprocessed_graphdef(graphdef);
-  if (add_default_attributes) {
-    TF_RETURN_IF_ERROR(PreprocessGraphDef(&specs, &preprocessed_graphdef));
-  }
+  TF_RETURN_IF_ERROR(PreprocessGraphDef(&specs, &preprocessed_graphdef));
+
   if (specs.upgrade_legacy) {
     TF_RETURN_IF_ERROR(GenerateResourceSharedNameIfEmpty(
         preprocessed_graphdef, graph.flib_def().default_registry()));

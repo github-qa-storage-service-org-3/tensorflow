@@ -29,6 +29,7 @@ limitations under the License.
 #include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/model/indexing_analysis.h"
@@ -53,17 +54,17 @@ HloInstruction* IndexingTestBase::ParseAndGetRoot(
 HloInstructionIndexing IndexingTestBase::GetOutputToInputIndexing(
     const HloInstruction* instr, int output_id, bool use_physical_layout) {
   HloInstructionIndexing indexing =
-      ComputeOutputToInputIndexing(instr, output_id, &indexing_context_);
+      ComputeOutputToInputIndexing(instr, output_id, &mlir_context_);
 
   if (!use_physical_layout) return indexing;
 
   IndexingMap output_permutation = GetIndexingMapFromPhysicalLayoutToLogical(
-      GetOutputShape(instr, output_id), &indexing_context_);
+      GetOutputShape(instr, output_id), &mlir_context_);
 
   for (const auto& [operand_id, indexing_maps] :
        llvm::enumerate(indexing.indexing_maps)) {
     IndexingMap operand_permutation = GetIndexingMapFromLogicalToPhysicalLayout(
-        instr->operand(operand_id)->shape(), &indexing_context_);
+        instr->operand(operand_id)->shape(), &mlir_context_);
 
     absl::flat_hash_set<IndexingMap> operand_indexing_maps;
     for (const IndexingMap& indexing_map : indexing_maps) {
@@ -86,17 +87,17 @@ HloInstructionIndexing IndexingTestBase::GetOutputToInputIndexing(
 HloInstructionIndexing IndexingTestBase::GetInputToOutputIndexing(
     const HloInstruction* instr, int input_id, bool use_physical_layout) {
   HloInstructionIndexing indexing =
-      ComputeInputToOutputIndexing(instr, input_id, &indexing_context_);
+      ComputeInputToOutputIndexing(instr, input_id, &mlir_context_);
 
   if (!use_physical_layout) return indexing;
 
   IndexingMap input_permutation = GetIndexingMapFromPhysicalLayoutToLogical(
-      instr->operand(input_id)->shape(), &indexing_context_);
+      instr->operand(input_id)->shape(), &mlir_context_);
 
   for (const auto& [output_id, indexing_maps] :
        llvm::enumerate(indexing.indexing_maps)) {
     IndexingMap operand_permutation = GetIndexingMapFromLogicalToPhysicalLayout(
-        GetOutputShape(instr, output_id), &indexing_context_);
+        GetOutputShape(instr, output_id), &mlir_context_);
 
     absl::flat_hash_set<IndexingMap> operand_indexing_maps;
     for (const IndexingMap& indexing_map : indexing_maps) {
@@ -120,8 +121,8 @@ AffineMap ParseAffineMap(absl::string_view serialized_affine_map,
                          MLIRContext* context) {
   std::string full_affine_map_string =
       absl::StrCat("affine_map<", serialized_affine_map, ">");
-  return mlir::parseAttribute(full_affine_map_string, context)
-      .cast<mlir::AffineMapAttr>()
+  return mlir::cast<mlir::AffineMapAttr>(
+             mlir::parseAttribute(full_affine_map_string, context))
       .getValue();
 }
 
@@ -133,8 +134,8 @@ AffineExpr ParseAffineExpr(absl::string_view serialized_affine_expr,
       "affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9)"
       "[s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] -> (",
       serialized_affine_expr, ")>");
-  return mlir::parseAttribute(full_affine_map_string, context)
-      .cast<mlir::AffineMapAttr>()
+  return mlir::cast<mlir::AffineMapAttr>(
+             mlir::parseAttribute(full_affine_map_string, context))
       .getValue()
       .getResult(0);
 }

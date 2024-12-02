@@ -41,12 +41,11 @@ limitations under the License.
 #include "xla/service/gpu/kernels/custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
-#include "xla/service/gpu/nccl_api.h"
-#include "xla/service/gpu/nccl_clique_key.h"
-#include "xla/service/gpu/nccl_collective_thunk.h"
-#include "xla/service/gpu/runtime/cudnn_thunk.h"
 #include "xla/service/gpu/runtime/custom_call_thunk.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/nccl_api.h"
+#include "xla/service/gpu/runtime/nccl_clique_key.h"
+#include "xla/service/gpu/runtime/nccl_collective_thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/status.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
@@ -201,8 +200,14 @@ class CommandBufferCmd {
   // Returns true if command implemented as a nested command buffer.
   virtual bool IsNestedCommandBuffer() const { return false; }
 
-  // Returns a command execution scope computed from the command stream id and
-  // the default command buffer execution scope.
+  // Returns a command execution scope created from the specified
+  // 'execution_stream_id'.
+  se::CommandBuffer::ExecutionScopeId GetExecutionScope(
+      const RecordParams& record_params,
+      ExecutionStreamId execution_stream_id) const;
+
+  // Return the execution scope created from the execution stream id of the
+  // thunk which is lowered to current command.
   se::CommandBuffer::ExecutionScopeId GetExecutionScope(
       const RecordParams& record_params) const;
 
@@ -756,7 +761,7 @@ class CuDnnCmd : public TracedCommandBufferCmd {
  public:
   CuDnnCmd(ExecutionStreamId execution_stream_id,
            absl::Span<const BufferAllocation::Slice> args,
-           const se::dnn::DnnGraph& graph);
+           std::shared_ptr<se::dnn::LazyDnnGraph> graph);
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
@@ -771,7 +776,7 @@ class CuDnnCmd : public TracedCommandBufferCmd {
 
  private:
   std::vector<BufferAllocation::Slice> args_;
-  const se::dnn::DnnGraph& graph_;
+  const std::shared_ptr<se::dnn::LazyDnnGraph> graph_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -845,6 +850,28 @@ class CustomCallCmd : public CommandBufferCmd {
 
   std::vector<std::optional<Slice>> operands_;
   std::vector<std::optional<Slice>> results_;
+};
+
+//===----------------------------------------------------------------------===//
+// BarrierCmd insert a barrier from the execution scope created from the
+// 'from_stream_id' to the execution scope created from the
+// 'execution_stream_id', e.g. Async operator lowered to command buffer requires
+// a barrier from the launching stream to the async operator's execution stream.
+//===----------------------------------------------------------------------===//
+
+class BarrierCmd : public CommandBufferCmd {
+ public:
+  BarrierCmd(ExecutionStreamId execution_stream_id,
+             ExecutionStreamId from_stream_id);
+
+  absl::Status Record(const Thunk::ExecuteParams& execute_params,
+                      const RecordParams& record_params,
+                      se::CommandBuffer* command_buffer) override;
+
+  BufferUsageVector buffers() override;
+
+ private:
+  ExecutionStreamId from_stream_id_;
 };
 
 //===----------------------------------------------------------------------===//

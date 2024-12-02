@@ -52,15 +52,15 @@ class MlirTransposeFusion : public MlirFusionEmitterBase {
   LaunchDimensions launch_dimensions() const override;
 
   std::optional<IndexingMap> ComputeThreadIdToOutputIndexing(
-      int64_t root_index, IndexingContext* indexing_context) const override;
+      int64_t root_index, mlir::MLIRContext* mlir_context) const override;
 
   std::optional<IndexingMap> ComputeThreadIdToInputIndexing(
       int64_t root_index, int64_t hero_operand_index,
-      IndexingContext* indexing_context) const override;
+      mlir::MLIRContext* mlir_context) const override;
 
  protected:
   IndexingMap ComputeThreadIdToInputIndexing(
-      const HloInstruction& hero, IndexingContext* indexing_context) const;
+      const HloInstruction& hero, mlir::MLIRContext* mlir_context) const;
 
   absl::Status EmitEntryFunction(
       const mlir_converter::PartitionedComputations& computations,
@@ -68,26 +68,38 @@ class MlirTransposeFusion : public MlirFusionEmitterBase {
       mlir::func::FuncOp entry_function,
       const HloFusionInstruction& fusion) const override;
 
-  std::vector<const HloInstruction*> GetInstructionsWithCustomCodegen(
-      const HloFusionInstruction& fusion) const override;
+  std::vector<mlir_converter::EpilogueSpecification> GetEpilogues(
+      const HloFusionInstruction& fusion,
+      mlir::MLIRContext* mlir_context) const override;
 
-  absl::StatusOr<llvm::SmallVector<mlir::Value, 4>> EmitWriteToShMemMlir(
+  struct WriteResult {
+    // All output tensors of the fusion, with side outputs written to them.
+    mlir::SmallVector<mlir::Value> updated_outputs;
+    // Shared memory tiles for transpose heroes.
+    mlir::ValueRange shmem_tensors;
+  };
+
+  WriteResult EmitWriteToShMemMlir(
       mlir::ImplicitLocOpBuilder& builder, mlir::func::FuncOp entry_function,
       const HloFusionInstruction& fusion,
       const mlir_converter::PartitionedComputation& root_computation,
-      const mlir_converter::CallTargetProvider& call_target_provider) const;
-  absl::Status EmitReadFromShMemMlir(
+      const mlir_converter::CallTargetProvider& call_target_provider,
+      mlir::ValueRange output_args) const;
+  void EmitReadFromShMemMlir(
       mlir::ImplicitLocOpBuilder& builder, mlir::func::FuncOp entry_function,
       const HloFusionInstruction& fusion,
       const mlir_converter::PartitionedComputations& computations,
-      const mlir_converter::CallTargetProvider& call_target_provider,
-      mlir::ValueRange shmem_tensors) const;
+      const WriteResult& written) const;
 
  private:
   const HloFusionAnalysis& analysis_;
   Tiling tiling_;
   Vector3 permutation_;
   std::vector<const HloInstruction*> shmem_transposes_;
+  std::vector<const HloInstruction*> shmem_transpose_roots_;
+  std::vector<int> shmem_transpose_root_indices_;
+  std::vector<const HloInstruction*> side_output_roots_;
+  std::vector<int> side_output_root_indices_;
 };
 
 }  // namespace gpu
