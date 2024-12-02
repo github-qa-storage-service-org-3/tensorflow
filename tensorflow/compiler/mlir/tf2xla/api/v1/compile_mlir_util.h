@@ -26,6 +26,7 @@ limitations under the License.
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "tensorflow/compiler/tf2xla/layout_util.h"
+#include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/tf2xla/xla_argument.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "xla/client/xla_computation.h"
@@ -52,8 +53,8 @@ namespace tensorflow {
 //
 // device_type: XLA JIT device to use for compilation such as "XLA_CPU_JIT",
 //   "XLA_GPU_JIT" or "XLA_TPU_JIT".
-// use_tuple_args: when this is true, always create a tuple argument for the
-//   entry computation.
+// tuple_arg_result_options: control whether tuple is used for args and results
+//   for the entry computation.
 // enable_op_fallback: when this is true, prefer tf2xla fallback kernels over
 // MLIR
 //   native kernels for legalization to HLO.
@@ -67,7 +68,8 @@ namespace tensorflow {
 ABSL_DEPRECATED("Use v2/legalize_tf.h::LegalizeMlirToHlo instead.")
 Status ConvertMLIRToXlaComputation(
     mlir::ModuleOp module_op, llvm::StringRef device_type,
-    xla::XlaComputation* xla_computation, bool use_tuple_args,
+    xla::XlaComputation* xla_computation,
+    const TupleArgResultOptions& tuple_arg_result_options,
     bool enable_op_fallback, bool return_tuple,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns =
         {},
@@ -165,7 +167,9 @@ StatusOr<std::string> CompileMlirToXlaHlo(
 ABSL_DEPRECATED("Use v2/legalize_tf.h::LegalizeMlirToHlo instead.")
 StatusOr<std::string> CompileSerializedMlirToXlaHlo(
     llvm::StringRef mlir_module_string, llvm::ArrayRef<TensorShape> arg_shapes,
-    llvm::StringRef device_type, bool use_tuple_args, bool enable_op_fallback,
+    llvm::StringRef device_type,
+    const TupleArgResultOptions& tuple_arg_result_options,
+    bool enable_op_fallback,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
     XlaCompilationResult* compilation_result,
     llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
@@ -191,7 +195,7 @@ Status CompileGraphToXlaHlo(
 // Compiles a TensorFlow Graph into XLA HLO, generates all accompanying metadata
 // and stores them in CompilationResult.
 ABSL_DEPRECATED(
-    "Use v1/compile_tf_graph.h::CompileTensorflowGraphToHloinstead.")
+    "Use v1/compile_tf_graph.h::CompileTensorflowGraphToHlo instead.")
 Status CompileGraphToXlaHlo(
     const Graph& graph, llvm::ArrayRef<XlaArgument> args,
     llvm::ArrayRef<std::string> control_rets, llvm::StringRef device_type,
@@ -206,14 +210,17 @@ Status CompileGraphToXlaHlo(
 // XlaBuilder. This function adds HLO to a larger HLO computation, so
 // HLO-level inputs are supplied, and HLO-level outputs are produced.
 // xla_params is the HLO-level inputs and returns is the HLO-level outputs.
+// If unconditionally_use_output_shapes is true then the unregistered
+// attribute _output_shapes is always used to set the output shapes of the ops.
 ABSL_DEPRECATED(
-    "Use v1/compile_tf_graph.h::CompileTensorflowGraphToHloinstead.")
+    "Use v1/compile_tf_graph.h::CompileTensorflowGraphToHlo instead.")
 Status BuildHloFromGraph(
     const Graph& graph, xla::XlaBuilder& builder,
     mlir::MLIRContext& mlir_context, llvm::ArrayRef<xla::XlaOp> xla_params,
-    std::vector<xla::XlaOp>& returns, llvm::ArrayRef<XlaArgument> args,
-    llvm::ArrayRef<std::string> control_rets, llvm::StringRef device_type,
-    const FunctionLibraryDefinition& flib_def, const GraphDebugInfo& debug_info,
+    std::vector<xla::XlaOp>& returns, bool unconditionally_use_output_shapes,
+    llvm::ArrayRef<XlaArgument> args, llvm::ArrayRef<std::string> control_rets,
+    llvm::StringRef device_type, const FunctionLibraryDefinition& flib_def,
+    const GraphDebugInfo& debug_info,
     llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
         custom_legalization_passes = {});
 
