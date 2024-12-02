@@ -1,5 +1,5 @@
-load("//tsl:tsl.default.bzl", "get_compatible_with_portable")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//tsl:tsl.default.bzl", "get_compatible_with_portable")
 load("//tsl/platform:build_config.bzl", "tsl_cc_test")
 
 package(
@@ -23,6 +23,8 @@ cc_library(
     deps = [
         ":concurrent_vector",
         ":ref_count",
+        "//tsl/platform:logging",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
@@ -43,12 +45,25 @@ tsl_cc_test(
 )
 
 tsl_cc_test(
+    name = "async_value_ptr_test",
+    srcs = ["async_value_ptr_test.cc"],
+    deps = [
+        ":async_value",
+        "//tsl/platform:test",
+        "//tsl/platform:test_main",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+tsl_cc_test(
     name = "async_value_ref_test",
     srcs = ["async_value_ref_test.cc"],
     deps = [
         ":async_value",
         "//tsl/platform:test",
         "//tsl/platform:test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 
