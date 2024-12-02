@@ -32,12 +32,14 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/core/collectives/communicator.h"
+#include "xla/core/collectives/rank_id.h"
 #include "xla/executable_run_options.h"
 #include "xla/ffi/execution_context.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/global_device_id.h"
 #include "xla/service/gpu/buffer_allocations.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/runtime/nccl_clique.h"
 #include "xla/service/gpu/runtime/nccl_clique_key.h"
@@ -214,7 +216,7 @@ class Thunk {
     explicit CollectiveCliques(NcclClique::AcquiredCliquesMap cliques_map);
 
     absl::StatusOr<Communicator*> GetComm(const NcclCliqueKey& clique_key,
-                                          int32_t rank) const;
+                                          RankId rank) const;
 
     // Returns the number of communicators in a collective clique. Returns error
     // if we do not have an acquired clique for a given key.
@@ -263,7 +265,7 @@ class Thunk {
 
     const DeviceAssignment* device_assn;
     const GlobalDeviceIdMap* global_device_id_map;
-    const NcclCliqueIdCallback* nccl_clique_id_callback;
+    const CliqueIdCallback* nccl_clique_id_callback;
 
     int64_t collective_max_nchannels;
     int64_t p2p_max_nchannels;
@@ -275,7 +277,7 @@ class Thunk {
                             GlobalDeviceId global_device_id,
                             const DeviceAssignment* device_assn,
                             const GlobalDeviceIdMap* global_device_id_map,
-                            const NcclCliqueIdCallback* nccl_clique_id_callback,
+                            const CliqueIdCallback* nccl_clique_id_callback,
                             int64_t collective_max_nchannels,
                             int64_t p2p_max_nchannels);
   };
