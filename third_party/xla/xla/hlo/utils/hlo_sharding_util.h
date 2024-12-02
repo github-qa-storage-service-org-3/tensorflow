@@ -34,7 +34,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/service/call_graph.h"
 #include "xla/shape.h"
-#include "xla/statusor.h"
+#include "xla/status.h"
 #include "xla/util.h"
 
 namespace xla {
@@ -75,7 +75,9 @@ bool MergeShardingIfCompatible(const HloSharding& to_merge,
 // Find a reasonable common sharding for a list of shardings. The reasonable
 // sharding should incur little(the least) amount of total resharding cost when
 // resharding all the shardings to this common sharding.
-HloSharding FindCommonSharding(absl::Span<const HloSharding> shardings);
+HloSharding FindCommonSharding(
+    absl::Span<const HloSharding> shardings,
+    std::optional<HloSharding> default_sharding = std::nullopt);
 
 // Given a map<device, occurrence_count>, selects the device with higher
 // occurrence count (if any). If top_count in not nullptr, it will receive the
@@ -323,8 +325,8 @@ absl::InlinedVector<int64_t, 1> GetScatterParallelUpdateDims(
 
 // Returns the operand pass-through dimensions for gather operand.
 absl::InlinedVector<int64_t, 1> GetGatherOperandPassthroughOperandDims(
-    const Shape& operand_shape, const HloSharding& operand_sharding,
-    const HloInstruction& hlo, absl::Span<const int64_t> slice_sizes);
+    const Shape& operand_shape, const HloInstruction& hlo,
+    absl::Span<const int64_t> slice_sizes);
 
 // Returns the operand pass-through dimensions for scatter operand(s).
 absl::InlinedVector<int64_t, 1> GetScatterOperandPassthroughOperandDims(
@@ -333,8 +335,7 @@ absl::InlinedVector<int64_t, 1> GetScatterOperandPassthroughOperandDims(
 
 absl::InlinedVector<int64_t, 1> GetGatherOperandPassthroughOutputDims(
     const Shape& output_shape, const Shape& operand_shape,
-    const HloSharding& operand_sharding, const HloInstruction& hlo,
-    absl::Span<const int64_t> slice_sizes);
+    const HloInstruction& hlo, absl::Span<const int64_t> slice_sizes);
 
 absl::InlinedVector<int64_t, 1> GetScatterOperandPassthroughUpdateDims(
     const Shape& update_shape, const Shape& operand_shape,
@@ -372,6 +373,7 @@ struct GroupedSharding {
         sharding(std::move(grouped_sharding)),
         subgroup_manual(subgroup_manual) {}
   std::string ToString() const;
+  // TODO(b/316622399): Migrate this to be a TileAssignment.
   std::vector<std::vector<int64_t>> device_groups;
   DimensionVector group_dims;
   DimensionVector group_dim_sizes;
@@ -478,6 +480,23 @@ Shape UntileShape(const HloSharding& sharding, const Shape& shape);
 // Returns the un-tiled shape.
 // REQUIRES: !sharding.IsTuple()
 Shape UntileLeafShape(const HloSharding& sharding, const Shape& shape);
+
+// Returns the tiled shape.
+Shape TileShape(const HloSharding& sharding, const Shape& shape);
+
+// Returns the tiled shape.
+// REQUIRES: !sharding.IsTuple()
+Shape TileLeafShape(const HloSharding& sharding, const Shape& shape);
+
+// Canonicalizes entry_computation_layout by calling
+// module->layout_canonicalization_callback(), which gives canonicalized
+// argument and result layouts based on current module. Currently used by PJRT
+// that assigns layouts based on runtime shapes. Refer to
+// DetermineArgumentLayoutsFromCompileOptions() in
+// tensorflow/compiler/xla/pjrt/utils.h.
+absl::Status CanonicalizeLayoutAfterShardingPropagation(
+    HloModule* module, bool update_output_layout,
+    bool update_parameters_layout);
 
 }  // namespace hlo_sharding_util
 }  // namespace xla

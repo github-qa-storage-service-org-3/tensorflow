@@ -18,17 +18,22 @@ limitations under the License.
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
-#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
+#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/kernel_arguments.h"
@@ -37,12 +42,13 @@ limitations under the License.
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/runtime/kernel_thunk.h"
 #include "xla/service/gpu/triton_fusion_analysis.h"
+#include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_util.h"
-#include "xla/statusor.h"
-#include "tsl/platform/errors.h"
+#include "xla/shape.h"
+#include "xla/status_macros.h"
 #include "tsl/platform/statusor.h"
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #include "xla/service/gpu/ir_emitter_triton.h"
 #else
 #include "absl/status/status.h"
@@ -98,7 +104,7 @@ absl::StatusOr<FusionEmissionResult> TritonFusion::Emit(
     IrEmitterContext& ir_emitter_context,
     const HloFusionInstruction& fusion) const {
   llvm::IRBuilder builder(ir_emitter_context.llvm_module()->getContext());
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   VLOG(3) << fusion.ToString();
   std::string suggested_kernel_name = std::string(fusion.name());
   TF_ASSIGN_OR_RETURN(
@@ -137,8 +143,7 @@ absl::StatusOr<FusionEmissionResult> TritonFusion::Emit(
       TF_ASSIGN_OR_RETURN(
           triton_wrapper_result,
           TritonWrapper(analysis, impl_fn_name, hlo_computation,
-                        kTritonSoftmaxFusionKind,
-                        ir_emitter_context.cuda_compute_capability(),
+                        ir_emitter_context.gpu_compute_capability(),
                         ir_emitter_context.gpu_device_info(), config,
                         ir_emitter_context.llvm_module(), &EmitSoftMax,
                         *ir_emitter_context.mlir_context()));
@@ -154,6 +159,7 @@ absl::StatusOr<FusionEmissionResult> TritonFusion::Emit(
         triton_config.set_split_k(1);
         triton_config.set_num_stages(1);
         triton_config.set_num_warps(2);
+        triton_config.set_num_ctas(1);
       }
       TF_ASSIGN_OR_RETURN(
           TritonGemmConfig config,
@@ -164,13 +170,13 @@ absl::StatusOr<FusionEmissionResult> TritonFusion::Emit(
       TF_ASSIGN_OR_RETURN(
           triton_wrapper_result,
           TritonWrapper(analysis, impl_fn_name, hlo_computation,
-                        kTritonGemmFusionKind,
-                        ir_emitter_context.cuda_compute_capability(),
+                        ir_emitter_context.gpu_compute_capability(),
                         ir_emitter_context.gpu_device_info(), config,
                         ir_emitter_context.llvm_module(), &EmitMatMul,
                         *ir_emitter_context.mlir_context()));
-      launch_dimensions =
-          GetMatMulLaunchDimensions(analysis, analysis_.fusion(), config);
+      TF_ASSIGN_OR_RETURN(
+          launch_dimensions,
+          GetMatMulLaunchDimensions(analysis, analysis_.fusion(), config));
     }
 
     llvm::Function* impl_fn =
@@ -212,7 +218,7 @@ absl::StatusOr<FusionEmissionResult> TritonFusion::Emit(
 
   return result;
 #else
-  return absl::UnimplementedError("Triton support requires CUDA");
+  return absl::UnimplementedError("Triton support requires CUDA or ROCm");
 #endif
 }
 

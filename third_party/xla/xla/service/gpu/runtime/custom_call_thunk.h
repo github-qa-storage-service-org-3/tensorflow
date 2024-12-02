@@ -23,12 +23,14 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/string_view.h"
+#include "xla/executable_run_options.h"
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/call_frame.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/custom_call_status.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/buffer_allocations.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/shape.h"
 #include "xla/status.h"
 
@@ -76,12 +78,15 @@ class CustomCallThunk : public Thunk {
                   std::vector<std::optional<Slice>> results,
                   const std::string& opaque);
 
-  CustomCallThunk(ThunkInfo thunk_info, XLA_FFI_Handler* handler,
+  CustomCallThunk(ThunkInfo thunk_info, XLA_FFI_Handler_Bundle bundle,
                   std::vector<std::optional<Slice>> operands,
                   std::vector<std::optional<Slice>> results,
                   AttributesMap attributes,
                   const HloComputation* called_computation);
 
+  absl::Status Prepare(const PrepareParams& params,
+                       ResourceRequests& resource_requests) override;
+  absl::Status Initialize(const InitializeParams& params) override;
   absl::Status ExecuteOnStream(const ExecuteParams& params) override;
 
   const CustomCallTarget& call_target() const { return call_target_; }
@@ -93,7 +98,10 @@ class CustomCallThunk : public Thunk {
 
  private:
   absl::Status ExecuteCustomCall(const ExecuteParams& params);
-  absl::Status ExecuteFfiHandler(const ExecuteParams& params);
+
+  absl::Status ExecuteFfiHandler(XLA_FFI_Handler* handler,
+                                 const ExecutableRunOptions& run_options,
+                                 const BufferAllocations* buffer_allocations);
 
   std::vector<std::optional<Slice>> operands_;
   std::vector<std::optional<Slice>> results_;
@@ -106,7 +114,7 @@ class CustomCallThunk : public Thunk {
   // XLA FFI provides a right type safe mechanism for registering external
   // functions with XLA runtime. It's under construction, and still misses
   // a lot of features. Long term it will replace legacy custom calls.
-  XLA_FFI_Handler* handler_ = nullptr;
+  std::optional<XLA_FFI_Handler_Bundle> bundle_;
   AttributesMap attributes_;
 
   // TODO(ezhulenev): Currently we assume that HloModule that owns this
@@ -119,11 +127,6 @@ class CustomCallThunk : public Thunk {
   // custom calls that access called computation can only be linked statically.
   const HloComputation* called_computation_ = nullptr;
 };
-
-// Converts MLIR dictionary attribute attached to a custom call operation to a
-// custom call thunk attributes that are forwarded to the FFI handler.
-absl::StatusOr<CustomCallThunk::AttributesMap> BuildAttributesMap(
-    mlir::DictionaryAttr dict);
 
 }  // namespace gpu
 }  // namespace xla

@@ -29,12 +29,12 @@ limitations under the License.
 #include "xla/status.h"
 #include "xla/tools/hlo_decomposer.h"
 #include "xla/tools/hlo_module_loader.h"
+#include "xla/tsl/util/command_line_flags.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/util/command_line_flags.h"
 
 namespace {
 const char* const kUsage = R"(
@@ -48,8 +48,8 @@ bazel run extract_collective_operations -- --input=path/to/hlo_module
 }  // namespace
 
 namespace xla {
-Status ExtractCollectiveOperations(const std::string& input,
-                                   const std::string& output) {
+absl::Status ExtractCollectiveOperations(const std::string& input,
+                                         const std::string& output) {
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<HloModule> test_module,
       LoadModuleFromFile(input, std::string(tsl::io::Extension(input)),

@@ -22,7 +22,6 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "xla/executable_run_options.h"
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/call_frame.h"
@@ -31,12 +30,12 @@ limitations under the License.
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/custom_call_status.h"
 #include "xla/service/custom_call_status_internal.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/buffer_allocations.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/status.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/util.h"
-#include "tsl/platform/errors.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #include "xla/stream_executor/gpu/gpu_stream.h"
@@ -60,7 +59,8 @@ CustomCallThunk::CustomCallThunk(ThunkInfo thunk_info,
       call_target_(std::move(call_target)),
       opaque_(opaque) {}
 
-CustomCallThunk::CustomCallThunk(ThunkInfo thunk_info, XLA_FFI_Handler* handler,
+CustomCallThunk::CustomCallThunk(ThunkInfo thunk_info,
+                                 XLA_FFI_Handler_Bundle bundle,
                                  std::vector<std::optional<Slice>> operands,
                                  std::vector<std::optional<Slice>> results,
                                  AttributesMap attributes,
@@ -68,7 +68,7 @@ CustomCallThunk::CustomCallThunk(ThunkInfo thunk_info, XLA_FFI_Handler* handler,
     : Thunk(Thunk::kCustomCall, thunk_info),
       operands_(std::move(operands)),
       results_(std::move(results)),
-      handler_(std::move(handler)),
+      bundle_(bundle),
       attributes_(std::move(attributes)),
       called_computation_(called_computation) {}
 
@@ -109,26 +109,38 @@ absl::Status CustomCallThunk::ExecuteCustomCall(const ExecuteParams& params) {
 #endif  //   GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 }
 
-absl::Status CustomCallThunk::ExecuteFfiHandler(const ExecuteParams& params) {
+absl::Status CustomCallThunk::ExecuteFfiHandler(
+    XLA_FFI_Handler* handler, const ExecutableRunOptions& run_options,
+    const BufferAllocations* buffer_allocations) {
+  if (handler == nullptr) {
+    return absl::InternalError("FFI execute handler is not set");
+  }
+
   // TODO(ezhulenev): This is not the most optimal approach, as we'll be doing
   // a lot of extra allocation on every call. We have to keep attributes
   // separate from arguments, as they do not change after thunk is constructed.
   CallFrameBuilder builder;
 
-  for (auto& slices : {operands_, results_}) {
-    for (const std::optional<Slice>& slice : slices) {
-      // TODO(ezhulenev): Add a token argument type to XLA:FFI.
-      if (!slice.has_value()) {
-        return Internal("FFI handlers do not support tokens (yet)!");
-      }
+  for (auto& operand : operands_) {
+    if (!operand.has_value())
+      return Internal("FFI handlers do not support tokens (yet)!");
+    if (!operand->slice.allocation())
+      return Internal("custom call argument missing buffer allocation");
 
-      if (!slice->slice.allocation())
-        return Internal("custom call input missing buffer allocation");
+    builder.AddBufferArg(buffer_allocations->GetDeviceAddress(operand->slice),
+                         operand->shape.element_type(),
+                         operand->shape.dimensions());
+  }
 
-      builder.AddBufferArg(
-          params.buffer_allocations->GetDeviceAddress(slice->slice),
-          slice->shape.element_type(), slice->shape.dimensions());
-    }
+  for (auto& result : results_) {
+    if (!result.has_value())
+      return Internal("FFI handlers do not support tokens (yet)!");
+    if (!result->slice.allocation())
+      return Internal("custom call result missing buffer allocation");
+
+    builder.AddBufferRet(buffer_allocations->GetDeviceAddress(result->slice),
+                         result->shape.element_type(),
+                         result->shape.dimensions());
   }
 
   CallFrameBuilder::AttributesBuilder attrs;
@@ -137,67 +149,55 @@ absl::Status CustomCallThunk::ExecuteFfiHandler(const ExecuteParams& params) {
   builder.AddAttributes(attrs.Build());
   CallFrame call_frame = builder.Build();
 
-  // TODO(ezhulenev): Remove `ServiceExecutableRunOptions` from FFI handler
+  // TODO(b/340104720): Remove `ServiceExecutableRunOptions` from FFI handler
   // execution context, as apparently it's not easily accessible from Thunk.
-  ExecutableRunOptions run_options;
-  run_options.set_stream(params.stream);
   ServiceExecutableRunOptions service_run_options(run_options);
 
   CallOptions options = {&service_run_options, called_computation_};
-  return Call(handler_, call_frame, options);
+  return Call(bundle_->execute, call_frame, options);
+}
+
+absl::Status CustomCallThunk::Prepare(const PrepareParams& params,
+                                      ResourceRequests& resource_requests) {
+  // TODO(b/340104720): Remove `ServiceExecutableRunOptions` requirement from
+  // FFI to be able to support prepare stage execution.
+  if (bundle_ && bundle_->prepare) {
+    return absl::InternalError("FFI prepare stage is not yet supported");
+  }
+  return absl::OkStatus();
+}
+
+absl::Status CustomCallThunk::Initialize(const InitializeParams& params) {
+  if (!bundle_ || !bundle_->initialize) {
+    return absl::OkStatus();
+  }
+
+  // TODO(b/340104720): Remove `ExecutableRunOptions` from FFI handler
+  // execution context, as apparently it's not easily accessible from Thunk.
+  ExecutableRunOptions run_options;
+  run_options.set_stream(params.stream);
+  run_options.set_allocator(params.buffer_allocations->memory_allocator());
+  run_options.set_device_ordinal(params.buffer_allocations->device_ordinal());
+  run_options.set_ffi_execution_context(params.ffi_execution_context);
+
+  return ExecuteFfiHandler(bundle_->initialize, run_options,
+                           params.buffer_allocations);
 }
 
 absl::Status CustomCallThunk::ExecuteOnStream(const ExecuteParams& params) {
-  return handler_ ? ExecuteFfiHandler(params) : ExecuteCustomCall(params);
-}
+  if (bundle_.has_value()) {
+    // TODO(b/340104720): Remove `ExecutableRunOptions` from FFI handler
+    // execution context, as apparently it's not easily accessible from Thunk.
+    ExecutableRunOptions run_options;
+    run_options.set_stream(params.stream);
+    run_options.set_allocator(params.buffer_allocations->memory_allocator());
+    run_options.set_device_ordinal(params.buffer_allocations->device_ordinal());
+    run_options.set_ffi_execution_context(params.ffi_execution_context);
 
-absl::StatusOr<CustomCallThunk::AttributesMap> BuildAttributesMap(
-    mlir::DictionaryAttr dict) {
-  CustomCallThunk::AttributesMap attributes;
-  for (auto& kv : dict) {
-    std::string_view name = kv.getName().strref();
-
-    auto integer = [&](mlir::IntegerAttr integer) {
-      switch (integer.getType().getIntOrFloatBitWidth()) {
-        case 32:
-          attributes[name] = static_cast<int32_t>(integer.getInt());
-          return absl::OkStatus();
-        case 64:
-          attributes[name] = static_cast<int64_t>(integer.getInt());
-          return absl::OkStatus();
-        default:
-          return absl::InvalidArgumentError(absl::StrCat(
-              "Unsupported integer attribute bit width for attribute: ", name));
-      }
-    };
-
-    auto fp = [&](mlir::FloatAttr fp) {
-      switch (fp.getType().getIntOrFloatBitWidth()) {
-        case 32:
-          attributes[name] = static_cast<float>(fp.getValue().convertToFloat());
-          return absl::OkStatus();
-        default:
-          return absl::InvalidArgumentError(absl::StrCat(
-              "Unsupported float attribute bit width for attribute: ", name));
-      }
-    };
-
-    auto str = [&](mlir::StringAttr str) {
-      attributes[name] = str.getValue().str();
-      return absl::OkStatus();
-    };
-
-    TF_RETURN_IF_ERROR(
-        llvm::TypeSwitch<mlir::Attribute, Status>(kv.getValue())
-            .Case<mlir::IntegerAttr>(integer)
-            .Case<mlir::FloatAttr>(fp)
-            .Case<mlir::StringAttr>(str)
-            .Default([&](mlir::Attribute) {
-              return absl::InvalidArgumentError(absl::StrCat(
-                  "Unsupported attribute type for attribute: ", name));
-            }));
+    return ExecuteFfiHandler(bundle_->execute, run_options,
+                             params.buffer_allocations);
   }
-  return attributes;
+  return ExecuteCustomCall(params);
 }
 
 }  // namespace gpu

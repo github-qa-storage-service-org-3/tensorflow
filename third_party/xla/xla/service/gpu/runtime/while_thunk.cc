@@ -25,7 +25,7 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/gpu/runtime/sequential_thunk.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/memory_allocation.h"
 #include "tsl/platform/errors.h"
@@ -44,9 +44,9 @@ WhileThunk::WhileThunk(
     : Thunk(Kind::kWhile, thunk_info),
       condition_result_buffer_index_(condition_result_buffer_index),
       condition_thunk_sequence_(std::make_unique<SequentialThunk>(
-          ThunkInfo(thunk_info.op), std::move(*condition_thunk_sequence))),
+          ThunkInfo(), std::move(*condition_thunk_sequence))),
       body_thunk_sequence_(std::make_unique<SequentialThunk>(
-          ThunkInfo(thunk_info.op), std::move(*body_thunk_sequence))),
+          ThunkInfo(), std::move(*body_thunk_sequence))),
       trip_count_(trip_count) {}
 
 absl::Status WhileThunk::Prepare(const PrepareParams& params,

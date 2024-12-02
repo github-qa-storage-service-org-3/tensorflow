@@ -1,10 +1,11 @@
-load("//xla/tests:build_defs.bzl", "xla_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
-load("//xla:xla.bzl", "xla_cc_binary")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
-load("@local_tsl//tsl:tsl.bzl", "if_cuda_or_rocm")
+load("@local_tsl//tsl/platform:build_config_root.bzl", "tf_gpu_tests_tags")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla:xla.bzl", "xla_cc_binary")
+load("//xla/tests:build_defs.bzl", "xla_test")
+load("//xla/tsl:tsl.bzl", "if_cuda_or_rocm", "if_google")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -16,7 +17,7 @@ build_test(
     name = "hlo_runner_main_build_test",
     tags = [
         "cpu",
-        "gpu",
+        "gpu",  # TODO(ddunleavy): this configuration of tags will only build on GPU in OSS.
     ],
     targets = [
         ":hlo_runner_main",
@@ -28,8 +29,40 @@ xla_cc_binary(
     testonly = True,
     srcs = ["hlo_runner_main.cc"],
     tags = [
-        "gpu",
         "noasan",  # Exceeds linker limit.
+        "nomac",
+    ] + tf_gpu_tests_tags(),
+    deps = [
+        ":functional_hlo_runner",
+        ":hlo_runner_flags",
+        "//xla:debug_options_flags",
+        "//xla:status",
+        "//xla:statusor",
+        "//xla/pjrt:pjrt_client",
+        "//xla/pjrt/distributed",
+        "//xla/service:cpu_plugin",
+        "//xla/tsl/util:command_line_flags",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:platform_port",
+        "@local_tsl//tsl/platform:status",
+        "@local_tsl//tsl/platform:statusor",
+    ] + if_cuda_or_rocm([
+        "//xla/service:gpu_plugin",
+    ]) + if_cuda([
+        "//xla/stream_executor:cuda_platform",
+    ]) + if_rocm([
+        "//xla/stream_executor:rocm_platform",
+    ]),
+)
+
+xla_cc_binary(
+    name = "cuda_hlo_runner_main",
+    testonly = True,
+    srcs = ["hlo_runner_main.cc"],
+    tags = [
+        "gpu",
         "nomac",
     ],
     deps = [
@@ -39,20 +72,19 @@ xla_cc_binary(
         "//xla:status",
         "//xla:statusor",
         "//xla/pjrt:pjrt_client",
+        "//xla/pjrt/distributed",
         "//xla/service:cpu_plugin",
+        "//xla/service:gpu_plugin",
+        "//xla/stream_executor:cuda_platform",
+        "//xla/tsl/util:command_line_flags",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:platform_port",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
-        "@local_tsl//tsl/util:command_line_flags",
-    ] + if_cuda_or_rocm([
-        "//xla/service:gpu_plugin",
-    ]) + if_cuda([
-        "//xla/stream_executor:cuda_platform",
-    ]) + if_rocm([
-        "//xla/stream_executor:rocm_platform",
+    ] + if_google([
+        "//third_party/py/jax/jaxlib:gpu_kernels",  # fixdeps: keep
     ]),
 )
 
@@ -68,6 +100,7 @@ cc_library(
         "//xla:statusor",
         "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/pjrt:host_memory_spaces",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_compiler",
         "//xla/pjrt:pjrt_executable",
@@ -79,6 +112,7 @@ cc_library(
         "//xla/service:hlo_pass_pipeline",
         "//xla/tests:test_utils",
         "//xla/tools:hlo_control_flow_flattening",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -115,7 +149,10 @@ xla_test(
             "notap",
         ],
     },
-    backends = ["gpu"],
+    backends = [
+        "cpu",
+        "gpu",
+    ],
     data = [
         "data/sharded_16_devices.hlo",
         "data/sharded_2_devices.hlo",
@@ -125,6 +162,8 @@ xla_test(
     tags = ["nomac"],
     deps = [
         ":functional_hlo_runner",
+        "//xla:statusor",
+        "//xla/pjrt:pjrt_client",
         "//xla/tests:filecheck",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/lib/core:status_test_util",

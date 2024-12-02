@@ -1,9 +1,9 @@
-load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cuda_cc_test")
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "@local_tsl//tsl/platform:build_config_root.bzl",
     "tf_cuda_tests_tags",
 )
+load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cuda_cc_test")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -70,6 +70,19 @@ cc_library(
     ],
 )
 
+tf_cc_test(
+    name = "async_value_tensor_test",
+    srcs = ["async_value_tensor_test.cc"],
+    deps = [
+        ":async_value_tensor",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:protos_all_cc",
+        "@com_google_googletest//:gtest_main",
+        "@local_xla//xla/pjrt:pjrt_client",
+        "@local_xla//xla/tsl/concurrency:async_value",
+    ],
+)
+
 cc_library(
     name = "pjrt_state",
     srcs = [
@@ -85,8 +98,12 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/status",
+        "@local_xla//xla/client:local_client",
+        "@local_xla//xla/pjrt:local_device_state",
         "@local_xla//xla/pjrt:pjrt_client",
         "@local_xla//xla/pjrt:tf_pjrt_client",
+        "@local_xla//xla/stream_executor/integrations:tf_allocator_adapter",
     ],
 )
 
@@ -107,6 +124,8 @@ cc_library(
         "//tensorflow/core:framework_types_hdr",
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@local_xla//xla/pjrt:pjrt_client",
     ],
 )
@@ -157,6 +176,8 @@ tf_cc_test(
         "//tensorflow/core:framework",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
         "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
         "@local_xla//xla/pjrt:tfrt_cpu_pjrt_client",

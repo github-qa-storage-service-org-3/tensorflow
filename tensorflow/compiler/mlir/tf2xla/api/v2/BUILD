@@ -119,12 +119,11 @@ cc_library(
     ],
     deps = [
         ":device_type_proto_cc",
-        ":tf_dialect_to_executor",
+        "//tensorflow/compiler/mlir/tensorflow:attribute_utils",
         "//tensorflow/compiler/mlir/tensorflow:dump_mlir_util",
         "//tensorflow/compiler/mlir/tensorflow:error_util",
         "//tensorflow/compiler/mlir/tensorflow:tensorflow_types",
         "//tensorflow/compiler/mlir/tensorflow/transforms:verify_no_outside_compilation_markers_pass",
-        "//tensorflow/compiler/mlir/tensorflow/transforms/host_runtime:lower_cluster_to_runtime_ops",
         "//tensorflow/compiler/mlir/tf2xla/internal:clustering_bridge_passes",
         "//tensorflow/compiler/mlir/tf2xla/internal:logging_hooks",
         "//tensorflow/core:framework",
@@ -133,7 +132,6 @@ cc_library(
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:stacktrace",
         "//tensorflow/core/platform:status",
-        "//tensorflow/core/tpu:tpu_defs",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
@@ -143,7 +141,6 @@ cc_library(
         "@llvm-project//mlir:Support",
         "@local_tsl//tsl/platform:error_logging",
         "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:status",
     ],
 )
 
@@ -159,6 +156,7 @@ tf_cc_test(
         ":cluster_tf",
         "//tensorflow/compiler/mlir:register_common_dialects",
         "//tensorflow/compiler/mlir/tensorflow",
+        "//tensorflow/compiler/mlir/tensorflow:attribute_utils",
         "//tensorflow/compiler/mlir/tensorflow:tf_dialect_lib",
         "//tensorflow/core/lib/monitoring:cell_reader",
         "//tensorflow/core/platform:resource_loader",
@@ -212,6 +210,7 @@ tf_cc_test(
     srcs = ["tf_dialect_to_executor_test.cc"],
     data = [
         "testdata/empty_func.mlir",
+        "testdata/func_with_dead_ops.mlir",
         "testdata/invalid_executor.mlir",
     ],
     deps = [
@@ -222,10 +221,9 @@ tf_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@local_tsl//tsl/lib/core:status_test_util",
-        "@local_tsl//tsl/lib/monitoring:test_utils",
-        "@local_tsl//tsl/platform:status",
     ],
 )

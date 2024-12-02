@@ -28,11 +28,18 @@ namespace shlo_ref {
     return s;                             \
   }
 
-// Propages the input shape to the output shape.
+// Propagates the input shape to the output shape.
 //
 // If the output shape is already populated, checks that is it compatible with
 // the input.
 absl::Status Propagate(const Shape& input_shape, Shape& output_shape);
+
+// Propagates the input shapes to the output shape.
+//
+// If the output shape is already populated, checks that is it compatible with
+// the inputs.
+absl::Status Propagate(const Shape& lhs_shape, const Shape& rhs_shape,
+                       Shape& output_shape);
 
 // Provides context information for the `Check*` functions error messages.
 struct CheckCtx {
@@ -57,8 +64,11 @@ absl::Status CheckSupportedTypes(CheckCtx ctx, const Tensor& tensor,
   if ((static_cast<CheckFuncs&&>(checks)(tensor) || ...)) {
     return absl::OkStatus();
   }
+  std::string tensor_type_repr = std::visit(
+      [](auto v) -> std::string { return ToString(v); }, tensor.element_type());
   return absl::FailedPreconditionError("stablehlo." + ctx.op_name +
-                                       ": Unsupported tensor type.");
+                                       ": Unsupported tensor type (" +
+                                       tensor_type_repr + ").");
 }
 
 // Returns true if the tensor's storage type is boolean.

@@ -113,11 +113,12 @@ absl::StatusOr<HloInstruction*> GatherSimplifier::ExpandInstruction(
   auto output_rank = static_cast<int64_t>(start_indices_dims.size() +
                                           dims.offset_dims().size());
   output_perm.reserve(output_rank);
-  auto offset_dim_index = static_cast<int64_t>(start_indices_dims.size());
   int64_t start_index_dim_index = 0;
   for (int64_t i = 0; i < output_rank; ++i) {
-    if (absl::c_linear_search(dims.offset_dims(), i)) {
-      output_perm.push_back(offset_dim_index++);
+    auto it = absl::c_find(dims.offset_dims(), i);
+    if (it != dims.offset_dims().end()) {
+      output_perm.push_back(std::distance(dims.offset_dims().begin(), it) +
+                            start_indices_dims.size());
     } else {
       output_perm.push_back(start_index_dim_index++);
     }
@@ -125,19 +126,20 @@ absl::StatusOr<HloInstruction*> GatherSimplifier::ExpandInstruction(
   return MaybeTranspose(result, output_perm);
 }
 
-bool GatherSimplifier::InstructionMatchesPattern(HloInstruction* inst) {
-  auto* gather = DynCast<HloGatherInstruction>(inst);
-  if (!gather) {
-    return false;
-  }
-
+bool GatherSimplifier::IsSimplifiedGather(const HloGatherInstruction* gather) {
   auto* start_indices = gather->operands()[1];
   const auto& dims = gather->gather_dimension_numbers();
-  return start_indices->shape().rank() != 2 || dims.index_vector_dim() != 1 ||
-         !IsIdentityPermutation(dims.start_index_map()) ||
-         !dims.collapsed_slice_dims().empty() ||
-         *dims.offset_dims().begin() != 1 ||
-         *dims.offset_dims().rbegin() != dims.offset_dims().size();
+  return start_indices->shape().rank() == 2 && dims.index_vector_dim() == 1 &&
+         IsIdentityPermutation(dims.start_index_map()) &&
+         dims.collapsed_slice_dims().empty() &&
+         *dims.offset_dims().begin() == 1 &&
+         *dims.offset_dims().rbegin() == dims.offset_dims().size() &&
+         absl::c_is_sorted(dims.offset_dims());
+}
+
+bool GatherSimplifier::InstructionMatchesPattern(HloInstruction* inst) {
+  auto* gather = DynCast<HloGatherInstruction>(inst);
+  return gather && !IsSimplifiedGather(gather);
 }
 
 }  // namespace xla

@@ -1633,8 +1633,6 @@ def TFL_EluOp: TFL_Op<"elu", [
 
 def TFL_EmbeddingLookupOp: TFL_Op<"embedding_lookup",
     [Pure,
-     PredOpTrait<"value and output must have same element type",
-       TFL_TCresVTEtIsSameAsOp<0, 1>>,
      TFL_OperandHasRank<0, 1>,
      TFL_OperandHasRankAtLeast<1, 2>,
      DynamicRangeQuantizedOpInterface,
@@ -2269,6 +2267,8 @@ def TFL_MaximumOp : TFL_Op<"maximum", [
     TFL_TensorOf<[F32, TFL_Int32Or64, QI8, QUI8, QI16]>:$max
   );
 
+  let hasFolder = 1;
+
   let builders = [TFL_BroadcastableBinaryBuilder];
 
   let hasOptions = 0;
@@ -2527,6 +2527,8 @@ def TFL_MinimumOp : TFL_Op<"minimum", [
   let results = (outs
     TFL_TensorOf<[F32, TFL_Int32Or64, QI8, QUI8, QI16]>:$min
   );
+
+  let hasFolder = 1;
 
   let builders = [TFL_BroadcastableBinaryBuilder];
 

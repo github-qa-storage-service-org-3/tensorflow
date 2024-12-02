@@ -1418,7 +1418,7 @@ InstructionValueSet& HloDataflowAnalysis::GetInstructionValueSet(
   return *value_sets_.find(instruction)->second;
 }
 
-Status HloDataflowAnalysis::InitializeInstructionValueSets() {
+absl::Status HloDataflowAnalysis::InitializeInstructionValueSets() {
   for (const HloComputation* computation : module_.MakeComputationSorted()) {
     if (!HloInstruction::IsThreadIncluded(computation->execution_thread(),
                                           execution_threads_)) {
@@ -1621,7 +1621,7 @@ Status HloDataflowAnalysis::InitializeInstructionValueSets() {
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 void HloDataflowAnalysis::OptimizePhiValues() {
@@ -1668,7 +1668,7 @@ void HloDataflowAnalysis::OptimizePhiValues() {
 }
 
 /* static */
-StatusOr<std::unique_ptr<HloDataflowAnalysis>> HloDataflowAnalysis::Run(
+absl::StatusOr<std::unique_ptr<HloDataflowAnalysis>> HloDataflowAnalysis::Run(
     const HloModule& module, bool ssa_form, bool bitcast_defines_value,
     const CanShareBuffer& can_share_buffer, const ForwardsValue& forwards_value,
     absl::flat_hash_set<absl::string_view> execution_threads) {
@@ -1731,7 +1731,7 @@ StatusOr<std::unique_ptr<HloDataflowAnalysis>> HloDataflowAnalysis::Run(
   return std::move(dataflow_analysis);
 }
 
-Status HloDataflowAnalysis::Verify() const {
+absl::Status HloDataflowAnalysis::Verify() const {
   // Verify each HloValue appears in the value sets that the value's positions()
   // indicate.
   for (const HloValue* value : values()) {
@@ -1764,7 +1764,7 @@ Status HloDataflowAnalysis::Verify() const {
     }
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 bool HloDataflowAnalysis::DoesNotUseOperandBuffer(

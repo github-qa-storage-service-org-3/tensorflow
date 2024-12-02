@@ -1,27 +1,24 @@
 # Description:
 #   Base testing infrastructure for XLA.
 
-load("//xla/tests:build_defs.bzl", "generate_backend_suites", "generate_backend_test_macros", "xla_test", "xla_test_library")
-load("//xla:xla.bzl", "xla_cc_binary", "xla_cc_test")
-load(
-    "//xla/stream_executor:build_defs.bzl",
-    "if_gpu_is_configured",
-)
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm_is_configured",
-)
-load("@local_tsl//tsl:tsl.bzl", "internal_visibility", "tsl_copts")
-load("@local_tsl//tsl:tsl.default.bzl", "filegroup")
-load(
-    "@local_tsl//tsl/platform:build_config_root.bzl",
-    "tf_cuda_tests_tags",
 )
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
+load("//xla:xla.bzl", "tests_build_defs_bzl_deps", "xla_cc_binary", "xla_cc_test")
+load(
+    "//xla/stream_executor:build_defs.bzl",
+    "if_gpu_is_configured",
+)
+load("//xla/tests:build_defs.bzl", "generate_backend_suites", "generate_backend_test_macros", "xla_test", "xla_test_library")
+load("//xla/tsl:tsl.bzl", "internal_visibility", "tsl_copts")
+load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -103,6 +100,7 @@ cc_library(
         "//xla/service:hlo_dataflow_analysis",
         "//xla/service:hlo_verifier",
         "//xla/service:transfer_manager",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -148,6 +146,7 @@ cc_library(
         "//xla/service:hlo_module_config",
         "//xla/service:hlo_parser",
         "//xla/service:hlo_verifier",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
@@ -221,6 +220,7 @@ cc_library(
         "//xla/service:interpreter_plugin",  # reference backend
         "//xla/service:platform_util",
         "//xla/stream_executor",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
@@ -286,6 +286,7 @@ cc_library(
         "//xla/service:interpreter_plugin",  # reference backend
         "//xla/service:platform_util",
         "//xla/stream_executor",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/lib/core:bitmap",
@@ -305,6 +306,7 @@ cc_library(
         ":filecheck",
         "//xla/service:llvm_compiler",
         "//xla/service/llvm_ir:llvm_util",
+        "@com_google_absl//absl/status",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:test",
     ],
@@ -372,6 +374,7 @@ cc_library(
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
@@ -413,6 +416,7 @@ xla_test(
         "//xla/hlo/ir:hlo",
         "//xla/service:backend",
         "//xla/service:executable",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/lib/core:status_test_util",
     ],
 )
@@ -537,6 +541,7 @@ xla_test(
         "//xla/client:xla_computation",
         "//xla/client/lib:arithmetic",
         "//xla/service:platform_util",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:test",
@@ -547,11 +552,12 @@ xla_test(
 xla_test(
     name = "xla_hlo_profile_test",
     srcs = ["xla_hlo_profile_test.cc"],
-    disabled_backends = [
-        # Hlo profiles are not supported on the interpreter backend.
-        "interpreter",
+    backends = [
+        # Hlo profiles are only supported on CPU/GPU.
+        "cpu",
+        "gpu",
     ],
-    tags = ["no_aarch64"],
+    tags = ["not_run:arm"],
     deps = [
         ":client_library_test_base",
         ":test_macros_header",
@@ -566,6 +572,7 @@ xla_test(
         "//xla/service:stream_pool",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:regexp",
@@ -635,6 +642,7 @@ xla_test(
         "//xla/client:local_client",
         "//xla/client:xla_builder",
         "//xla/client:xla_computation",
+        "@com_google_absl//absl/status",
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:test",
     ],
@@ -687,6 +695,29 @@ xla_test(
 xla_test(
     name = "unary_op_test",
     srcs = ["unary_op_test.cc"],
+    deps = [
+        ":client_library_test_base",
+        ":literal_test_util",
+        ":test_macros_header",
+        ":xla_internal_test_main",
+        "//xla:xla_data_proto_cc",
+        "//xla/client:global_data",
+        "//xla/client:local_client",
+        "//xla/client:xla_builder",
+        "@local_tsl//tsl/platform:test",
+    ],
+)
+
+xla_test(
+    name = "complex_unary_op_test",
+    srcs = [
+        "complex_unary_op_samples.h",
+        "complex_unary_op_test.cc",
+    ],
+    backends = [
+        "cpu",
+        "gpu",
+    ],
     deps = [
         ":client_library_test_base",
         ":literal_test_util",
@@ -793,7 +824,10 @@ xla_test(
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:ml_dtypes",
         "@ml_dtypes//:float8",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 cc_library(
@@ -892,10 +926,14 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 # Run dot tests with auto-tuning disabled.  This just does a basic sanity check
@@ -926,10 +964,14 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 # Run dot tests with dot canonicalization after the layout assignment pass.
@@ -945,6 +987,7 @@ xla_test(
         "gpu",
         "interpreter",
     ],
+    shard_count = 50,
     tags = [
         "nozapfhahn",
         "optonly",
@@ -964,15 +1007,20 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 xla_test(
     name = "gather_operation_test",
     srcs = ["gather_operation_test.cc"],
+    shard_count = 20,
     tags = ["test_hlo_pjrt_runner"],
     deps = [
         ":client_library_test_base",
@@ -991,11 +1039,7 @@ xla_test(
 xla_test(
     name = "scatter_test",
     srcs = ["scatter_test.cc"],
-    backend_tags = {
-        # TODO(b/305008247)
-        "ghostfish_grm": ["broken"],
-    },
-    tags = ["test_hlo_pjrt_runner"],
+    # TODO(b/245550554): enable Pjrt runner for scatter test once it's fixed.
     deps = [
         ":client_library_test_base",
         ":hlo_test_base",
@@ -1040,10 +1084,14 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 xla_test(
@@ -1385,10 +1433,6 @@ xla_test(
 xla_test(
     name = "float8_test",
     srcs = ["float8_test.cc"],
-    backend_tags = {
-        # TODO(b/305009586)
-        "ghostfish_grm": ["broken"],
-    },
     deps = [
         ":client_library_test_base",
         ":xla_internal_test_main",
@@ -1497,6 +1541,7 @@ xla_test(
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
     ],
@@ -1580,6 +1625,24 @@ xla_test(
     ],
 )
 
+xla_test(
+    name = "reduce_window_rewriter_execution_test",
+    srcs = ["reduce_window_rewriter_execution_test.cc"],
+    backends = [
+        "cpu",
+        "gpu",
+    ],
+    deps = [
+        ":hlo_test_base",
+        ":test_macros_header",
+        ":xla_internal_test_main",
+        "//xla:error_spec",
+        "//xla:xla_data_proto_cc",
+        "@com_google_absl//absl/strings:string_view",
+        "@local_tsl//tsl/platform:test",
+    ],
+)
+
 # External xla_test targets can add "reduce_window_test_library" to xla_test_library_deps, in order
 # to refer to the cc_library compiled with the correct backend macros. The following test target
 # "reduce_window_test" is an example.
@@ -1615,7 +1678,7 @@ xla_test(
     name = "reduce_window_test",
     timeout = "long",
     srcs = [],
-    shard_count = 20,
+    shard_count = 40,
     tags = [
         "optonly",
     ],
@@ -1702,10 +1765,15 @@ xla_test(
     srcs = ["token_hlo_test.cc"],
     deps = [
         ":hlo_test_base",
+        ":literal_test_util",
         ":test_macros_header",
         ":test_utils",
         ":xla_internal_test_main",
-        "//xla/service:hlo_verifier",
+        "//xla:literal",
+        "//xla:literal_util",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:hlo_runner",
+        "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
     ],
 )
@@ -1740,17 +1808,26 @@ xla_test(
         ":test_macros_header",
         ":test_utils",
         ":xla_internal_test_main",  # fixdeps: keep
+        "//xla:literal",
         "//xla:literal_util",
         "//xla:shape_util",
         "//xla:xla_data_proto_cc",
         "//xla/client:xla_builder",
         "//xla/client/lib:constants",
+        "//xla/ffi",
+        "//xla/ffi:attribute_map",
+        "//xla/ffi:ffi_api",
         "//xla/hlo/ir:hlo",
-        "//xla/runtime/ffi:ffi_api",
         "//xla/service:custom_call_status",
         "//xla/service:custom_call_target_registry",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:dynamic_annotations",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
     ],
 )
@@ -1862,7 +1939,10 @@ xla_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@local_tsl//tsl/platform:test",
-    ],
+    ] + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 xla_test(
@@ -2085,6 +2165,7 @@ xla_test(
         ":hlo_test_base",
         ":literal_test_util",
         ":test_macros_header",
+        ":test_utils",
         ":xla_internal_test_main",
         "//xla:literal",
         "//xla/hlo/ir:hlo",
@@ -2141,10 +2222,6 @@ xla_test(
 xla_test(
     name = "bitcast_convert_test",
     srcs = ["bitcast_convert_test.cc"],
-    backend_tags = {
-        # TODO(b/305008729)
-        "ghostfish_grm": ["broken"],
-    },
     deps = [
         ":client_library_test_base",
         ":hlo_test_base",
@@ -2175,29 +2252,6 @@ xla_test(
         "//xla:shape_util",
         "//xla:test",
         "//xla:test_helpers",
-    ],
-)
-
-xla_test(
-    name = "compilation_cache_test",
-    srcs = ["compilation_cache_test.cc"],
-    deps = [
-        ":client_library_test_base",
-        ":literal_test_util",
-        ":test_macros_header",
-        ":test_utils",
-        ":xla_internal_test_main",
-        "//xla:literal",
-        "//xla:shape_util",
-        "//xla:statusor",
-        "//xla:xla_data_proto_cc",
-        "//xla:xla_proto_cc",
-        "//xla/client:global_data",
-        "//xla/client:local_client",
-        "//xla/client:xla_builder",
-        "//xla/client:xla_computation",
-        "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/platform:test",
     ],
 )
 
@@ -2362,12 +2416,13 @@ xla_cc_test(
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
         "TENSORFLOW_USE_ROCM",
     ]),
-    tags = tf_cuda_tests_tags(),
+    use_gpu = True,
     deps = if_gpu_is_configured([
         ":verified_hlo_module",
         "//xla:literal_util",
         "//xla:test_helpers",
         "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/status",
         "//xla/service:backend",
         "//xla/service:cpu_plugin",
         "//xla/service:gpu_plugin",
@@ -2410,6 +2465,11 @@ xla_test(
 xla_test(
     name = "cpu_gpu_fusion_test",
     srcs = ["cpu_gpu_fusion_test.cc"],
+    backends = [
+        "cpu",
+        "gpu",
+        "interpreter",
+    ],
     deps = [
         ":client_library_test_base",
         ":hlo_test_base",
@@ -2424,6 +2484,7 @@ xla_test(
         "//xla/client:xla_builder",
         "//xla/hlo/ir:hlo",
         "//xla/service:platform_util",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
         "@local_tsl//tsl/platform:logging",
@@ -2465,6 +2526,7 @@ xla_cc_test(
         ":local_client_aot_test_computation.o",
     ],
     linkstatic = 1,
+    tags = ["not_run:arm"],  # b/341355246
     deps = [
         "//xla:executable_run_options",
         "@com_google_absl//absl/base:dynamic_annotations",
@@ -2520,6 +2582,7 @@ xla_test(
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
         "//xla/stream_executor:platform_manager",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "//xla/stream_executor/host:host_platform",
         "//xla/stream_executor/host:host_platform_id",
         "@local_tsl//tsl/platform:env",
@@ -2628,6 +2691,7 @@ xla_cc_test(
 xla_test(
     name = "transfer_manager_test",
     srcs = ["transfer_manager_test.cc"],
+    shard_count = 50,
     deps = [
         ":literal_test_util",
         ":local_client_test_base",
@@ -2673,7 +2737,7 @@ xla_cc_test(
     name = "sample_file_test",
     srcs = ["sample_file_test.cc"],
     data = ["isolated_convolution.hlo"],
-    tags = tf_cuda_tests_tags(),
+    use_gpu = True,
     deps = [
         ":hlo_test_base",
         ":xla_internal_test_main",  # fixdeps: keep
@@ -2708,10 +2772,6 @@ xla_test(
 xla_test(
     name = "iota_test",
     srcs = ["iota_test.cc"],
-    backend_tags = {
-        # TODO(b/305011394)
-        "ghostfish_grm": ["broken"],
-    },
     shard_count = 30,
     tags = [
         # Require optimized builds, iota_test_cpu is very slow in fastbuild.
@@ -2898,6 +2958,7 @@ xla_test(
         "cpu",
     ],
     copts = tsl_copts(),
+    shard_count = 4,
     deps = [
         ":hlo_test_base",
         ":test_macros_header",
@@ -2906,6 +2967,8 @@ xla_test(
         "//xla:shape_util",
         "//xla:test",
         "//xla:test_helpers",
+        "//xla/service/cpu:onednn_util",
+        "@local_tsl//tsl/platform:platform_port",
     ],
 )
 
@@ -2923,4 +2986,21 @@ xla_test(
         "//xla/hlo/ir:hlo",
         "@local_tsl//tsl/platform:test",
     ],
+)
+
+bzl_library(
+    name = "plugin_bzl",
+    srcs = ["plugin.bzl"],
+    deps = [],
+)
+
+bzl_library(
+    name = "build_defs_bzl",
+    srcs = ["build_defs.bzl"],
+    deps = [
+        ":plugin_bzl",
+        "//xla:xla_bzl",
+        "//xla/stream_executor:build_defs_bzl",
+        "@local_tsl//tsl/platform:build_config_root_bzl",
+    ] + tests_build_defs_bzl_deps(),
 )

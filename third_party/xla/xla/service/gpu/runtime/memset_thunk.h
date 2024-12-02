@@ -19,7 +19,7 @@ limitations under the License.
 #include <cstdint>
 
 #include "xla/service/buffer_assignment.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/status.h"
 
 // This file contains thunks that set a buffer's elements to a particular value.
@@ -36,8 +36,6 @@ class MemzeroThunk : public Thunk {
       : Thunk(Kind::kMemzero, thunk_info), dest_(dest) {}
 
   absl::Status ExecuteOnStream(const ExecuteParams& params) override;
-
-  void ClearCompileTimeInfo() override { Thunk::ClearCompileTimeInfo(); }
 
   const BufferAllocation::Slice& destination() const { return dest_; }
 
@@ -56,8 +54,6 @@ class Memset32BitValueThunk : public Thunk {
         dest_(dest) {}
 
   absl::Status ExecuteOnStream(const ExecuteParams& params) override;
-
-  void ClearCompileTimeInfo() override { Thunk::ClearCompileTimeInfo(); }
 
   const BufferAllocation::Slice& destination() const { return dest_; }
   uint32_t value() const { return value_; }

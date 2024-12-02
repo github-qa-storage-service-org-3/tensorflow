@@ -1,8 +1,11 @@
 /* Copyright 2023 The OpenXLA Authors.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
+
 You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
+
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -659,8 +662,9 @@ HloModule softmax
 max_computation {
   arg_0 = $0[] parameter(0)
   arg_1 = $0[] parameter(1)
-  floor_0 = $0[] floor(arg_0)
-  ROOT maximum = $0[] maximum(floor_0, arg_1)
+  if_0 = pred[] is-finite(arg_0)
+  c = $0[] convert(if_0)
+  ROOT maximum = $0[] maximum(c, arg_1)
 }
 
 ENTRY main {
@@ -920,11 +924,12 @@ max_computation {
 
 ENTRY main {
   param_0 = $0[127,125]{1,0} parameter(0)
-  floor_0 = $0[127,125] floor(param_0)
+  if_0 = pred[127,125] is-finite(param_0)
+  c = $0[127,125] convert(if_0)
   constant_neg_inf = $0[] constant(-inf)
-  reduce = $0[127]{0} reduce(floor_0, constant_neg_inf), dimensions={1}, to_apply=max_computation
+  reduce = $0[127]{0} reduce(c, constant_neg_inf), dimensions={1}, to_apply=max_computation
   broadcast = $0[127,125]{1,0} broadcast(reduce), dimensions={0}
-  ROOT subtract = $0[127,125]{1,0} subtract(floor_0, broadcast)
+  ROOT subtract = $0[127,125]{1,0} subtract(c, broadcast)
 }
 )";
   const std::string hlo_string =
@@ -938,7 +943,7 @@ ENTRY main {
   EXPECT_TRUE(verifier().Run(module.get()).status().ok());
   VLOG(2) << module->ToString();
   EXPECT_THAT(module->entry_computation()->root_instruction(),
-              GmockMatch(m::Fusion(m::Floor(m::Parameter()))));
+              GmockMatch(m::Fusion(m::IsFinite(m::Parameter()))));
 }
 
 TEST_P(SoftmaxRewriterTritonTest,
@@ -1073,9 +1078,8 @@ ENTRY main {
               GmockMatch(m::Fusion(m::Parameter())));
 }
 
-TEST_P(
-    SoftmaxRewriterTritonTest,
-    CanOnlyFuseConvertInvolvingBF16InputIntoSoftmaxDiamondWithAtLeastAmpereComputeCapability) {  // NOLINT(whitespace/line_length)
+TEST_P(SoftmaxRewriterTritonTest,
+       CanFuseConvertInvolvingBF16InputIntoSoftmaxDiamond) {
   PrimitiveType data_type = GetParam();
   const std::string hlo_string_template = R"(
 HloModule softmax
@@ -1091,52 +1095,51 @@ ENTRY main {
   reduce = $0[127]{0} reduce(param_0_$0, constant_neg_inf), dimensions={1}, to_apply=max_computation
   broadcast = $0[127,125]{1,0} broadcast(reduce), dimensions={0}
   ROOT subtract = $0[127,125]{1,0} subtract(param_0_$0, broadcast)
-}
-)";
+})";
   const std::string hlo_string =
       absl::Substitute(hlo_string_template,
                        primitive_util::LowercasePrimitiveTypeName(data_type));
 
-  auto ampere_module = ParseAndReturnVerifiedModule(hlo_string).value();
-  auto volta_module = ampere_module->Clone();
+  auto module = ParseAndReturnVerifiedModule(hlo_string).value();
 
-  // Ampere
   EXPECT_TRUE(
       SoftmaxRewriterTritonMatchAndRewrite(
           se::CudaComputeCapability{se::CudaComputeCapability::AMPERE, 0},
-          ampere_module.get())
+          module.get())
           .value());
-  EXPECT_TRUE(verifier().Run(ampere_module.get()).status().ok());
-  VLOG(2) << ampere_module->ToString();
-  EXPECT_THAT(ampere_module->entry_computation()->root_instruction(),
+  EXPECT_TRUE(verifier().Run(module.get()).status().ok());
+  VLOG(2) << module->ToString();
+  EXPECT_THAT(module->entry_computation()->root_instruction(),
               GmockMatch(m::Fusion(m::Parameter())));
+}
 
-  // Volta (pre-Ampere)
-  VLOG(2) << volta_module->ToString();
+TEST_F(SoftmaxRewriterTritonTest, RewriterBailsOutOnPreAmpereGpu) {
+  const std::string hlo_string = R"(
+HloModule softmax
+max_computation {
+  arg_0 = f32[] parameter(0)
+  arg_1 = f32[] parameter(1)
+  ROOT maximum = f32[] maximum(arg_0, arg_1)
+}
+ENTRY main {
+  param_0 = bf16[127,125]{1,0} parameter(0)
+  param_0_f32 = f32[127,125]{1,0} convert(param_0)
+  constant_neg_inf = f32[] constant(-inf)
+  reduce = f32[127]{0} reduce(param_0_f32, constant_neg_inf), dimensions={1}, to_apply=max_computation
+  broadcast = f32[127,125]{1,0} broadcast(reduce), dimensions={0}
+  ROOT subtract = f32[127,125]{1,0} subtract(param_0_f32, broadcast)
+})";
 
-  switch (data_type) {
-    case F32:
-    case F16:
-      EXPECT_TRUE(
-          SoftmaxRewriterTritonMatchAndRewrite(
-              se::CudaComputeCapability{se::CudaComputeCapability::VOLTA, 0},
-              volta_module.get())
-              .value());
-      EXPECT_TRUE(verifier().Run(volta_module.get()).status().ok());
-      EXPECT_THAT(volta_module->entry_computation()->root_instruction(),
-                  GmockMatch(m::Fusion(m::Convert(m::Parameter()))));
-      break;
-    case BF16:
-      // When bf16 is used, no fusion is possible on Volta.
-      EXPECT_FALSE(
-          SoftmaxRewriterTritonMatchAndRewrite(
-              se::CudaComputeCapability{se::CudaComputeCapability::VOLTA, 0},
-              volta_module.get())
-              .value());
-      break;
-    default:
-      ABSL_UNREACHABLE();
-  }
+  auto module = ParseAndReturnVerifiedModule(hlo_string).value();
+
+  EXPECT_THAT(
+      SoftmaxRewriterTriton(
+          se::CudaComputeCapability{se::CudaComputeCapability::VOLTA, 0})
+          .Run(module.get()),
+      tsl::testing::StatusIs(
+          tsl::error::FAILED_PRECONDITION,
+          ::testing::StrEq(
+              "Triton support is only enabled for Ampere GPUs and up.")));
 }
 
 TEST_P(SoftmaxRewriterTritonTest, DoesNotFuseConvertWithC64DataType) {
@@ -1769,10 +1772,11 @@ ENTRY main {
     if (std::holds_alternative<FusionDecision>(decision)) {
       std::string actual_decision =
           std::get<FusionDecision>(decision).Explain();
-      EXPECT_THAT(actual_decision,
-                  AnyOf(HasSubstr("Root is not elementwise binary"),
-                        HasSubstr("Reduce has a non-constant second operand "
-                                  "and/or is variadic")));
+      EXPECT_THAT(
+          actual_decision,
+          AnyOf(HasSubstr("Root is not elementwise binary"),
+                HasSubstr("Reduction init value should be a constant or a "
+                          "convert of a constant.")));
       unmatched++;
     } else {
       matched++;
