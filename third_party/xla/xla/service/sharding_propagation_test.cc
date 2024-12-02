@@ -9306,6 +9306,7 @@ ENTRY %entry {
       HloConstantSplitter(/*split_expressions=*/true).Run(module.get()));
   EXPECT_TRUE(is_split);
   TF_ASSERT_OK_AND_ASSIGN(auto _, HloDCE().Run(module.get()));
+  (void)_;  // Suppress unused variable warning in OSS
   TF_ASSERT_OK_AND_ASSIGN(
       bool changed,
       ShardingPropagation(/*is_spmd=*/true, /*propagate_metadata=*/true)
@@ -9371,6 +9372,38 @@ ENTRY %reshape {
   auto* instruction = FindInstruction(module.get(), "custom-call");
   ASSERT_NE(instruction, nullptr);
   EXPECT_THAT(instruction, op::Sharding("{devices=[1,2,2]0,1,2,3}"));
+}
+
+TEST_F(ShardingPropagationTest, OffloadingPropagation) {
+  const char* const hlo_string = R"(
+HloModule module
+ENTRY %offloading {
+  %param0 = f32[1,256,128] parameter(0), sharding={devices=[1,1,4]0,1,2,3}
+  %zero = f32[] constant(0.0)
+  %broadcast = f32[256,256,128] broadcast(%zero), dimensions={}
+  %izero = s32[] constant(0)
+  %custom-call.0 = f32[1,256,128] custom-call(f32[1,256,128] %param0), custom_call_target="MoveToHost"
+  %dynamic-update-slice = f32[256,256,128] dynamic-update-slice(%broadcast, %custom-call.0, %izero, %izero, %izero)
+  %dynamic-slice = f32[1,256,128] dynamic-slice(%dynamic-update-slice, %izero, %izero, %izero), dynamic_slice_sizes={1,256,128}
+  %custom-call.1 = f32[1,256,128] custom-call(f32[1,256,128] %dynamic-slice), custom_call_target="MoveToDevice"
+  ROOT %copy = f32[1,256,128] copy(%custom-call.1), sharding={devices=[1,4,1]0,1,2,3}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  TF_ASSERT_OK_AND_ASSIGN(
+      bool changed,
+      ShardingPropagation(/*is_spmd=*/true, /*propagate_metadata=*/true)
+          .Run(module.get()));
+
+  XLA_VLOG_LINES(1, module->ToString());
+  EXPECT_TRUE(changed);
+
+  auto* to_host = FindInstruction(module.get(), "custom-call.0");
+  EXPECT_THAT(to_host, op::Sharding("{devices=[1,1,4]0,1,2,3}"));
+
+  auto* from_host_input =
+      FindInstruction(module.get(), "custom-call.1")->operand(0);
+  EXPECT_THAT(from_host_input, op::Sharding("{devices=[1,1,4]0,1,2,3}"));
 }
 
 TEST_P(ParameterizedMetadataTest, PropagateThroughSingleUsers) {
@@ -10697,7 +10730,7 @@ TEST_F(ShardingPropagationTest, PropagateShardAsBetweenInputOutput2) {
 HloModule jit_f, entry_computation_layout={(f32[8]{0:T(256)})->(f32[8]{0:T(256)}, f32[8]{0:T(256)})}, allow_spmd_sharding_propagation_to_output={true,true}, num_partitions=4
 
 ENTRY main.9 {
-  Arg_0.1 = f32[8]{0} parameter(0), sharding={replicated}
+  Arg_0.1 = f32[8]{0} parameter(0)
   custom-call.6 = f32[8]{0} custom-call(Arg_0.1), custom_call_target="Sharding", custom_call_has_side_effect=true, sharding={unknown shard_as 0}, metadata={op_name="jit(f)/jit(main)/shard_alike" source_file="third_party/py/jax/tests/shard_alike_test.py" source_line=206}
   custom-call.4 = f32[8]{0} custom-call(Arg_0.1), custom_call_target="Sharding", sharding={devices=[4]<=[4]}, metadata={op_name="jit(f)/jit(main)/sharding_constraint[sharding=GSPMDSharding({devices=[4]<=[4]}) resource_env=ResourceEnv(mesh=Mesh(), ()) unconstrained_dims=set()]" source_file="third_party/py/jax/tests/shard_alike_test.py" source_line=204}
   constant.0 = f32[] constant(2)

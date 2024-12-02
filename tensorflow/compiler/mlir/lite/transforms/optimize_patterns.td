@@ -1529,7 +1529,8 @@ def FuseReshapesAroundBatchMatMulLHS1: Pat<
       $rhs, $adj_x, $adj_y, $bool_attr),
     (Arith_ConstantOp $s1)),
   (TFL_BatchMatMulOp $input, $rhs, $adj_x, $adj_y, $bool_attr),
-  [(HasRank<3> $rhs),
+  [(HasRankAtLeast<3> $input),
+   (HasRank<3> $rhs),
    (HasRank<3> $initial_shape_change),
    (IsBroadcastDimEqualToOne $rhs),
    (IsBroadcastDimEqualToOne $input),
@@ -1560,6 +1561,20 @@ def FuseTransposeAfterBatchMatmul : Pat<
                      $asymmetric_quantize_inputs
   ),
   [(AreLastTwoDimsTransposed $perm_value)]>;
+
+// Fuse redundant RHS TFL_TransposeOp into TFL_BatchMatMulOp if rhs is constant
+// tensor of rank-2.
+def FuseTransposeIntoBatchMatMulRHS: Pat<
+  (TFL_BatchMatMulOp $lhs,
+    (TFL_TransposeOp (TFL_QConstOp:$input $_, $_), (Arith_ConstantOp:$perm_value $p0)),
+    $adj_x, $adj_y, $asymmetric_quantize_inputs),
+  (TFL_FullyConnectedOp
+    $lhs,
+    $input, (CreateNoneValue $lhs), TFL_AF_None, TFL_FCWO_Default,
+    ConstBoolAttrTrue, $asymmetric_quantize_inputs),
+  [(HasRank<2> $input),
+   (AreLastTwoDimsTransposed $perm_value),
+   (IsBoolAttrEqual<"false"> $adj_y)]>;
 
 // Replace conv-->transpose-->add with conv-->add-->transpose
 // The bias needs only reshape (i.e. ReshapeNCHWBiasToNHWC) and not transpose

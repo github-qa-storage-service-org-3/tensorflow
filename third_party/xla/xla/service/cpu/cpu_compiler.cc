@@ -370,7 +370,7 @@ class FlattenTuplesAndBufferizeTypeConverter : public mlir::TypeConverter {
         [](mlir::Type type, mlir::SmallVectorImpl<mlir::Type>& converted)
             -> mlir::LogicalResult {
           mlir::bufferization::BufferizeTypeConverter bufferize;
-          auto tuple_type = type.dyn_cast<mlir::TupleType>();
+          auto tuple_type = mlir::dyn_cast<mlir::TupleType>(type);
           if (!tuple_type) {
             converted.push_back(bufferize.convertType(type));
             return mlir::success();
@@ -642,13 +642,13 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   }
 
   {
-    // Int4Packer must be run before the rest of the pipeline since it
+    // SubbytePacker must be run before the rest of the pipeline since it
     // modifies the layout of the entry computation inputs/outputs, which is
     // passed to LayoutAssignment.
-    HloPassPipeline int4_packer_pipeline("Int4Packer pipeline");
-    int4_packer_pipeline.AddPass<SubByteNormalization>(
+    HloPassPipeline subbyte_packer_pipeline("SubbytePacker pipeline");
+    subbyte_packer_pipeline.AddPass<SubByteNormalization>(
         SubByteNormalization::SET_ELEMENT_SIZE);
-    TF_RETURN_IF_ERROR(int4_packer_pipeline.Run(module).status());
+    TF_RETURN_IF_ERROR(subbyte_packer_pipeline.Run(module).status());
   }
 
   HloPassPipeline pipeline("HLO passes through layout assignment");
@@ -910,14 +910,20 @@ Status CpuCompiler::RunHloPassesAfterLayoutAssn(
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
   // AOT compiled code runs in single thread.
   if (!is_aot_compile) {
+    auto debug_options = module->config().debug_options();
     // Run SimplifyFPConversions pass to simplify the BF16 pattern and make it
     // easier to match.
-    pipeline.AddPass<SimplifyFPConversions>();
+    // Remove `f32 -> bf16 -> f32` casts inserted by bf16 normalization.
+    if (debug_options.xla_allow_excess_precision()) {
+      pipeline.AddPass<SimplifyFPConversions>();
+    }
     pipeline.AddPass<OneDnnMatMulRewriter>(max_parallelism,
                                            compile_options.thread_pool);
     // Run SimplifyFPConversions pass again to remove redundant Convert ops
     // that may exist as a result of running OneDnnMatMulRewriter pass.
-    pipeline.AddPass<SimplifyFPConversions>();
+    if (debug_options.xla_allow_excess_precision()) {
+      pipeline.AddPass<SimplifyFPConversions>();
+    }
   }
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 
@@ -1108,28 +1114,6 @@ absl::StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
   return std::move(module);
 }
 
-absl::StatusOr<std::unique_ptr<BufferAssignment>> CpuCompiler::AssignBuffers(
-    HloModule* module, const se::StreamExecutor* /*stream_exec*/) {
-  // Select an order for emitting the HLO instructions for each computation.
-  // Using this sequence enables tighter buffer liveness analysis and reduced
-  // memory usage (as compared to using DependencyHloOrdering).
-  TF_ASSIGN_OR_RETURN(HloSchedule schedule,
-                      ScheduleModule(module, BufferSizeBytesFunction(),
-                                     ComputationSchedulerToModuleScheduler(
-                                         DFSMemoryScheduler)));
-  TF_RETURN_IF_ERROR(module->set_schedule(std::move(schedule)));
-
-  // Run buffer allocation on the HLO graph.
-  TF_ASSIGN_OR_RETURN(
-      std::unique_ptr<BufferAssignment> assignment,
-      BufferAssigner::Run(
-          module, std::make_unique<SequentialHloOrdering>(module->schedule()),
-          BufferSizeBytesFunction(), memory_alignment,
-          /*allocate_buffers_for_constants=*/true));
-
-  return std::move(assignment);
-}
-
 namespace {
 
 // Post-compilation callback functor for use by SimpleOrcJIT.
@@ -1251,7 +1235,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> createMLIRModule(
       for (const auto& p : llvm::enumerate(operand_mapping)) {
         f.setArgAttr(p.index(), "xla_framework.input_mapping", p.value().first);
         if (export_mapping != nullptr) {
-          auto index_attr = p.value().first.dyn_cast<mlir::IntegerAttr>();
+          auto index_attr = mlir::dyn_cast<mlir::IntegerAttr>(p.value().first);
           if (index_attr) {
             export_mapping->inputs.push_back(index_attr.getInt());
           }

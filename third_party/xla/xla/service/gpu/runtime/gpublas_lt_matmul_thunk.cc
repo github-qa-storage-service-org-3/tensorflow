@@ -18,7 +18,7 @@ limitations under the License.
 #include <utility>
 
 #include "xla/service/gpu/matmul_utils.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/status.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/scratch_allocator.h"
@@ -123,6 +123,13 @@ CublasLtMatmulThunk::GetMatmulAlgorithm(
   auto [it, _] =
       matmul_algorithm_cache_.emplace(plan, algorithms[algorithm_idx_]);
   return it->second;
+}
+
+absl::Status CublasLtMatmulThunk::Initialize(const InitializeParams& params) {
+  if (!params.executor->AsBlas()) {
+    return absl::InternalError("Failed to initialize BLASLT support");
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace gpu
