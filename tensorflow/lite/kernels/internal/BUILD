@@ -1442,6 +1442,7 @@ cc_test(
     srcs = ["per_channel_dequantize_test.cc"],
     deps = [
         ":reference_base",
+        ":tensor_utils_no_eigen",
         ":types",
         "//tensorflow/lite/kernels:test_util",
         "@com_google_googletest//:gtest_main",
@@ -1507,9 +1508,7 @@ filegroup(
     srcs = glob([
         "optimized/*.h",
     ]),
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
 )
 
 filegroup(
@@ -1517,9 +1516,7 @@ filegroup(
     srcs = glob([
         "reference/*.h",
     ]),
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
 )
 
 filegroup(
@@ -1527,14 +1524,12 @@ filegroup(
     srcs = glob([
         "*.h",
     ]),
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
 )
 
 transitive_hdrs(
     name = "nnapi_external_headers",
-    visibility = ["//tensorflow/lite:__subpackages__"],
+    visibility = ["//visibility:private"],
     deps = [
         "@eigen_archive//:eigen3",
         "@gemmlowp",

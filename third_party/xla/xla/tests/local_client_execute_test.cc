@@ -32,6 +32,7 @@ limitations under the License.
 #include "xla/stream_executor/host/host_platform_id.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/test_helpers.h"
 #include "xla/tests/literal_test_util.h"
 #include "xla/tests/local_client_test_base.h"
@@ -966,7 +967,7 @@ XLA_TEST_F(LocalClientExecuteTest, ValidateFDOProfile) {
   const HloModule& compiled_module =
       executables.front()->executable()->module();
   EXPECT_EQ(compiled_module.config().fdo_profile(), kFdoProfile);
-  TF_ASSERT_OK_AND_ASSIGN(auto proto, compiled_module.ToProtoWithConfig());
+  auto proto = compiled_module.ToProtoWithConfig();
   EXPECT_EQ(proto.config().fdo_profile(), kFdoProfile);
 }
 
@@ -990,7 +991,7 @@ XLA_TEST_F(LocalClientExecuteTest, ValidateDeviceMemorySize) {
   const HloModule& compiled_module =
       executables.front()->executable()->module();
   EXPECT_EQ(compiled_module.config().device_memory_size(), kDeviceMemorySize);
-  TF_ASSERT_OK_AND_ASSIGN(auto proto, compiled_module.ToProtoWithConfig());
+  auto proto = compiled_module.ToProtoWithConfig();
   EXPECT_EQ(proto.config().device_memory_size(), kDeviceMemorySize);
 }
 

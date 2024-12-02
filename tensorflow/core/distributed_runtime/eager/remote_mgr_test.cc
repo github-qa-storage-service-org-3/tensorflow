@@ -19,6 +19,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/time/clock.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -51,6 +52,9 @@ class RemoteMgrTest : public ::testing::Test {
     devices.push_back(
         DeviceFactory::NewDevice("CPU", {}, "/job:worker/replica:0/task:0"));
     remote_device_ = devices.back().get();
+    devices.push_back(
+        DeviceFactory::NewDevice("CPU", {}, "/job:worker/replica:0/task:1"));
+    another_remote_device_ = devices.back().get();
     auto device_mgr = std::make_unique<StaticDeviceMgr>(std::move(devices));
     auto rendezvous = tsl::core::RefCountPtr<tensorflow::Rendezvous>(
         new tensorflow::IntraProcessRendezvous(device_mgr.get()));
@@ -65,6 +69,7 @@ class RemoteMgrTest : public ::testing::Test {
 
   Device* local_device_;
   Device* remote_device_;
+  Device* another_remote_device_;
   EagerContext* ctx_;
 };
 
@@ -91,6 +96,55 @@ TEST_F(RemoteMgrTest, SerializeLocalTensorHandleWithRemoteMirror) {
   handle->Unref();
 }
 
+TEST_F(RemoteMgrTest, SerializeByWaitingDeadlockAvoided) {
+  RemoteMgr remote_mgr(false, ctx_);
+
+  const uint64 op_id = 1;
+  const int output_num = 1;
+  // Later `SerializeRemoteTensorHandle` is called on `another_remote_device_`
+  // instead of the device used to create the handle (that is, `remote_device_`)
+  // to trigger a second call to `RemoteAddress` inside
+  // `SerializeRemoteTensorHandle`.
+  TensorHandle* handle = TensorHandle::CreateLazyRemoteHandle(
+      op_id, output_num, DT_FLOAT, remote_device_, /*is_ready=*/false, ctx_);
+
+  std::unique_ptr<Thread> thread_worker_1;
+  thread_worker_1.reset(tsl::Env::Default()->StartThread(
+      tensorflow::ThreadOptions(), "thread_worker2",
+      [&remote_mgr, &handle, this]() {
+        // Grab tensor handle's lock for reading and then block because tensor
+        // handle is not ready. But do not grab remote mgr's lock for reading
+        // (which was not the case before).
+        RemoteTensorHandle remote_handle;
+        TF_ASSERT_OK(remote_mgr.SerializeRemoteTensorHandle(
+            handle, /*wait_until_ready=*/true, &remote_handle,
+            another_remote_device_, another_remote_device_->name()));
+      }));
+
+  std::unique_ptr<Thread> thread_worker_2;
+  thread_worker_2.reset(tsl::Env::Default()->StartThread(
+      tensorflow::ThreadOptions(), "thread_worker3",
+      [&remote_mgr, &handle, this]() {
+        // This sleep of 5s ensures that `AddOperationOutput` cannot get the
+        // remote mgr's lock before `SerializeRemoteTensorHandle` have had a
+        // chance to get to blocked state.
+        absl::SleepFor(absl::Seconds(5));
+        // Grab remote mgr's lock for writing (which would get stuck before) and
+        // release it.
+        remote_mgr.AddOperationOutput(handle, op_id, output_num);
+        // Set the tensor handle to ready (which would not happen before because
+        // `AddOperationOutput` is stuck) so that the other thread is now
+        // unblocked.
+        TF_ASSERT_OK(handle->SetRemoteShape(TensorShape({0}), remote_device_,
+                                            ctx_->GetContextViewId()));
+      }));
+
+  thread_worker_1.reset();
+  thread_worker_2.reset();
+
+  handle->Unref();
+}
+
 TEST_F(RemoteMgrTest, SerializeRemoteTensorHandle) {
   RemoteMgr remote_mgr(false, ctx_);
 
@@ -100,8 +154,7 @@ TEST_F(RemoteMgrTest, SerializeRemoteTensorHandle) {
       op_id, output_num, DT_FLOAT, remote_device_, /*is_ready=*/true, ctx_);
   RemoteTensorHandle remote_handle;
   TF_ASSERT_OK(remote_mgr.SerializeRemoteTensorHandle(
-      handle, /*wait_until_ready=*/true, &remote_handle, remote_device_,
-      remote_device_->name()));
+      handle, /*wait_until_ready=*/true, &remote_handle, remote_device_));
   EXPECT_EQ(op_id, remote_handle.op_id());
   EXPECT_EQ(output_num, remote_handle.output_num());
   EXPECT_EQ(remote_device_->name(), remote_handle.device());
@@ -165,8 +218,7 @@ TEST_F(RemoteMgrTest, ErrorSourcesShouldExist) {
   RemoteTensorHandle remote_handle;
   remote_mgr.AddOperationOutput(handle, op_id, output_num);
   TF_ASSERT_OK(remote_mgr.SerializeRemoteTensorHandle(
-      handle, /*wait_until_ready=*/true, &remote_handle, remote_device_,
-      remote_device_->name()));
+      handle, /*wait_until_ready=*/true, &remote_handle, remote_device_));
   auto remote_handle_internal = RemoteTensorHandleInternal(remote_handle);
   TF_ASSERT_OK(remote_mgr.DeleteTensorHandle(remote_handle_internal));
 

@@ -23,6 +23,8 @@ limitations under the License.
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/test_util.h"
+#include "xla/python/ifrt/value.h"
+#include "xla/tsl/concurrency/ref_count.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/test.h"
 
@@ -83,7 +85,7 @@ TEST_P(ArrayImplWithHostBufferSemanticsTest,
 
   // Regardless of the host buffer semantics chosen, the host buffer must not be
   // used by the runtime once `on_done_with_host_buffer` has been called.
-  if (semantics == Client::HostBufferSemantics::kZeroCopy) {
+  if (semantics == Client::HostBufferSemantics::kImmutableZeroCopy) {
     // `on_done_with_host_buffer` is called only when the `Array` is destroyed
     // if the runtime implements `kZeroCopy`. A deadlock will occur if we keep
     // the `Array` instance.
@@ -108,7 +110,7 @@ INSTANTIATE_TEST_CASE_P(
     testing::Values(
         Client::HostBufferSemantics::kImmutableOnlyDuringCall,
         Client::HostBufferSemantics::kImmutableUntilTransferCompletes,
-        Client::HostBufferSemantics::kZeroCopy));
+        Client::HostBufferSemantics::kImmutableZeroCopy));
 
 TEST(ArrayImplTest, MakeArrayFromHostBufferImmutableOnlyDuringCall) {
   TF_ASSERT_OK_AND_ASSIGN(auto client, test_util::GetClient());
@@ -184,12 +186,12 @@ TEST(ArrayImplTest, MakeArrayFromHostBufferZeroCopy) {
   std::shared_ptr<const Sharding> sharding =
       SingleDeviceSharding::Create(device, MemoryKind());
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto array,
-      client->MakeArrayFromHostBuffer(data->data(), dtype, shape,
-                                      /*byte_strides=*/std::nullopt, sharding,
-                                      Client::HostBufferSemantics::kZeroCopy,
-                                      /*on_done_with_host_buffer=*/nullptr));
+  TF_ASSERT_OK_AND_ASSIGN(auto array,
+                          client->MakeArrayFromHostBuffer(
+                              data->data(), dtype, shape,
+                              /*byte_strides=*/std::nullopt, sharding,
+                              Client::HostBufferSemantics::kImmutableZeroCopy,
+                              /*on_done_with_host_buffer=*/nullptr));
 
   // The `Array` may alias the host buffer, but once the transfer is done and
   // the `Array` is destroyed, the host buffer is not accessed. This test would
@@ -516,6 +518,29 @@ TEST(ArrayImplTest, GetReadyFuture) {
                       /*byte_strides=*/std::nullopt, sharding, semantics,
                       /*on_done_with_host_buffer=*/{}));
   TF_EXPECT_OK(array->GetReadyFuture().Await());
+}
+
+TEST(ArrayImplTest, BatchedGetReadyFuture) {
+  TF_ASSERT_OK_AND_ASSIGN(auto client, test_util::GetClient());
+
+  DType dtype(DType::kF32);
+  Shape shape({2, 3});
+  std::vector<float> data(6);
+  std::iota(data.begin(), data.end(), 0);
+  Device* device = client->addressable_devices().at(0);
+  std::shared_ptr<const Sharding> sharding =
+      SingleDeviceSharding::Create(device, MemoryKind());
+  auto semantics = Client::HostBufferSemantics::kImmutableOnlyDuringCall;
+
+  std::vector<tsl::RCReference<Value>> values;
+  for (int i = 0; i < 4; ++i) {
+    TF_ASSERT_OK_AND_ASSIGN(values.emplace_back(),
+                            client->MakeArrayFromHostBuffer(
+                                data.data(), dtype, shape,
+                                /*byte_strides=*/std::nullopt, sharding,
+                                semantics, /*on_done_with_host_buffer=*/{}));
+  }
+  TF_EXPECT_OK(client->GetReadyFuture(values).Await());
 }
 
 TEST(ArrayImplTest, Delete) {

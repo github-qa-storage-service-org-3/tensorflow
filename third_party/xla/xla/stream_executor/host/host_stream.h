@@ -26,16 +26,16 @@ limitations under the License.
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
-#include "xla/stream_executor/stream_executor_internal.h"
+#include "xla/stream_executor/stream_common.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/thread_annotations.h"
 
 namespace stream_executor {
 namespace host {
 
-class HostStream : public internal::StreamInterface {
+class HostStream : public StreamCommon {
  public:
-  HostStream();
+  explicit HostStream(StreamExecutor* executor);
   ~HostStream() override;
 
   // Enqueue a task that reports a status when finished. Tasks that fail do not
@@ -49,6 +49,11 @@ class HostStream : public internal::StreamInterface {
   // Blocks until all tasks are done, returns the first error reported by a task
   // (if any) and clears the error status.
   absl::Status BlockUntilDone();
+
+  absl::Status WaitFor(Stream* stream) override {
+    return StreamCommon::WaitFor(stream);
+  }
+  absl::Status WaitFor(Event* event) override;
 
  private:
   bool WorkAvailable() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);

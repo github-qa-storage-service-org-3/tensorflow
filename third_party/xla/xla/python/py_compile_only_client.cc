@@ -25,7 +25,6 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -38,14 +37,12 @@ limitations under the License.
 #include "third_party/nanobind/include/nanobind/stl/shared_ptr.h"  // IWYU pragma: keep
 #include "third_party/nanobind/include/nanobind/stl/string_view.h"  // IWYU pragma: keep
 #include "third_party/nanobind/include/nanobind/stl/vector.h"  // IWYU pragma: keep
-#include "xla/literal.h"
+#include "xla/layout.h"
 #include "xla/pjrt/mlir_to_hlo.h"
-#include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_device_description.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/pjrt/pjrt_future.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/client.h"
@@ -53,18 +50,27 @@ limitations under the License.
 #include "xla/python/ifrt/device.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/executable.h"
+#include "xla/python/ifrt/future.h"
+#include "xla/python/ifrt/memory.h"
+#include "xla/python/ifrt/program.h"
+#include "xla/python/ifrt/remap_plan.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
+#include "xla/python/ifrt/topology.h"
 #include "xla/python/ifrt/tuple.h"
 #include "xla/python/ifrt/value.h"
 #include "xla/python/nb_class_ptr.h"
+#include "xla/python/pjrt_ifrt/pjrt_array.h"
+#include "xla/python/pjrt_ifrt/pjrt_executable.h"
+#include "xla/python/pjrt_ifrt/pjrt_topology.h"
+#include "xla/python/pjrt_ifrt/xla_compiler.h"
 #include "xla/python/py_client.h"
 #include "xla/service/computation_placer.h"
+#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 #include "xla/util.h"
-#include "tsl/concurrency/ref_count.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/python/lib/core/numpy.h"
 
 namespace nb = nanobind;
 
@@ -72,44 +78,42 @@ namespace xla {
 
 namespace {
 
-class PjRtCompileOnlyDevice : public PjRtDevice {
+class CompileOnlyDevice
+    : public llvm::RTTIExtends<CompileOnlyDevice, ifrt::Device> {
  public:
-  explicit PjRtCompileOnlyDevice(const PjRtDeviceDescription* description)
+  explicit CompileOnlyDevice(const PjRtDeviceDescription* description)
       : description_(std::move(description)) {}
 
-  const PjRtDeviceDescription& description() const override {
-    return *description_;
-  }
+  const PjRtDeviceDescription& description() const { return *description_; }
 
-  PjRtClient* client() const override { return nullptr; }
+  ifrt::Client* client() const override { return nullptr; }
   bool IsAddressable() const override { return false; }
-  int local_hardware_id() const override {
-    return local_hardware_id_typed().value();
+  ifrt::DeviceId Id() const override {
+    return ifrt::DeviceId(description_->id());
   }
 
-  PjRtLocalDeviceId local_device_id() const override {
-    return PjRtLocalDeviceId(local_hardware_id_typed().value());
+  int ProcessIndex() const override { return description_->process_index(); }
+
+  absl::string_view Kind() const override {
+    return description_->device_kind();
   }
 
-  PjRtLocalHardwareId local_hardware_id_typed() const override {
-    return PjRtLocalHardwareId(-1);
+  absl::string_view ToString() const override {
+    return description_->ToString();
   }
 
-  std::unique_ptr<ScopedAsyncTrackingEvent> CreateAsyncTrackingEvent(
-      absl::string_view description) const override {
-    return nullptr;
+  absl::string_view DebugString() const override {
+    return description_->DebugString();
   }
-  absl::Status TransferToInfeed(const LiteralSlice& literal) override {
-    return Unimplemented("TransferToInfeed is not supported");
+
+  absl::Span<ifrt::Memory* const> Memories() const override { return {}; }
+  absl::StatusOr<ifrt::Memory*> DefaultMemory() const override {
+    return Unimplemented("DefaultMemory is not supported");
   }
-  absl::Status TransferFromOutfeed(MutableBorrowingLiteral literal) override {
-    return Unimplemented("TransferFromOutfeed is not supported");
-  }
-  absl::Span<PjRtMemorySpace* const> memory_spaces() const override {
-    return {};
-  }
-  absl::StatusOr<PjRtMemorySpace*> default_memory_space() const override {
-    return Unimplemented("default_memory_space is not supported");
+
+  const absl::flat_hash_map<std::string, PjRtDeviceAttribute>& Attributes()
+      const {
+    return description_->Attributes();
   }
 
  private:
@@ -125,6 +129,12 @@ class InvalidIfrtCompiler final
     return Unimplemented("Compile not implemented.");
   }
 
+  absl::StatusOr<std::unique_ptr<ifrt::Executable>> Compile(
+      std::unique_ptr<ifrt::Program> program, const ifrt::Topology& topology,
+      std::unique_ptr<ifrt::CompileOptions> options) override {
+    return Unimplemented("Compile not implemented.");
+  }
+
   absl::StatusOr<std::unique_ptr<ifrt::LoadedExecutable>>
   DeserializeLoadedExecutable(
       absl::string_view serialized,
@@ -134,18 +144,17 @@ class InvalidIfrtCompiler final
 
   static char ID;  // NOLINT
 };
-char InvalidIfrtCompiler::ID = 0;  // NOLINT
+[[maybe_unused]] char InvalidIfrtCompiler::ID = 0;
 
 class CompileOnlyIfRtClient final
     : public llvm::RTTIExtends<CompileOnlyIfRtClient, ifrt::Client> {
  public:
-  explicit CompileOnlyIfRtClient(
-      std::shared_ptr<PjRtTopologyDescription> topology)
+  explicit CompileOnlyIfRtClient(std::shared_ptr<ifrt::PjRtTopology> topology)
       : topology_(std::move(topology)),
         descriptions_(topology_->DeviceDescriptions()) {
     for (auto& description : descriptions_) {
       owned_devices_.push_back(
-          std::make_unique<PjRtCompileOnlyDevice>(description.get()));
+          std::make_unique<CompileOnlyDevice>(description.get()));
       devices_.push_back(owned_devices_.back().get());
     }
   }
@@ -168,6 +177,19 @@ class CompileOnlyIfRtClient final
     return Unimplemented(
         "AssembleArrayFromSingleDeviceArrays not available with compile-only "
         "client.");
+  }
+
+  absl::StatusOr<std::vector<tsl::RCReference<ifrt::Array>>> RemapArrays(
+      const ifrt::RemapPlan& plan,
+      absl::Span<tsl::RCReference<ifrt::Array>> arrays,
+      ifrt::ArrayCopySemantics semantics) override {
+    return Unimplemented("RemapArrays not available with compile-only client.");
+  }
+
+  ifrt::Future<> GetReadyFuture(
+      absl::Span<const tsl::RCReference<ifrt::Value>> values) override {
+    return ifrt::Future<>(Unimplemented(
+        "GetReadyFuture not available with compile-only client."));
   }
 
   absl::StatusOr<tsl::RCReference<ifrt::Tuple>> MakeTuple(
@@ -205,7 +227,8 @@ class CompileOnlyIfRtClient final
     return Unimplemented(
         "GetDefaultDeviceAssignment not available with compile-only client.");
   }
-  absl::StatusOr<ifrt::Device*> LookupDevice(int device_id) const override {
+  absl::StatusOr<ifrt::Device*> LookupDevice(
+      ifrt::DeviceId device_id) const override {
     return Unimplemented(
         "LookupDevice not available with compile-only client.");
   }
@@ -220,30 +243,38 @@ class CompileOnlyIfRtClient final
 
   static char ID;  // NOLINT
 
-  const PjRtTopologyDescription& topology() const { return *topology_; }
+  const ifrt::PjRtTopology& topology() const { return *topology_; }
 
-  absl::StatusOr<std::shared_ptr<const xla::PjRtTopologyDescription>>
-  GetTopologyForDevices(
-      absl::Span<ifrt::Device* const> devices) const override {
+  absl::StatusOr<std::shared_ptr<ifrt::Topology>> GetTopologyForDevices(
+      const xla::ifrt::DeviceList& devices) const override {
     return topology_;
+  }
+
+  absl::StatusOr<std::unique_ptr<PjRtLayout>> GetDefaultLayoutForDevice(
+      ifrt::DType dtype, absl::Span<const int64_t> dims,
+      ifrt::Device* device) const override {
+    TF_ASSIGN_OR_RETURN(PrimitiveType element_type, ToPrimitiveType(dtype));
+    TF_ASSIGN_OR_RETURN(xla::Layout layout,
+                        topology_->GetDefaultLayout(element_type, dims));
+    return std::make_unique<PjRtXlaLayout>(std::move(layout));
   }
 
  private:
   InvalidIfrtCompiler default_compiler_;
-  std::shared_ptr<PjRtTopologyDescription> topology_;
+  std::shared_ptr<ifrt::PjRtTopology> topology_;
   std::vector<std::unique_ptr<const PjRtDeviceDescription>> descriptions_;
-  std::vector<std::unique_ptr<PjRtCompileOnlyDevice>> owned_devices_;
-  std::vector<PjRtDevice*> devices_;
+  std::vector<std::unique_ptr<CompileOnlyDevice>> owned_devices_;
+  std::vector<ifrt::Device*> devices_;
 };
 
-char CompileOnlyIfRtClient::ID = 0;  // NOLINT
+[[maybe_unused]] char CompileOnlyIfRtClient::ID = 0;
 
 class CompileOnlyPyClient : public PyClient {
  public:
   using PyClient::PyClient;
 
   static nb_class_ptr<PyClient> Make(
-      std::shared_ptr<PjRtTopologyDescription> topology) {
+      std::shared_ptr<ifrt::PjRtTopology> topology) {
     auto client =
         nb::borrow<nb_class_ptr<PyClient>>(make_nb_class<CompileOnlyPyClient>(
             std::make_unique<CompileOnlyIfRtClient>(std::move(topology))));
@@ -251,7 +282,7 @@ class CompileOnlyPyClient : public PyClient {
     return client;
   }
 
-  absl::StatusOr<std::shared_ptr<PjRtExecutable>> CompileUnloaded(
+  absl::StatusOr<std::shared_ptr<ifrt::Executable>> CompileUnloaded(
       std::string_view mlir_module, CompileOptions options,
       std::vector<nb::capsule> host_callbacks) {
     if (!host_callbacks.empty()) {
@@ -267,8 +298,14 @@ class CompileOnlyPyClient : public PyClient {
         llvm::dyn_cast_or_null<CompileOnlyIfRtClient>(this->ifrt_client());
     CHECK(ifrt_client) << "CompileOnlyPyClient requires ifrt_client be a "
                           "CompileOnlyIfRtClient";
-    return PjRtCompile(std::move(options), module.get(),
-                       ifrt_client->topology());
+    auto xla_options = std::make_unique<ifrt::XlaCompileOptions>(options);
+    TF_ASSIGN_OR_RETURN(auto executable,
+                        PjRtCompile(std::move(options), module.get(),
+                                    *ifrt_client->topology().description()));
+    TF_ASSIGN_OR_RETURN(auto ifrt_executable,
+                        ifrt::PjRtExecutable::Create(std::move(executable),
+                                                     std::move(xla_options)));
+    return std::shared_ptr<ifrt::Executable>(std::move(ifrt_executable));
   }
 
  private:
@@ -280,7 +317,7 @@ class CompileOnlyPyClient : public PyClient {
 }  // namespace
 
 nb_class_ptr<PyClient> MakeCompileOnlyClient(
-    std::shared_ptr<PjRtTopologyDescription> topology) {
+    std::shared_ptr<ifrt::PjRtTopology> topology) {
   return CompileOnlyPyClient::Make(std::move(topology));
 }
 

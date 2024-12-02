@@ -21,14 +21,12 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "xla/service/gpu/runtime/annotation.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "tsl/platform/errors.h"
 #include "tsl/profiler/lib/scoped_annotation.h"
 
 namespace xla {
 namespace gpu {
-
-using ::tsl::profiler::ScopedAnnotation;
 
 SequentialThunk::SequentialThunk(ThunkInfo thunk_info, ThunkSequence thunks)
     : Thunk(Kind::kSequential, thunk_info), thunks_(std::move(thunks)) {}

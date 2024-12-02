@@ -474,6 +474,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:logging",
     ] + tf_grpc_cc_dependencies(),
 )
 
@@ -1085,6 +1086,7 @@ tf_cc_test(
         "//tensorflow/core/platform:statusor",
         "//tensorflow/core/platform:types",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
     ] + tf_grpc_cc_dependencies() + tf_protos_profiler_service(),

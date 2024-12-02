@@ -9,6 +9,7 @@ load(
 load("//tensorflow:tensorflow.default.bzl", "filegroup", "tf_cuda_cc_test", "tf_generate_proto_text_sources")
 load(
     "//tensorflow/core/platform:build_config.bzl",
+    "tf_jspb_proto_library",
     "tf_proto_library",
     "tf_pyclif_proto_library",
 )
@@ -716,6 +717,8 @@ cc_library(
         "//learning/deepmind/tensorflow/queues:__pkg__",
         "//learning/deepmind/tensorflow/sstable:__pkg__",
         "//tensorflow/compiler/mlir/tools/kernel_gen:__pkg__",
+        "//third_party/py/grain/_src/tensorflow/ops:__pkg__",
+        "//waymo/ml/compiler/frontend/kernels:__pkg__",
     ],
     deps = [
         "//tensorflow/core/lib/core:refcount",
@@ -870,12 +873,12 @@ tf_cuda_library(
         "//tensorflow/core/platform:tensor_coding",
         "//tensorflow/core/platform:types",
         "//tensorflow/core/public:version",
-        "//tensorflow/core/util:managed_stack_trace",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/numeric:bits",
         "@com_google_absl//absl/strings",
         "@eigen_archive//:eigen3",
         "@local_tsl//tsl/framework:device_type",
-        "@local_tsl//tsl/util:byte_swap_array",
+        "@local_xla//xla/tsl/util:byte_swap_array",
     ],
     alwayslink = 1,
 )
@@ -1113,6 +1116,19 @@ cc_library(
     name = "op_requires",
     hdrs = ["op_requires.h"],
     deps = ["//tensorflow/core/platform:macros"],
+)
+
+tf_cc_test(
+    name = "op_requires_test",
+    srcs = ["op_requires_test.cc"],
+    deps = [
+        ":op_requires",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core/lib/gtl:cleanup",
+        "//tensorflow/core/platform:status_matchers",
+        "@com_google_absl//absl/status",
+    ],
 )
 
 # Files whose users still need to be migrated from core:framework to the
@@ -1415,9 +1431,7 @@ cc_library(
     name = "loose_headers",
     tags = ["avoid_dep"],
     textual_hdrs = ["op_gen_lib.h"],
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
 )
 
 # All framework protos are self-contained, i.e. they only import other
@@ -1571,8 +1585,6 @@ tf_proto_library(
     srcs = ["graph_debug_info.proto"],
     cc_api_version = 2,
     make_default_target_header_only = True,
-    protodeps = [
-    ],
 )
 
 tf_proto_library(
@@ -1711,6 +1723,12 @@ tf_proto_library(
     ],
 )
 
+tf_jspb_proto_library(
+    name = "tensor_jspb_proto",
+    visibility = ["//visibility:public"],
+    deps = [":tensor_proto"],
+)
+
 tf_proto_library(
     name = "api_def_proto",
     srcs = ["api_def.proto"],
@@ -1759,6 +1777,12 @@ tf_proto_library(
     srcs = ["types.proto"],
     cc_api_version = 2,
     make_default_target_header_only = True,
+)
+
+tf_jspb_proto_library(
+    name = "types_jspb_proto",
+    visibility = ["//visibility:public"],
+    deps = [":types_proto"],
 )
 
 tf_proto_library(

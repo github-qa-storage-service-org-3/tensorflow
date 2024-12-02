@@ -1,6 +1,10 @@
+load(
+    "@local_config_rocm//rocm:build_defs.bzl",
+    "if_rocm_is_configured",
+)
+load("@local_xla//xla/tsl/mkl:build_defs.bzl", "if_mkl")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_cc_test_mkl", "tf_copts", "tf_cuda_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "filegroup", "tf_kernel_library")
-load("@local_xla//xla/tsl/mkl:build_defs.bzl", "if_mkl")
 
 # Platform specific build config
 load(
@@ -8,10 +12,6 @@ load(
     "if_static",
 )
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load(
-    "@local_config_rocm//rocm:build_defs.bzl",
-    "if_rocm_is_configured",
-)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -890,6 +890,7 @@ tf_kernel_library(
     deps = [
         ":constant_folding",
         ":graph_optimizer",
+        "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
@@ -898,12 +899,20 @@ tf_kernel_library(
         "//tensorflow/core/grappler:grappler_item",
         "//tensorflow/core/grappler:op_types",
         "//tensorflow/core/grappler:utils",
+        "//tensorflow/core/grappler/clusters:cluster",
         "//tensorflow/core/grappler/costs:graph_properties",
         "//tensorflow/core/grappler/utils:graph_view",
         "//tensorflow/core/grappler/utils:pattern_utils",
         "//tensorflow/core/grappler/utils:symbolic_shapes",
         "//tensorflow/core/grappler/utils:topological_sort",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@eigen_archive//:eigen3",
     ] + if_mkl(["//tensorflow/core/graph:mkl_graph_util"]),
 )
 

@@ -45,7 +45,7 @@ Status WithErrorSourcePayload(Status error) {
 namespace eager {
 
 void RemoteMgr::AddOperationOutputs(
-    const gtl::ArraySlice<tensorflow::TensorHandle*> handles,
+    const absl::Span<tensorflow::TensorHandle* const> handles,
     int64_t operation_id) {
   mutex_lock l(remote_tensor_handle_mu_);
   for (int i = 0, end = handles.size(); i < end; i++) {
@@ -125,18 +125,15 @@ Status RemoteMgr::GetMirroredResourceShape(
   return absl::OkStatus();
 }
 
-Status RemoteMgr::GetRemoteTensorHandle(const tensorflow::TensorHandle* handle,
-                                        const bool wait_until_ready,
-                                        int64_t* op_id, int32* output_num) {
-  TF_RETURN_IF_ERROR(handle->RemoteAddress(handle->device(), wait_until_ready,
-                                           op_id, output_num));
+Status RemoteMgr::ValidateRemoteTensorHandle(
+    const tensorflow::TensorHandle* handle, int64_t op_id, int32 output_num) {
   tensorflow::TensorHandle* h;
   TF_RETURN_IF_ERROR(
-      GetTensorHandleImpl(RemoteTensorHandleInternal(*op_id, *output_num), &h));
+      GetTensorHandleImpl(RemoteTensorHandleInternal(op_id, output_num), &h));
   if (handle != h) {
     return WithErrorSourcePayload(errors::Internal(
-        "Found two different tensor handles with the same op_id:", *op_id,
-        " and output_num:", *output_num));
+        "Found two different tensor handles with the same op_id:", op_id,
+        " and output_num:", output_num));
   }
   return absl::OkStatus();
 }
@@ -167,20 +164,38 @@ Status RemoteMgr::DeleteTensorHandle(
 
 Status RemoteMgr::SerializeRemoteTensorHandle(
     TensorHandle* in, const bool wait_until_ready, RemoteTensorHandle* out,
-    Device* device, const string& device_name,
+    Device* device, absl::string_view device_name,
     const bool serialize_resource_dtype_and_shape) {
   int64_t op_id;
   int32_t output_num;
-  if (!in->RemoteAddress(device, wait_until_ready, &op_id, &output_num).ok()) {
-    tf_shared_lock l(remote_tensor_handle_mu_);
+  auto status =
+      in->RemoteAddress(device, wait_until_ready, &op_id, &output_num);
+  if (!status.ok()) {
+    LOG(ERROR)
+        << "Failed to get remote address for tensor handle with given device "
+        << device->name() << " error " << status.message();
+    DCHECK(in->Type() == TensorHandle::REMOTE);
+    // `device` passed as an argument to this function may or may not be the
+    // same as the device associated with the handle, `in->device()`. It could
+    // be used to obtain the `op_id` and `output_num` for the given handle by
+    // using its mirrors. But if this handle is not present in the other
+    // device's mirrors, then we could have to use `in->device()` anyway. By
+    // adding this check, the only other reason `RemoteAddress` can fail with
+    // `in->device()` is if the handle is poisoned.
     TF_RETURN_IF_ERROR(
-        GetRemoteTensorHandle(in, wait_until_ready, &op_id, &output_num));
+        in->RemoteAddress(in->device(), wait_until_ready, &op_id, &output_num));
+    {
+      tf_shared_lock l(remote_tensor_handle_mu_);
+      TF_RETURN_IF_ERROR(ValidateRemoteTensorHandle(in, op_id, output_num));
+    }
   }
   out->Clear();
   out->set_op_id(op_id);
   out->set_output_num(output_num);
   out->set_op_device(in->op_device() ? in->op_device()->name() : "");
-  out->set_device(device_name);
+  out->set_device(device_name.empty()
+                      ? std::string(in->DeviceOrHostCPU(*parent_)->name())
+                      : std::string(device_name));
   out->set_dtype(in->dtype);
   if (serialize_resource_dtype_and_shape) {
     std::vector<DtypeAndPartialTensorShape> resource_dtypes_and_shapes;

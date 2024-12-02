@@ -29,8 +29,9 @@ limitations under the License.
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/buffer_value.h"
 #include "xla/service/gpu/executable.pb.h"
+#include "xla/service/gpu/execution_stream_assignment.h"
 #include "xla/service/gpu/gpu_executable.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_dataflow_analysis.h"
 #include "xla/shape.h"
@@ -44,7 +45,9 @@ namespace gpu {
 
 struct CompileModuleResults {
   std::unique_ptr<llvm::Module> llvm_module;
+  std::unique_ptr<llvm::Module> llvm_module_constants;
   std::unique_ptr<BufferAssignment> buffer_assignment;
+  std::unique_ptr<ExecutionStreamAssignment> execution_stream_assignment;
   std::vector<BufferAllocation> allocations;
   GpuExecutable::OwnedThunkSequence executable;
   std::vector<GpuExecutable::ConstantInfo> constants;
@@ -67,7 +70,8 @@ absl::StatusOr<CompileModuleResults> CompileModuleToLlvmIr(
     const std::string& platform_name, se::Platform::Id platform_id,
     const se::DeviceDescription& gpu_device_info,
     const HloDataflowAnalysis::CanShareBuffer& can_share_buffer_function,
-    const BufferValue::SizeFunction& buffer_size_bytes_function);
+    const BufferValue::SizeFunction& buffer_size_bytes_function,
+    bool split_constants_module = false);
 
 }  // namespace gpu
 }  // namespace xla
