@@ -48,6 +48,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/layout.h"
 #include "xla/permutation_util.h"
+#include "xla/service/gather_simplifier.h"
 #include "xla/service/gpu/fusions/tiling_util.h"
 #include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/matmul_utils.h"
@@ -304,6 +305,165 @@ HloInstructionIndexing ComputeOutputToInputDotOpIndexing(
       {lhs_indexing_map, rhs_indexing_map});
 }
 
+HloInstructionIndexing ComputeOutputToInputDynamicSliceOpIndexing(
+    const HloDynamicSliceInstruction* dynamic_slice,
+    IndexingContext* indexing_context) {
+  MLIRContext* mlir_context = indexing_context->GetMLIRContext();
+
+  const Shape& input_shape = dynamic_slice->operand(0)->shape();
+  const Shape& output_shape = dynamic_slice->shape();
+  int64_t rank = output_shape.rank();
+  const int64_t first_index_num = dynamic_slice->first_index_operand_number();
+
+  CHECK(dynamic_slice->operand(first_index_num)->shape().rank() == 0)
+      << "b/118437727: Old form, not supported.";
+  // A map from tensor iteration space to (), because index operands are 0d
+  // tensors.
+  AffineMap empty_results_affine_map = AffineMap::get(
+      /*dimCount=*/rank, /*symbolCount=*/0, /*results=*/{}, mlir_context);
+  IndexingMap start_indices_map =
+      IndexingMap::FromTensorSizes(indexing_context, empty_results_affine_map,
+                                   output_shape.dimensions(), {});
+
+  std::vector<RTVar> offsets_rt_vars;
+  offsets_rt_vars.reserve(rank);
+  std::vector<AffineExpr> exprs;
+  exprs.reserve(rank);
+  for (auto [dim, slice_size] :
+       llvm::enumerate(dynamic_slice->dynamic_slice_sizes())) {
+    exprs.push_back(getAffineDimExpr(dim, mlir_context) +
+                    getAffineSymbolExpr(dim, mlir_context));
+    offsets_rt_vars.push_back(
+        RTVar{Interval{0, input_shape.dimensions(dim) - slice_size},
+              dynamic_slice->operand(dim + first_index_num),
+              empty_results_affine_map});
+  }
+  std::vector<IndexingMap> indexing_maps(dynamic_slice->operand_count(),
+                                         start_indices_map);
+  indexing_maps.front() =
+      IndexingMap{indexing_context,
+                  AffineMap::get(/*dimCount=*/rank, /*symbolCount=*/rank, exprs,
+                                 mlir_context),
+                  start_indices_map.GetDimVars(), /*range_vars=*/{},
+                  std::move(offsets_rt_vars)};
+  return HloInstructionIndexing::FromIndexingMaps(indexing_maps);
+}
+
+HloInstructionIndexing ComputeOutputToInputDynamicUpdateSliceOpIndexing(
+    const HloDynamicUpdateSliceInstruction* dus,
+    IndexingContext* indexing_context) {
+  MLIRContext* mlir_context = indexing_context->GetMLIRContext();
+
+  const Shape& update_shape = dus->operand(1)->shape();
+  const Shape& output_shape = dus->shape();
+  int64_t rank = output_shape.rank();
+
+  // operand: (d0, ... d_{N-1}) -> (d0, ... d_{N-1})
+  std::vector<AffineExpr> identity;
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    identity.push_back(getAffineDimExpr(dim, mlir_context));
+  }
+  IndexingMap operand_map = IndexingMap::FromTensorSizes(
+      indexing_context,
+      AffineMap::get(/*dimCount=*/rank, /*symbolCount=*/0, /*results=*/identity,
+                     mlir_context),
+      output_shape.dimensions(), {});
+
+  // start_indices: (d0, ... d_{N-1}) -> ()
+  AffineMap empty_results_affine_map = AffineMap::get(
+      /*dimCount=*/rank, /*symbolCount=*/0, /*results=*/{}, mlir_context);
+  IndexingMap start_indices_map =
+      IndexingMap::FromTensorSizes(indexing_context, empty_results_affine_map,
+                                   output_shape.dimensions(), {});
+
+  // update: (d_0 - s_0, ..., d_{N-1} - s_{N-1})
+  std::vector<AffineExpr> exprs;
+  exprs.reserve(rank);
+  std::vector<RTVar> rt_vars;
+  rt_vars.reserve(rank);
+  for (auto [dim, slice_size] : llvm::enumerate(update_shape.dimensions())) {
+    exprs.push_back(getAffineDimExpr(dim, mlir_context) -
+                    getAffineSymbolExpr(dim, mlir_context));
+    Interval feasible_values{0, output_shape.dimensions(dim) - slice_size};
+    rt_vars.push_back(RTVar{feasible_values, dus->operand(2 + dim),
+                            empty_results_affine_map});
+  }
+  IndexingMap update_map{indexing_context,
+                         AffineMap::get(/*dimCount=*/rank, /*symbolCount=*/rank,
+                                        /*results=*/exprs, mlir_context),
+                         operand_map.GetDimVars(),
+                         /*range_vars=*/{}, rt_vars};
+
+  std::vector<IndexingMap> indexing_maps(dus->operand_count(),
+                                         start_indices_map);
+  indexing_maps[0] = std::move(operand_map);
+  indexing_maps[1] = std::move(update_map);
+  return HloInstructionIndexing::FromIndexingMaps(indexing_maps);
+}
+
+HloInstructionIndexing ComputeOutputToInputGatherOpIndexing(
+    const HloGatherInstruction* gather, IndexingContext* indexing_context) {
+  CHECK(GatherSimplifier::IsSimplifiedGather(gather))
+      << "Non-simplified HLO Gather is not supported.";
+  MLIRContext* mlir_context = indexing_context->GetMLIRContext();
+
+  const Shape& operand_shape = gather->operand(0)->shape();
+  const Shape& indices_shape = gather->operand(1)->shape();
+
+  const GatherDimensionNumbers& dimension_numbers =
+      gather->gather_dimension_numbers();
+  int64_t index_vector_length =
+      indices_shape.dimensions(dimension_numbers.index_vector_dim());
+
+  const Shape& output_shape = gather->shape();
+  int64_t output_rank = output_shape.rank();
+
+  // A map for the `indices` operand of gather. It is always
+  // (d_0, ... d_{rank - 1}) -> (d_0, s_0),
+  // where 0 <= s_0 <= indices_shape[1] - 1.
+  AffineExpr indices_id_dim = getAffineDimExpr(0, mlir_context);
+  std::vector<DimVar> dim_vars =
+      DimVarsFromTensorSizes(output_shape.dimensions());
+  IndexingMap indices_map{
+      indexing_context,
+      AffineMap::get(output_rank, 1,
+                     {indices_id_dim, getAffineSymbolExpr(0, mlir_context)},
+                     mlir_context),
+      dim_vars,
+      {RangeVar{{0, index_vector_length - 1}}},
+      /*rt_vars=*/{}};
+
+  // A map for the `operand` operand of gather, from which we extract slices.
+  // (d_0, ... d_{rank - 1}) -> (d_1 + s0, d_2 + s_1, ...),
+  // where s_i are RTVars that extract indices from the `indices` operand.
+  std::vector<RTVar> rt_vars;
+  std::vector<AffineExpr> exprs;
+  exprs.reserve(operand_shape.rank());
+  for (auto [operand_dim_id, slice_size] :
+       llvm::enumerate(gather->gather_slice_sizes())) {
+    int64_t output_dim_id = dimension_numbers.offset_dims(operand_dim_id);
+    exprs.push_back(getAffineDimExpr(output_dim_id, mlir_context));
+
+    if (operand_dim_id >= index_vector_length) continue;
+
+    rt_vars.push_back(RTVar{
+        Interval{0, operand_shape.dimensions(operand_dim_id) - slice_size},
+        gather->operand(1),
+        AffineMap::get(output_rank, /*symbolCount=*/0,
+                       {indices_id_dim,
+                        getAffineConstantExpr(operand_dim_id, mlir_context)},
+                       mlir_context)});
+    exprs.back() =
+        exprs.back() + getAffineSymbolExpr(operand_dim_id, mlir_context);
+  }
+  IndexingMap operand_map = {
+      indexing_context,
+      AffineMap::get(/*dimCount=*/output_rank,
+                     /*symbolCount=*/index_vector_length, exprs, mlir_context),
+      std::move(dim_vars), /*range_vars=*/{}, std::move(rt_vars)};
+  return HloInstructionIndexing::FromIndexingMaps({operand_map, indices_map});
+}
+
 IndexingMap ComputeOutputToInputPadOpIndexingImpl(
     absl::Span<const int64_t> output_dims,
     absl::Span<const int64_t> padding_low,
@@ -501,7 +661,8 @@ HloInstructionIndexing ComputeOutputToInputReduceWindowOpIndexing(
     AffineExpr dim_expr = getAffineDimExpr(dim_id, mlir_context);
     AffineExpr symbol_expr = getAffineSymbolExpr(dim_id, mlir_context);
 
-    exprs.push_back(symbol_expr + window_config.stride() * dim_expr);
+    exprs.push_back(symbol_expr * window_config.window_dilation() +
+                    window_config.stride() * dim_expr);
     dim_vars.push_back({Interval{0, output_shape.dimensions(dim_id) - 1}});
     range_vars.push_back({Interval{0, window_config.size() - 1}});
   }
@@ -881,12 +1042,12 @@ IndexingMap CreateIdentityMap(const Shape& shape,
     return CreateIdentityMap(shape.tuple_shapes(0), indexing_context);
   }
 
-  auto dims = shape.dimensions();
+  auto dimensions = shape.dimensions();
   IndexingMap identity_map = IndexingMap::FromTensorSizes(
       indexing_context,
-      AffineMap::getMultiDimIdentityMap(dims.size(),
+      AffineMap::getMultiDimIdentityMap(dimensions.size(),
                                         indexing_context->GetMLIRContext()),
-      dims, {});
+      dimensions, {});
   return identity_map;
 }
 
@@ -1189,8 +1350,17 @@ HloInstructionIndexing ComputeOutputToInputIndexing(const HloInstruction* instr,
   if (auto dot = DynCast<HloDotInstruction>(instr)) {
     return ComputeOutputToInputDotOpIndexing(dot, ctx);
   }
+  if (auto dynamic_slice = DynCast<HloDynamicSliceInstruction>(instr)) {
+    return ComputeOutputToInputDynamicSliceOpIndexing(dynamic_slice, ctx);
+  }
+  if (auto dus = DynCast<HloDynamicUpdateSliceInstruction>(instr)) {
+    return ComputeOutputToInputDynamicUpdateSliceOpIndexing(dus, ctx);
+  }
   if (auto fusion = DynCast<HloFusionInstruction>(instr)) {
     return ComputeOutputToInputFusionOpIndexing(fusion, output_id, ctx);
+  }
+  if (auto gather = DynCast<HloGatherInstruction>(instr)) {
+    return ComputeOutputToInputGatherOpIndexing(gather, ctx);
   }
   if (auto iota = DynCast<HloIotaInstruction>(instr)) {
     return HloInstructionIndexing{};

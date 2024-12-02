@@ -1401,6 +1401,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:Support",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:ml_dtypes",
@@ -1560,23 +1561,6 @@ cc_library(
     ]),
 )
 
-xla_cc_test(
-    name = "gemm_rewriter_test",
-    srcs = ["gemm_rewriter_test.cc"],
-    deps = [
-        ":gemm_rewriter",
-        "//xla:autotuning_proto_cc",
-        "//xla:xla_data_proto_cc",
-        "//xla:xla_proto_cc",
-        "//xla/stream_executor:device_description",
-        "//xla/tests:hlo_test_base",
-        "//xla/tests:xla_internal_test_main",  # fixdeps: keep
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest",
-        "@local_tsl//tsl/platform:statusor",
-    ],
-)
-
 cc_library(
     name = "triton_support",
     srcs = ["triton_support.cc"],
@@ -1646,6 +1630,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -2441,6 +2426,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:statusor",
@@ -2452,6 +2438,7 @@ xla_cc_test(
     srcs = ["move_copy_to_users_test.cc"],
     deps = [
         ":move_copy_to_users",
+        "//xla/service:layout_assignment",
         "//xla/tests:hlo_test_base",
         "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:test",
@@ -3238,7 +3225,6 @@ cc_library(
     srcs = if_cuda_is_configured(["cudnn_fusion_compiler.cc"]),
     hdrs = if_cuda_is_configured(["cudnn_fusion_compiler.h"]),
     deps = if_cuda_is_configured([
-        ":autotuner_util",
         ":backend_configs_cc",
         ":ir_emission_utils",
         ":kernel_reuse_cache",
@@ -3249,7 +3235,6 @@ cc_library(
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@local_config_cuda//cuda:cudnn_header",
         "//xla:shape_util",
@@ -3443,6 +3428,7 @@ cc_library(
         "//xla:status",
         "//xla:statusor",
         "//xla:util",
+        "//xla/ffi:ffi_api",
         "//xla/hlo/ir:hlo",
         "//xla/service:hlo_pass",
         "//xla/stream_executor:device_description",
@@ -3651,6 +3637,7 @@ cc_library(
         ":compile_module_to_llvm_ir",
         ":conv_layout_normalization",
         ":copy_fusion",
+        ":cudnn_fusion_compiler",
         ":custom_kernel_fusion_rewriter",
         ":dot_dimension_sorter",
         ":dot_operand_converter",
@@ -4010,7 +3997,6 @@ cc_library(
         ":move_copy_to_users",
         ":target_constants",
         ":triangular_solve_rewriter",
-        ":cudnn_fusion_compiler",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -6076,13 +6062,17 @@ cc_library(
         "//xla:literal_util",
         "//xla:shape_util",
         "//xla:status",
+        "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_query",
+        "//xla/service:collective_ops_utils",
+        "//xla/service:hlo_parser",
         "//xla/service:hlo_pass",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:errors",
     ],
@@ -6116,6 +6106,7 @@ cc_library(
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_query",
         "//xla/service:hlo_pass",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
