@@ -16,25 +16,20 @@ limitations under the License.
 #include "xla/service/gpu/reduction_utils.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
+#include <ostream>
 
 #include "absl/algorithm/container.h"
+#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/layout_util.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/hlo_module_config.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
 #include "tsl/platform/logging.h"
-
-#ifdef GOOGLE_CUDA
-#include "xla/service/gpu/gpu_asm_opts_util.h"
-#include "xla/stream_executor/gpu/asm_compiler.h"
-#endif  // GOOGLE_CUDA
 
 namespace xla {
 namespace gpu {
@@ -70,24 +65,8 @@ Vector3 PartitionShapeByMiddleDimensions(
   }
   return values;
 }
-}  // namespace
 
-int64_t MinThreadsXRowReduction(const HloModuleConfig& hlo_module_config) {
-#ifdef GOOGLE_CUDA
-  auto ptxas_config =
-      PtxOptsFromDebugOptions(hlo_module_config.debug_options());
-  auto ptxas_version_tuple =
-      se::GetAsmCompilerVersion(ptxas_config.preferred_cuda_dir);
-  // ptxas versions prior to 12.2 have a very rare bug when very high register
-  // spilling occurs with some order of instructions, so use less threads to
-  // reduce register pressure.
-  if (!ptxas_version_tuple.ok() ||
-      ptxas_version_tuple.value() < std::array<int64_t, 3>{12, 2, 0}) {
-    return 512;
-  }
-#endif  // GOOGLE_CUDA
-  return 1024;
-}
+}  // namespace
 
 Vector3 GetReductionTiling(const ReductionDimensions& reduction_dimensions) {
   if (reduction_dimensions.is_row_reduction) {
@@ -101,11 +80,10 @@ Vector3 GetReductionTiling(const ReductionDimensions& reduction_dimensions) {
 }
 
 int64_t ReductionDimensionRaceFreeBound(
-    const HloModuleConfig& hlo_module_config,
     const ReductionDimensions& reduction_dimensions) {
   Vector3 reduction_tiling = GetReductionTiling(reduction_dimensions);
   if (reduction_dimensions.is_row_reduction) {
-    return MinThreadsXRowReduction(hlo_module_config) * reduction_tiling[2];
+    return MinThreadsXRowReduction() * reduction_tiling[2];
   }
   return WarpSize() * reduction_tiling[1];
 }
@@ -164,20 +142,31 @@ bool IsReductionFromOrToContiguousDimensions(const HloInstruction& reduce) {
              GetReductionKindAndContiguousComponents(reduce));
 }
 
-bool ReductionIsRaceFree(const HloModuleConfig& hlo_module_config,
-                         const ReductionDimensions& reduction_dimensions) {
+bool ReductionIsRaceFree(const ReductionDimensions& reduction_dimensions) {
   if (reduction_dimensions.is_row_reduction) {
     return reduction_dimensions.dimensions[2] <=
-               ReductionDimensionRaceFreeBound(hlo_module_config,
-                                               reduction_dimensions) &&
+               ReductionDimensionRaceFreeBound(reduction_dimensions) &&
            reduction_dimensions.dimensions[0] <=
                BatchedReductionRaceFreeBound();
   }
 
   // Column reduction.
   return reduction_dimensions.dimensions[1] <=
-         ReductionDimensionRaceFreeBound(hlo_module_config,
-                                         reduction_dimensions);
+         ReductionDimensionRaceFreeBound(reduction_dimensions);
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         const ReductionDimensions& reduction_dimensions) {
+  bool is_row_reduction = reduction_dimensions.is_row_reduction;
+  os << (is_row_reduction ? "row " : "column ") << "reduction ["
+     << absl::StrJoin(reduction_dimensions.dimensions, ",") << "] -> ["
+     << reduction_dimensions.dimensions[0] << ", "
+     << reduction_dimensions
+            .dimensions[is_row_reduction
+                            ? ReductionDimensions::kRowKeptDimension
+                            : ReductionDimensions::kColMinorKeptDimension]
+     << "]";
+  return os;
 }
 
 ReductionDimensions GetReductionKindAndContiguousComponents(
@@ -227,8 +216,7 @@ bool IsRealReductionHero(const HloInstruction& root,
     return false;
   }
   return &root == &hero ||
-         ReductionIsRaceFree(hero.GetModule()->config(),
-                             GetReductionKindAndContiguousComponents(hero));
+         ReductionIsRaceFree(GetReductionKindAndContiguousComponents(hero));
 }
 
 bool AreReductionsMultiOutputFusionCompatible(

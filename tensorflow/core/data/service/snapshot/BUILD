@@ -1,9 +1,9 @@
 # Distributed snapshot library.
 
+load("@local_xla//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies", "tf_kernel_library")
 load("//tensorflow/core/platform:build_config.bzl", "tf_protos_profiler_service")
-load("@local_tsl//tsl:tsl.default.bzl", "get_compatible_with_portable")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -81,7 +81,7 @@ tf_cc_test(
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 
@@ -150,13 +150,13 @@ tf_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ],
 )
 
@@ -181,7 +181,7 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "@local_tsl//tsl/platform:status_matchers",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 
@@ -287,7 +287,7 @@ tf_cc_test(
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:status_matchers",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 
@@ -321,7 +321,7 @@ cc_library(
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:status_to_from_proto",
         "@local_tsl//tsl/platform:thread_annotations",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 
@@ -344,7 +344,7 @@ tf_cc_test(
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:status_to_from_proto",
         "@local_tsl//tsl/platform:statusor",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 
@@ -394,7 +394,7 @@ cc_library(
         "@local_tsl//tsl/platform:status_to_from_proto",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:tstring",
-        "@local_tsl//tsl/protobuf:status_proto_cc",
+        "@local_xla//xla/tsl/protobuf:status_proto_cc",
     ],
 )
 
@@ -423,7 +423,7 @@ tf_cc_test(
         "@local_tsl//tsl/platform:status_to_from_proto",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:tstring",
-        "@local_tsl//tsl/protobuf:status_proto_cc",
+        "@local_xla//xla/tsl/protobuf:status_proto_cc",
     ],
 )
 
@@ -462,7 +462,7 @@ cc_library(
 
 tf_cc_test(
     name = "snapshot_stream_writer_checkpoint_test",
-    size = "small",
+    size = "medium",
     srcs = ["snapshot_stream_writer_checkpoint_test.cc"],
     deps = [
         ":path_utils",
@@ -506,11 +506,11 @@ tf_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/lib/monitoring:cell_reader",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:status_matchers",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
+        "@local_xla//xla/tsl/lib/monitoring:cell_reader",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
     ],
 )
 

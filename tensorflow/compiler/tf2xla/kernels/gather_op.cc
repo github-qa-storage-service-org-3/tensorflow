@@ -26,8 +26,8 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "xla/client/lib/slicing.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/lib/slicing.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/status_macros.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -35,11 +35,11 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
-                 const xla::XlaOp& indices, const TensorShape& indices_shape,
-                 int64_t axis, bool indices_are_nd, DataType dtype,
-                 DataType index_type, xla::XlaBuilder* builder,
-                 xla::XlaOp* gather_output) {
+absl::Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
+                       const xla::XlaOp& indices,
+                       const TensorShape& indices_shape, int64_t axis,
+                       bool indices_are_nd, DataType dtype, DataType index_type,
+                       xla::XlaBuilder* builder, xla::XlaOp* gather_output) {
   // There is no deep reason why we need this precondition, but this is the only
   // combination that is used and tested today.
   CHECK(!indices_are_nd || axis == 0);
@@ -91,9 +91,14 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
 
   for (int64_t i = 0; i < num_index_dims; ++i) {
     if (input_shape.dim_size(axis + i) == 0) {
-      return errors::InvalidArgument("Gather dimension ", axis + i,
-                                     " is of size zero in tensor with shape ",
-                                     input_shape.DebugString());
+      // Gather dimension of size zero in tensor results in constant 0.
+      // This is done to match the legacy behavior of the MLIR legalization and
+      // avoid breaking existing models.
+      auto slice_sizes = input_shape.dim_sizes();
+      slice_sizes.erase(slice_sizes.begin() + axis);
+      *gather_output =
+          xla::Broadcast(XlaHelpers::Zero(builder, dtype), slice_sizes);
+      return absl::OkStatus();
     }
   }
 
@@ -155,10 +160,11 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
   return absl::OkStatus();
 }
 
-Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
-                                    const xla::XlaOp input,
-                                    const TensorShape& input_shape,
-                                    int batch_dims, xla::XlaOp* gather_output) {
+absl::Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
+                                          const xla::XlaOp input,
+                                          const TensorShape& input_shape,
+                                          int batch_dims,
+                                          xla::XlaOp* gather_output) {
   auto indices = context->Input(1);
   auto indices_shape = context->InputShape(1);
 

@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/data/global_shuffle_utils.h"
 #include "tensorflow/core/data/name_utils.h"
@@ -25,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace data {
@@ -91,17 +93,18 @@ class SkipDatasetOp::Dataset : public DatasetBase {
     return count_ < 0 ? 0 : std::max(int64_t{0}, n - count_);
   }
 
-  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+  absl::Status InputDatasets(
+      std::vector<const DatasetBase*>* inputs) const override {
     inputs->push_back(input_);
     return absl::OkStatus();
   }
 
-  Status CheckExternalState() const override {
+  absl::Status CheckExternalState() const override {
     return input_->CheckExternalState();
   }
 
-  Status Get(OpKernelContext* ctx, int64 index,
-             std::vector<Tensor>* out_tensors) const override {
+  absl::Status Get(OpKernelContext* ctx, int64 index,
+                   std::vector<Tensor>* out_tensors) const override {
     TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
     return input_->Get(ctx, index + count_, out_tensors);
   }
@@ -111,9 +114,9 @@ class SkipDatasetOp::Dataset : public DatasetBase {
   }
 
  protected:
-  Status AsGraphDefInternal(SerializationContext* ctx,
-                            DatasetGraphDefBuilder* b,
-                            Node** output) const override {
+  absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                  DatasetGraphDefBuilder* b,
+                                  Node** output) const override {
     Node* input_graph_node = nullptr;
     TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
     Node* count = nullptr;
@@ -130,9 +133,9 @@ class SkipDatasetOp::Dataset : public DatasetBase {
 
     bool SymbolicCheckpointCompatible() const override { return true; }
 
-    Status GetNextInternal(IteratorContext* ctx,
-                           std::vector<Tensor>* out_tensors,
-                           bool* end_of_sequence) override {
+    absl::Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) override {
       *end_of_sequence = true;
       return absl::OkStatus();
     }
@@ -144,13 +147,13 @@ class SkipDatasetOp::Dataset : public DatasetBase {
                                        /*ratio=*/1);
     }
 
-    Status SaveInternal(SerializationContext* ctx,
-                        IteratorStateWriter* writer) override {
+    absl::Status SaveInternal(SerializationContext* ctx,
+                              IteratorStateWriter* writer) override {
       return absl::OkStatus();
     }
 
-    Status RestoreInternal(IteratorContext* ctx,
-                           IteratorStateReader* reader) override {
+    absl::Status RestoreInternal(IteratorContext* ctx,
+                                 IteratorStateReader* reader) override {
       return absl::OkStatus();
     }
   };
@@ -162,27 +165,27 @@ class SkipDatasetOp::Dataset : public DatasetBase {
 
     bool SymbolicCheckpointCompatible() const override { return true; }
 
-    Status Initialize(IteratorContext* ctx) override {
+    absl::Status Initialize(IteratorContext* ctx) override {
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
-    Status GetNextInternal(IteratorContext* ctx,
-                           std::vector<Tensor>* out_tensors,
-                           bool* end_of_sequence) override {
-      mutex_lock l(mu_);  // TODO(mrry): Make locking less conservative.
+    absl::Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) override {
+      if (ctx->index_mapper() != nullptr) {
+        return Get(ctx, out_tensors, end_of_sequence);
+      }
 
+      mutex_lock l(mu_);  // TODO(mrry): Make locking less conservative.
       if (!input_impl_) {
         *end_of_sequence = true;
         return absl::OkStatus();
       }
 
-      IteratorContextWithIndexMapper ctx_with_index_mapper(ctx, this);
       if (i_ < dataset()->count_) {
         int num_skipped;
-        TF_RETURN_IF_ERROR(input_impl_->Skip(ctx_with_index_mapper.Get(),
-                                             dataset()->count_ - i_,
+        TF_RETURN_IF_ERROR(input_impl_->Skip(ctx, dataset()->count_ - i_,
                                              end_of_sequence, &num_skipped));
-        ctx_with_index_mapper.MergeCheckpoint();
         i_ += num_skipped;
         if (*end_of_sequence) {
           // We reached the end before the count was reached.
@@ -192,12 +195,26 @@ class SkipDatasetOp::Dataset : public DatasetBase {
       }
 
       // Return GetNext() on the underlying iterator.
-      TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx_with_index_mapper.Get(),
-                                              out_tensors, end_of_sequence));
-      ctx_with_index_mapper.MergeCheckpoint();
+      TF_RETURN_IF_ERROR(
+          input_impl_->GetNext(ctx, out_tensors, end_of_sequence));
       if (*end_of_sequence) {
         input_impl_.reset();
       }
+      return absl::OkStatus();
+    }
+
+    absl::Status Get(IteratorContext* ctx, std::vector<Tensor>* out_tensors,
+                     bool* end_of_sequence) {
+      mutex_lock l(mu_);
+      if (!input_impl_) {
+        *end_of_sequence = true;
+        return absl::OkStatus();
+      }
+
+      IteratorContextWithIndexMapper ctx_with_index_mapper(ctx, this);
+      TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx_with_index_mapper.Get(),
+                                              out_tensors, end_of_sequence));
+      ctx_with_index_mapper.MergeCheckpoint();
       return absl::OkStatus();
     }
 
@@ -205,13 +222,10 @@ class SkipDatasetOp::Dataset : public DatasetBase {
         IndexMapperFn parent_index_mapper) const override {
       int64_t skip_count = dataset()->count_;
       return [parent_index_mapper,
-              skip_count](size_t element_position) -> size_t {
-        if (element_position < skip_count) {
-          // The first `skip_count` elements are to be skipped.
-          return parent_index_mapper(element_position);
-        }
-        // Maps the range [skip_count, cardinality) to a permuted range.
-        return parent_index_mapper(element_position - skip_count) + skip_count;
+              skip_count](size_t element_position) -> absl::StatusOr<size_t> {
+        TF_ASSIGN_OR_RETURN(size_t shuffled_element_position,
+                            parent_index_mapper(element_position));
+        return shuffled_element_position + skip_count;
       };
     }
 
@@ -222,8 +236,8 @@ class SkipDatasetOp::Dataset : public DatasetBase {
                                        /*ratio=*/1);
     }
 
-    Status SaveInternal(SerializationContext* ctx,
-                        IteratorStateWriter* writer) override {
+    absl::Status SaveInternal(SerializationContext* ctx,
+                              IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
       TF_RETURN_IF_ERROR(writer->WriteScalar(prefix(), kCurIndex, i_));
       TF_RETURN_IF_ERROR(writer->WriteScalar(
@@ -234,21 +248,10 @@ class SkipDatasetOp::Dataset : public DatasetBase {
       return absl::OkStatus();
     }
 
-    Status RestoreInternal(IteratorContext* ctx,
-                           IteratorStateReader* reader) override {
+    absl::Status RestoreInternal(IteratorContext* ctx,
+                                 IteratorStateReader* reader) override {
       if (ctx->restored_element_count().has_value()) {
         mutex_lock l(mu_);
-        if (*ctx->restored_element_count() > 0) {
-          i_ = dataset()->count_;
-          // For upstream iterators, the restored count is the returned element
-          // count + skipped element count.
-          IteratorContext::Params params(ctx);
-          params.restored_element_count =
-              *ctx->restored_element_count() + dataset()->count_;
-          IteratorContext ctx_with_restored_count(params);
-          return RestoreInput(&ctx_with_restored_count, reader, input_impl_);
-        }
-        i_ = 0;
         return RestoreInput(ctx, reader, input_impl_);
       }
 

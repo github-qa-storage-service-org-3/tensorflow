@@ -40,8 +40,7 @@ std::ostream& operator<<(std::ostream& os,
 }
 
 std::ostream& operator<<(std::ostream& os, const TfrtCompileOptions& options) {
-  return os << "{"
-            << "variable_device = " << options.variable_device
+  return os << "{" << "variable_device = " << options.variable_device
             << ", default_device = " << options.default_device
             << ", enable_optimizer = " << options.enable_optimizer
             << ", enable_grappler = " << options.enable_grappler
@@ -58,6 +57,19 @@ std::ostream& operator<<(std::ostream& os, const TfrtCompileOptions& options) {
             << ", enable_while_parallel_iterations = "
             << options.enable_while_parallel_iterations
             << ", cost_threshold = " << options.cost_threshold
+            << ", min_num_batch_threads = " << options.min_num_batch_threads
+            << ", min_max_enqueued_batches = "
+            << options.min_max_enqueued_batches
+            << ", batch_padding_policy = " << options.batch_padding_policy
+            << ", num_batch_threads = "
+            << options.batch_options.num_batch_threads()
+            << ", max_batch_size = " << options.batch_options.max_batch_size()
+            << ", batch_timeout_micros = "
+            << options.batch_options.batch_timeout_micros()
+            << ", allowed_batch_sizes = "
+            << absl::StrJoin(options.batch_options.allowed_batch_sizes(), ",")
+            << ", max_enqueued_batches = "
+            << options.batch_options.max_enqueued_batches()
             << ", merge_inter_dependent_streams = "
             << options.merge_inter_dependent_streams
             << ", decompose_resource_ops = " << options.decompose_resource_ops

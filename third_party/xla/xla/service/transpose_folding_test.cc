@@ -20,7 +20,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -80,6 +80,25 @@ ENTRY entry_computation {
                           ParseAndReturnVerifiedModule(kHloString));
 
   EXPECT_THAT(TransposeFolding().Run(module.get()), IsOkAndHolds(false));
+}
+
+TEST_F(TransposeFoldingTest, RedundantTranspose) {
+  constexpr absl::string_view kHloString = R"(
+HloModule FoldDotTranspose
+
+ENTRY entry_computation {
+  x = f32[2,3] parameter(0)
+  y = f32[2,3] parameter(1)
+  transpose = f32[2,3] transpose(y), dimensions={0,1}
+  ROOT add = f32[2,3] add(x, transpose)
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(kHloString));
+
+  EXPECT_THAT(TransposeFolding().Run(module.get()), IsOkAndHolds(true));
+  EXPECT_THAT(module->entry_computation()->root_instruction(),
+              op::Add(op::Parameter(0), op::Parameter(1)));
 }
 
 TEST_F(TransposeFoldingTest, FoldTransposeOfBatchWhenPermitted) {
@@ -246,7 +265,7 @@ TEST_F(TransposeFoldingTest, FoldConvDimSwapTransposeRhs) {
     dim->set_size(
         transpose_y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       x->shape(), transpose_y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -304,7 +323,7 @@ TEST_F(TransposeFoldingTest, FoldConvComplexTransposeRhs) {
     dim->set_size(
         transpose_y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       x->shape(), transpose_y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -367,7 +386,7 @@ TEST_F(TransposeFoldingTest, FoldConvTransposeLhs) {
     dim->set_stride(1);
     dim->set_size(y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       transpose_x->shape(), y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -436,7 +455,7 @@ TEST_F(TransposeFoldingTest, FoldConvComplexTransposeLhs) {
     dim->set_stride(1);
     dim->set_size(y->shape().dimensions(dnums.kernel_spatial_dimensions(i)));
   }
-  StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
+  absl::StatusOr<Shape> conv_shape = ShapeInference::InferConvolveShape(
       transpose_x->shape(), y->shape(), /*feature_group_count=*/1,
       /*batch_group_count=*/1, window, dnums,
       /*preferred_element_type=*/std::nullopt);
@@ -556,7 +575,10 @@ ENTRY entry_computation {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           ParseAndReturnVerifiedModule(kHloString));
 
-  EXPECT_THAT(TransposeFolding().Run(module.get()), IsOkAndHolds(false));
+  EXPECT_THAT(TransposeFolding().Run(module.get()), IsOkAndHolds(true));
+  EXPECT_THAT(module->entry_computation()->root_instruction(),
+              op::Dot(op::Parameter(0), op::Parameter(1),
+                      /*lhs_contracting_dim=*/3, /*rhs_contracting_dim=*/2));
 }
 
 }  // namespace

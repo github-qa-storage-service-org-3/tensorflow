@@ -23,15 +23,15 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "mlir/IR/Block.h"  // from @llvm-project
-#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Block.h"
+#include "mlir/IR/Operation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/gpu/backend_configs.pb.h"
-#include "xla/service/gpu/nccl_api.h"
-#include "xla/service/gpu/nccl_collective_thunk.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/nccl_api.h"
+#include "xla/service/gpu/runtime/nccl_collective_thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/xla_data.pb.h"
@@ -48,7 +48,7 @@ absl::Status RunAllReduce(NcclApi* nccl_api, ReductionKind reduction_kind,
   int device_ordinal = stream.parent()->device_ordinal();
   VLOG(3) << "Performing all-reduce from device ordinal: " << device_ordinal;
   TF_RETURN_IF_ERROR(
-      MaybeRegisterBuffers(nccl_api, device_ordinal, buffers, comm));
+      MaybeRegisterBuffers(nccl_api, stream.parent(), buffers, comm));
 
   TF_RETURN_IF_ERROR(nccl_api->GroupStart());
   for (DeviceBufferPair& buffer : buffers) {
@@ -156,7 +156,8 @@ NcclAllReduceReduceScatterThunkBase::NcclAllReduceReduceScatterThunkBase(
 
 NcclAllReduceStartThunk::NcclAllReduceStartThunk(
     ThunkInfo thunk_info, NcclApi* nccl_api,
-    const HloAllReduceInstruction* inst, std::vector<Buffer> buffers)
+    const HloAllReduceInstruction* inst, std::vector<Buffer> buffers,
+    bool p2p_memcpy_enabled)
     : NcclAllReduceReduceScatterThunkBase(
           Thunk::kNcclAllReduceStart, thunk_info, nccl_api,
           impl::GetNcclAllReduceConfigInst(inst), std::move(buffers),
@@ -177,18 +178,20 @@ CollectiveOpGroupMode NcclAllReduceStartThunk::GetGroupMode(
 
 absl::Status NcclAllReduceStartThunk::RunNcclCollective(
     const ExecuteParams& params, se::Stream& stream,
-    NcclApi::NcclCommHandle comm) {
+    NcclCommHandleWrapper comm_wrapper) {
   TF_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferPair> device_buffers,
       ConvertToDeviceBuffers(params, buffers_,
                              config_.config.operand_element_type));
   return ::xla::gpu::RunAllReduce(nccl_api(), config_.reduction_kind,
-                                  device_buffers, stream, comm);
+                                  device_buffers, stream,
+                                  comm_wrapper.comm_handle);
 }
 
 NcclReduceScatterStartThunk::NcclReduceScatterStartThunk(
     ThunkInfo thunk_info, NcclApi* nccl_api,
-    const HloReduceScatterInstruction* inst, std::vector<Buffer> buffers)
+    const HloReduceScatterInstruction* inst, std::vector<Buffer> buffers,
+    bool p2p_memcpy_enabled)
     : NcclAllReduceReduceScatterThunkBase(
           Thunk::kNcclReduceScatterStart, thunk_info, nccl_api,
           impl::GetNcclAllReduceConfigInst(inst), std::move(buffers),
@@ -211,13 +214,14 @@ NcclReduceScatterStartThunk::NcclReduceScatterStartThunk(
 
 absl::Status NcclReduceScatterStartThunk::RunNcclCollective(
     const ExecuteParams& params, se::Stream& stream,
-    NcclApi::NcclCommHandle comm) {
+    NcclCommHandleWrapper comm_wrapper) {
   TF_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferPair> device_buffers,
       ConvertToDeviceBuffers(params, buffers_,
                              config_.config.operand_element_type));
   return ::xla::gpu::RunReduceScatter(nccl_api(), config_.reduction_kind,
-                                      device_buffers, stream, comm);
+                                      device_buffers, stream,
+                                      comm_wrapper.comm_handle);
 }
 
 absl::Status RunReduceScatter(NcclApi* nccl_api, ReductionKind reduction_kind,
@@ -228,7 +232,7 @@ absl::Status RunReduceScatter(NcclApi* nccl_api, ReductionKind reduction_kind,
   VLOG(3) << "Performing reduce-scatter from device ordinal: "
           << device_ordinal;
   TF_RETURN_IF_ERROR(
-      MaybeRegisterBuffers(nccl_api, device_ordinal, buffers, comm));
+      MaybeRegisterBuffers(nccl_api, stream.parent(), buffers, comm));
 
   TF_ASSIGN_OR_RETURN(int32_t num_participants, nccl_api->CommCount(comm));
 

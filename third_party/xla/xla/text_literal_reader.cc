@@ -21,21 +21,26 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/literal.h"
-#include "xla/service/hlo_parser.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status_macros.h"
-#include "xla/types.h"
+#include "xla/tsl/lib/io/buffered_inputstream.h"
+#include "xla/tsl/lib/io/random_inputstream.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/io/buffered_inputstream.h"
-#include "tsl/lib/io/random_inputstream.h"
-#include "tsl/platform/protobuf.h"
+#include "tsl/platform/env.h"
+#include "tsl/platform/file_system.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 
@@ -43,7 +48,8 @@ absl::StatusOr<Literal> TextLiteralReader::ReadPath(absl::string_view path) {
   CHECK(!absl::EndsWith(path, ".gz"))
       << "TextLiteralReader no longer supports reading .gz files";
   std::unique_ptr<tsl::RandomAccessFile> file;
-  Status s = tsl::Env::Default()->NewRandomAccessFile(std::string(path), &file);
+  absl::Status s =
+      tsl::Env::Default()->NewRandomAccessFile(std::string(path), &file);
   if (!s.ok()) {
     return s;
   }
@@ -59,7 +65,7 @@ absl::StatusOr<Literal> TextLiteralReader::ReadAllLines() {
   tsl::io::RandomAccessInputStream stream(file_.get());
   tsl::io::BufferedInputStream buf(&stream, 65536);
   std::string shape_string;
-  Status s = buf.ReadLine(&shape_string);
+  absl::Status s = buf.ReadLine(&shape_string);
   if (!s.ok()) {
     return s;
   }

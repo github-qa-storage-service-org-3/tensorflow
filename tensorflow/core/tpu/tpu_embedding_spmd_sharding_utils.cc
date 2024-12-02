@@ -19,7 +19,7 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/shape.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/platform/statusor.h"
@@ -28,7 +28,7 @@ limitations under the License.
 namespace tensorflow {
 namespace tpu {
 
-StatusOr<xla::OpSharding> SpmdShardingAnnotationOnFirstDim(
+absl::StatusOr<xla::OpSharding> SpmdShardingAnnotationOnFirstDim(
     const xla::Shape& shape, int core_count_per_replica,
     xla::XlaBuilder* builder) {
   if (!shape.IsArray()) {

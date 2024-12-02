@@ -1,16 +1,12 @@
 # Description:
 # profile_utils targets.
 
-load("//tsl:tsl.bzl", "internal_visibility")
-load("//tsl:tsl.default.bzl", "filegroup")
 load(
     "@local_tsl//tsl/platform:rules_cc.bzl",
     "cc_library",
 )
-load(
-    "//tsl:tsl.bzl",
-    "tsl_copts",
-)
+load("@local_xla//xla/tsl:tsl.bzl", "internal_visibility", "tsl_copts")
+load("@local_xla//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -18,7 +14,7 @@ package(
         "@local_xla//xla/stream_executor:__subpackages__",
         "//tensorflow/core/platform:__subpackages__",
         "//tsl:__pkg__",
-        "//tsl/platform/default:__pkg__",
+        "@local_xla//xla/tsl/platform/default:__pkg__",
     ]),
     licenses = ["notice"],
 )

@@ -39,6 +39,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
@@ -90,7 +91,7 @@ struct ConvertUint8QConstOp : public RewritePattern {
     }
 
     mlir::DenseElementsAttr src_dense_attr =
-        tfl_qconst_op.getValue().cast<DenseElementsAttr>();
+        mlir::cast<DenseElementsAttr>(tfl_qconst_op.getValue());
 
     double type_range_min =
         static_cast<double>(output_element_type.getStorageTypeMin() -
@@ -114,15 +115,13 @@ struct ConvertUint8QConstOp : public RewritePattern {
             0, true /* signed */, builder.getBoolAttr(narrow_range))));
 
     Type dst_dense_element_type = builder.getIntegerType(8);
-    llvm::function_ref<APInt(const APInt &)> mapping =
-        [](const APInt &in) -> APInt {
-      int64_t in_i64 = in.getLimitedValue();
-      int64_t out_i64 = in_i64 - 128;
-      return APInt(8, out_i64, true);
-    };
 
-    auto dst_dense_attr =
-        src_dense_attr.mapValues(dst_dense_element_type, mapping);
+    auto dst_dense_attr = src_dense_attr.mapValues(
+        dst_dense_element_type, [](const APInt &in) -> APInt {
+          int64_t in_i64 = in.getLimitedValue();
+          int64_t out_i64 = in_i64 - 128;
+          return APInt(8, out_i64, true);
+        });
 
     builder.replaceOpWithNewOp<TFL::QConstOp>(op, dst_qconst_type,
                                               dst_dense_attr);

@@ -17,26 +17,34 @@ limitations under the License.
 
 #include <stddef.h>
 
-#include <string>
+#include <cstdint>
+#include <iterator>
 #include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_type_conversion_util.h"
 #include "xla/service/llvm_ir/llvm_util.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/types.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/logging.h"
 
 namespace xla {
 namespace llvm_ir {
 
-static llvm::Module* getModuleFromBuilder(llvm::IRBuilder<>* b) {
+static llvm::Module* getModuleFromBuilder(llvm::IRBuilderBase* b) {
   return b->GetInsertBlock()->getModule();
 }
 
 void EmitTuple(const IrArray& tuple, absl::Span<llvm::Value* const> operands,
-               llvm::IRBuilder<>* b) {
+               llvm::IRBuilderBase* b) {
   llvm::Module* module = getModuleFromBuilder(b);
   for (size_t i = 0; i < operands.size(); ++i) {
     auto* cast =
@@ -50,7 +58,7 @@ void EmitTuple(const IrArray& tuple, absl::Span<llvm::Value* const> operands,
 }
 
 void EmitTuple(const IrArray& tuple, absl::Span<const IrArray> buffers,
-               llvm::IRBuilder<>* b) {
+               llvm::IRBuilderBase* b) {
   std::vector<llvm::Value*> buffer_ptrs;
   buffer_ptrs.reserve(buffers.size());
   absl::c_transform(
@@ -60,10 +68,10 @@ void EmitTuple(const IrArray& tuple, absl::Span<const IrArray> buffers,
 }
 
 std::vector<llvm::Value*> EmitTupleAllocasAtFunctionEntry(
-    const Shape& tuple_shape, llvm::IRBuilder<>* b) {
+    const Shape& tuple_shape, llvm::IRBuilderBase* b) {
   llvm::Module* module = b->GetInsertBlock()->getModule();
 
-  llvm::IRBuilder<>::InsertPointGuard guard(*b);
+  llvm::IRBuilderBase::InsertPointGuard guard(*b);
   llvm::Function* function = b->GetInsertBlock()->getParent();
   b->SetInsertPoint(&function->getEntryBlock(),
                     function->getEntryBlock().getFirstInsertionPt());
@@ -88,7 +96,7 @@ std::vector<llvm::Value*> EmitTupleAllocasAtFunctionEntry(
 llvm::Value* EmitGetTupleElement(const Shape& target_shape, int64_t index,
                                  int alignment, llvm::Value* operand,
                                  llvm::Type* operand_pointee_type,
-                                 llvm::IRBuilder<>* b) {
+                                 llvm::IRBuilderBase* b) {
   const std::vector<llvm::Value*> gep_index = {b->getInt64(0),
                                                b->getInt64(index)};
   llvm::Value* element_ptr =

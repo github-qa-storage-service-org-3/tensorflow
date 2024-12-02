@@ -22,9 +22,9 @@ limitations under the License.
 #include <ostream>
 #include <string>
 
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/primitive_util.h"
-#include "xla/statusor.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
@@ -126,17 +126,11 @@ class Comparison {
   inline bool IsF32TotalOrder() const {
     return primitive_type_ == PrimitiveType::F32 && IsTotalOrder();
   }
-  inline bool IsBf16TotalOrder() const {
-    return primitive_type_ == PrimitiveType::BF16 && IsTotalOrder();
-  }
 
   // Returns whether this is a standard comparison, i.e., what you would expect
   // as the industry standard on most architectures.
   inline bool IsStandardF32() const {
     return primitive_type_ == PrimitiveType::F32 && IsPartialOrder();
-  }
-  inline bool IsStandardBf16() const {
-    return primitive_type_ == PrimitiveType::BF16 && IsPartialOrder();
   }
   inline bool IsStandardS32() const {
     return primitive_type_ == PrimitiveType::S32 && IsTotalOrder();
@@ -236,10 +230,10 @@ std::string ComparisonDirectionToString(Comparison::Direction direction);
 std::string ComparisonTypeToString(Comparison::Type type);
 absl::string_view ComparisonPrimitiveTypeToString(PrimitiveType type);
 
-StatusOr<Comparison::Direction> StringToComparisonDirection(
+absl::StatusOr<Comparison::Direction> StringToComparisonDirection(
     absl::string_view direction);
-StatusOr<Comparison::Type> StringToComparisonType(absl::string_view comparison);
-StatusOr<Comparison::Order> StringToComparisonOrder(absl::string_view order);
+absl::StatusOr<Comparison::Type> StringToComparisonType(
+    absl::string_view comparison);
 
 // Returns a comparison function using the provided key function on each value,
 // i.e. `key_fn(a) < key_fn(b)`.

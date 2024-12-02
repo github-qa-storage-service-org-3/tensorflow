@@ -8,6 +8,15 @@
 #   The libraries in this package are not allowed to have ANY dependencies
 #   to any TensorFlow code outside this package.
 
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(
+    "@local_config_rocm//rocm:build_defs.bzl",
+    "if_rocm_is_configured",
+)
+load(
+    "@local_xla//xla/tsl/platform/default:cuda_build_defs.bzl",
+    "if_cuda_is_configured",
+)
 load("//tensorflow:strict.default.bzl", "py_strict_test")
 load(
     "//tensorflow:tensorflow.bzl",
@@ -45,15 +54,6 @@ load(
     "cc_binary",
     "cc_library",
 )
-load(
-    "@local_config_rocm//rocm:build_defs.bzl",
-    "if_rocm_is_configured",
-)
-load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
-    "if_cuda_is_configured",
-)
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -237,7 +237,6 @@ cc_library(
     compatible_with = [],
     deps = [
         ":platform",
-        "@local_xla//xla/stream_executor/cuda:cuda_activation_header",
     ],
 )
 
@@ -317,7 +316,7 @@ tf_cc_test(
         ":test_main",
         "//tensorflow/core:protos_all_cc",
         "@eigen_archive//:eigen3",
-        "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ],
 )
 
@@ -455,7 +454,7 @@ filegroup(
         "types.h",
         ":ctstring",
     ] + if_windows([
-        "@local_tsl//tsl/platform/windows:xla_cpu_runtime_srcs",
+        "@local_xla//xla/tsl/platform/windows:xla_cpu_runtime_srcs",
     ]),
 )
 
@@ -685,7 +684,6 @@ cc_library(
     hdrs = if_rocm_is_configured(["rocm.h"]),
     deps = if_rocm_is_configured([
         ":platform",
-        "@local_xla//xla/stream_executor/rocm:rocm_activation",
     ]),
 )
 
@@ -753,6 +751,8 @@ cc_library(
         ":strcat",
         ":stringprintf",
         ":types",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
         "@local_tsl//tsl/platform:status",
     ],
 )
@@ -850,6 +850,7 @@ cc_library(
     hdrs = ["tensor_coding.h"],
     deps = [
         ":coding",
+        ":logging",
         ":platform",
         ":protobuf",
         ":refcount",
@@ -949,8 +950,8 @@ cc_library(
         ":bfloat16",
         ":platform",
         ":tstring",
-        "@local_tsl//tsl/framework:device_type",
         "@local_tsl//tsl/platform:types",
+        "@local_xla//xla/tsl/framework:device_type",
     ],
 )
 
@@ -1078,21 +1079,18 @@ tf_cuda_library(
             ["@local_xla//xla/stream_executor/cuda:cuda_platform"],
             [
                 ":private_static_dep",
-                "@local_xla//xla/stream_executor/cuda:cuda_activation",
-                "@local_xla//xla/stream_executor/rocm:rocm_activation",
             ],
         ),
     features = ["-parse_headers"],
     deps = [
         "//tensorflow/core:lib",
         "@local_tsl//tsl/platform",
-        "@local_xla//xla/stream_executor",
+        "@local_tsl//tsl/platform:dso_loader",
         "@local_xla//xla/stream_executor:dnn",
         "@local_xla//xla/stream_executor:platform_manager",
-        "@local_xla//xla/stream_executor/cuda:cuda_activation_header",
+        "@local_xla//xla/stream_executor:stream_executor_h",
         "@local_xla//xla/stream_executor/cuda:cuda_platform_id",
         "@local_xla//xla/stream_executor/host:host_platform_id",
-        "@local_xla//xla/stream_executor/platform:dso_loader",
         "@local_xla//xla/stream_executor/rocm:rocm_platform_id",
     ] + if_rocm_is_configured([
         "@local_xla//xla/stream_executor/rocm:miopen_plugin",
@@ -1109,13 +1107,13 @@ cc_library(
     ],
     features = ["-parse_headers"],
     deps = [
-        "@local_xla//xla/stream_executor",
+        "@local_tsl//tsl/platform:dso_loader",
         "@local_xla//xla/stream_executor:dnn",
         "@local_xla//xla/stream_executor:platform_manager",
+        "@local_xla//xla/stream_executor:stream_executor_h",
         "@local_xla//xla/stream_executor/cuda:cuda_platform_id",
         "@local_xla//xla/stream_executor/host:host_platform",
         "@local_xla//xla/stream_executor/host:host_platform_id",
-        "@local_xla//xla/stream_executor/platform:dso_loader",
         "@local_xla//xla/stream_executor/rocm:rocm_platform_id",
     ],
 )
@@ -1270,7 +1268,8 @@ tf_cc_test(
 
 tf_cc_test(
     name = "fake_python_env_test",
-    size = "medium",
+    # Test size is marked as large because it showed a big runtime init overhead in build tests.
+    size = "large",
     srcs = ["fake_python_env_test.cc"],
     args = [
         "/some/path/to/pythontest.runfiles/org_tensorflow/stuff/to/run.py",
@@ -1301,21 +1300,6 @@ tf_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
-    ],
-)
-
-tf_cc_test(
-    name = "vmodule_test",
-    srcs = ["vmodule_test.cc"],
-    tags = ["optonly"],
-    deps = [
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core:lib_test_internal",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
-        "@com_google_absl//absl/strings",
-        "@eigen_archive//:eigen3",
     ],
 )
 
@@ -1416,13 +1400,13 @@ filegroup(
         "subprocess.h",
         "thread_annotations.h",
         ":base_hdrs",
+        # copybara:uncomment(GoogleFileSystem) "@local_xla//xla/tsl/platform/google:env.h",
         "//tensorflow/core/platform/profile_utils:android_armv7a_cpu_utils_helper.h",
         "//tensorflow/core/platform/profile_utils:clock_cycle_profiler.h",
         "//tensorflow/core/platform/profile_utils:cpu_utils.h",
         "//tensorflow/core/platform/profile_utils:i_cpu_utils_helper.h",
         "@local_tsl//tsl/platform:base_hdrs",
         "@local_tsl//tsl/platform:lib_hdrs",
-        # copybara:uncomment(GoogleFileSystem) "@local_tsl//tsl/platform/google:env.h",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -1685,7 +1669,7 @@ filegroup(
         "//tensorflow/core/platform/profile_utils:cpu_utils.h",
         "//tensorflow/core/platform/profile_utils:i_cpu_utils_helper.h",
         "@local_tsl//tsl/platform:mobile_srcs_only_runtime",
-        "@local_tsl//tsl/platform/default:mobile_srcs_only_runtime",
+        "@local_xla//xla/tsl/platform/default:mobile_srcs_only_runtime",
     ] + if_not_fuchsia([
         "subprocess.h",
     ]) + tf_google_mobile_srcs_only_runtime(),

@@ -78,7 +78,7 @@ using InstructionOperandsPair =
     std::pair<HloInstruction*, TransposeFolding::OperandIndices>;
 
 // Folds the operands of `dot` that are foldable transposes.
-Status FoldTransposeIntoDot(InstructionOperandsPair& pair) {
+absl::Status FoldTransposeIntoDot(InstructionOperandsPair& pair) {
   HloInstruction* dot = pair.first;
 
   DotDimensionNumbers new_dot_dims = dot->dot_dimension_numbers();
@@ -188,21 +188,23 @@ TransposeFolding::TransposeFolding(
           std::move(dot_can_fold_transpose_operand)),
       transposable_conv_operands_(std::move(transposable_conv_operands)) {}
 
-StatusOr<bool> TransposeFolding::Run(
+absl::StatusOr<bool> TransposeFolding::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   // Modifying the graph while traversing is dangerous, so we find all folding
   // opportunities before actually folding them.
   std::vector<InstructionOperandsPair> foldable_dots;
   std::vector<InstructionOperandsPair> foldable_convolutions;
+  std::vector<HloInstruction*> redundant_transposes;
 
-  FunctionVisitor visit_fn([this, &foldable_dots, &foldable_convolutions](
+  FunctionVisitor visit_fn([this, &foldable_dots, &foldable_convolutions,
+                            &redundant_transposes](
                                HloInstruction* instruction) {
     if (instruction->opcode() == HloOpcode::kDot) {
       // Don't fold dots with a 1D operand.
       if ((instruction->operand(0)->shape().rank() < 2) ||
           (instruction->operand(1)->shape().rank() < 2)) {
-        return OkStatus();
+        return absl::OkStatus();
       }
 
       OperandIndices operand_indices;
@@ -231,7 +233,23 @@ StatusOr<bool> TransposeFolding::Run(
         foldable_convolutions.emplace_back(instruction, operand_indices);
       }
     }
-    return OkStatus();
+
+    auto is_iota = [](absl::Span<const int64_t> x) {
+      for (int64_t i = 0; i < x.size(); ++i) {
+        if (x[i] != i) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    if (instruction->opcode() == HloOpcode::kTranspose) {
+      if (is_iota(instruction->dimensions())) {
+        redundant_transposes.emplace_back(instruction);
+      }
+    }
+
+    return absl::OkStatus();
   });
 
   for (auto* comp : module->MakeNonfusionComputations(execution_threads)) {
@@ -246,11 +264,20 @@ StatusOr<bool> TransposeFolding::Run(
   for (InstructionOperandsPair& pair : foldable_convolutions) {
     changed |= FoldTransposeIntoConvolution(pair);
   }
+  for (HloInstruction* instruction : redundant_transposes) {
+    if (instruction != nullptr && instruction->user_count() >= 1) {
+      TF_RETURN_IF_ERROR(
+          instruction->ReplaceAllUsesWith(instruction->mutable_operand(0)));
+      TF_RETURN_IF_ERROR(instruction->parent()->RemoveInstruction(instruction));
+      changed = true;
+    }
+  }
   return changed;
 }
 
-/*static*/ StatusOr<bool> TransposeFolding::IsRowColumnTransposeDotOperand(
-    const HloInstruction& dot, int64_t operand_idx) {
+/*static*/ absl::StatusOr<bool>
+TransposeFolding::IsRowColumnTransposeDotOperand(const HloInstruction& dot,
+                                                 int64_t operand_idx) {
   TF_RET_CHECK(dot.opcode() == HloOpcode::kDot);
   TF_RET_CHECK(dot.operand_count() > operand_idx);
 

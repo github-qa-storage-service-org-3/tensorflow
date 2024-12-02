@@ -1,7 +1,7 @@
 """Build macros for TF Lite."""
 
 load("//tensorflow:strict.default.bzl", "py_strict_test")
-load("//tensorflow:tensorflow.bzl", "clean_dep", "if_oss", "tf_binary_additional_srcs", "tf_cc_shared_object")
+load("//tensorflow:tensorflow.bzl", "if_oss", "tf_binary_additional_srcs", "tf_cc_shared_object")
 load("//tensorflow/lite:special_rules.bzl", "tflite_copts_extra")
 load("//tensorflow/lite/java:aar_with_jni.bzl", "aar_with_jni")
 load("@build_bazel_rules_android//android:rules.bzl", "android_library")
@@ -10,6 +10,17 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # buildifier: disable=out-of-order-load
 def register_extension_info(**kwargs):
     pass
+
+def clean_dep(target):
+    """Returns string to 'target' in @litert repository.
+
+    Use this function when referring to targets in the @litert
+    repository from macros that may be called from external repositories.
+    """
+
+    # A repo-relative label is resolved relative to the file in which the
+    # Label() call appears, i.e. @tsl.
+    return str(Label(target))
 
 def tflite_copts():
     """Defines common compile time flags for TFLite libraries."""
@@ -181,13 +192,22 @@ def tflite_linkopts_no_undefined():
         }),
     )
 
+def tflite_pagesize_linkopts():
+    """Defines linker flags for setting the page size."""
+    return select({
+        clean_dep("//tensorflow:android_arm64"): [
+            "-Wl,-z,max-page-size=16384",
+        ],
+        "//conditions:default": [],
+    })
+
 def tflite_linkopts():
     """Defines linker flags for linking TFLite binary."""
-    return tflite_linkopts_unstripped() + tflite_symbol_opts()
+    return tflite_linkopts_unstripped() + tflite_symbol_opts() + tflite_pagesize_linkopts()
 
 def tflite_jni_linkopts():
     """Defines linker flags for linking TFLite binary with JNI."""
-    return tflite_jni_linkopts_unstripped() + tflite_symbol_opts()
+    return tflite_jni_linkopts_unstripped() + tflite_symbol_opts() + tflite_pagesize_linkopts()
 
 def tflite_jni_binary(
         name,
@@ -202,7 +222,8 @@ def tflite_jni_binary(
         tags = [],
         srcs = [],
         visibility = None,  # 'None' means use the default visibility.
-        local_defines = []):
+        local_defines = [],
+        exec_properties = {}):
     """Builds a jni binary for TFLite."""
     linkopts = linkopts + select({
         clean_dep("//tensorflow:macos"): [
@@ -230,6 +251,7 @@ def tflite_jni_binary(
         testonly = testonly,
         visibility = visibility,
         local_defines = local_defines,
+        exec_properties = exec_properties,
     )
 
 def tflite_cc_shared_object(
@@ -849,7 +871,7 @@ def _label(target):
     Args:
       target: (string) a relative or absolute build target.
     """
-    if target[0:2] == "//":
+    if target[0:2] == "//" or "@org_tensorflow//" in target:
         return Label(target)
     if target[0] == ":":
         return Label("//" + native.package_name() + target)
@@ -873,7 +895,7 @@ def tflite_cc_library_with_c_headers_test(name, hdrs, **kwargs):
     build_tests = []
     for hdr in hdrs:
         label = _label(hdr)
-        basename = "%s__test_self_contained_c__%s" % (name, label.name)
+        basename = "%s__test_self_contained_c__%s__%s" % (name, label.package, label.name)
         compatible_with = kwargs.pop("compatible_with", [])
         native.genrule(
             name = "%s_gen" % basename,

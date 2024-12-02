@@ -17,9 +17,11 @@ limitations under the License.
 #include <assert.h>
 #include <stdlib.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/numbers.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/errors.h"
@@ -67,7 +69,7 @@ bool ParseBoolAttrValue(StringPiece attr_value) {
 
 Status ParseValue(StringPiece input, bool* value) {
   *value = ParseBoolAttrValue(input);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status ParseValue(StringPiece input, int32* value) {
@@ -75,17 +77,17 @@ Status ParseValue(StringPiece input, int32* value) {
   if (!parse_result) {
     return errors::InvalidArgument("Could not parse int32 from ", input);
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status ParseValue(StringPiece input, DataType* value) {
   *value = ParseTFDataType(input);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status ParseValue(StringPiece input, std::string* value) {
   *value = std::string(input);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status ParseValue(StringPiece input, std::vector<int32>* value) {
@@ -100,7 +102,7 @@ Status ParseValue(StringPiece input, std::vector<int32>* value) {
     }
     value->push_back(value_int);
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status ParseValue(StringPiece input, Padding* value) {

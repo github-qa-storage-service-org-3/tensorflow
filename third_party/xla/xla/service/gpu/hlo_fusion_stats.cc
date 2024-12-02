@@ -25,7 +25,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/status.h"
 #include "tsl/platform/errors.h"
 
 namespace xla {
@@ -100,11 +99,6 @@ std::string HloOpcodeHistogram::ToString() {
                     "}: ", entry.second, "\n");
   }
   return result;
-}
-
-absl::Status HloFusionStatsVisitor::RunOnModule(HloModule* module) {
-  TF_RETURN_IF_ERROR(module->entry_computation()->Accept(this));
-  return absl::OkStatus();
 }
 
 std::string HloFusionStatsVisitor::ToString() {

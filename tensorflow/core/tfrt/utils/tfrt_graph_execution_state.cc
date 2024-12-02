@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/types/span.h"
@@ -46,6 +47,7 @@ limitations under the License.
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/tfrt/fallback/fallback_state.h"
+#include "tensorflow/core/tfrt/graph_executor/config.h"
 #include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
@@ -117,21 +119,42 @@ absl::StatusOr<absl::flat_hash_set<std::string>> PreprocessGraph(
   return absl::flat_hash_set<std::string>();
 }
 
+bool GetTf2xlaMlirBridgeState(
+    const tensorflow::tfrt_stub::RuntimeConfig* runtime_config) {
+  bool enable_tf2xla_mlir_bridge = true;
+  if (runtime_config == nullptr) return enable_tf2xla_mlir_bridge;
+  if (auto mlir_bridge_config =
+          runtime_config->Get<tensorflow::tf2xla::v1::MlirBridgeConfig>();
+      mlir_bridge_config.ok()) {
+    if (mlir_bridge_config->has_enable_tf2xla_mlir_bridge()) {
+      LOG(INFO) << "enable_tf2xla_mlir_bridge in mlir_bridge_config is "
+                << mlir_bridge_config->enable_tf2xla_mlir_bridge();
+      enable_tf2xla_mlir_bridge =
+          mlir_bridge_config->enable_tf2xla_mlir_bridge();
+    }
+  }
+  return enable_tf2xla_mlir_bridge;
+}
+
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<TfrtGraphExecutionState>>
-TfrtGraphExecutionState::Create(const TfrtGraphExecutionState::Options& options,
-                                tensorflow::GraphDef graph_def,
-                                const FallbackState& fallback_state) {
+TfrtGraphExecutionState::Create(
+    const TfrtGraphExecutionState::Options& options,
+    tensorflow::GraphDef graph_def, const FallbackState& fallback_state,
+    tensorflow::tfrt_stub::RuntimeConfig* runtime_config) {
   TF_ASSIGN_OR_RETURN(
       auto functions_to_optimize,
       PreprocessGraph(graph_def, options.run_placer_grappler_on_functions));
+
+  bool enable_tf2xla_mlir_bridge = GetTf2xlaMlirBridgeState(runtime_config);
 
   // `CreateGraphExecutionState()` will preprocess the graph (e.g., apply
   // Placer to the top level graph).
   TF_ASSIGN_OR_RETURN(auto graph_execution_state,
                       fallback_state.CreateGraphExecutionState(
-                          std::move(graph_def), options.run_placer_on_graph));
+                          std::move(graph_def), options.run_placer_on_graph,
+                          enable_tf2xla_mlir_bridge));
 
   return std::make_unique<TfrtGraphExecutionState>(
       options, std::move(graph_execution_state), fallback_state,
@@ -250,9 +273,9 @@ TfrtGraphExecutionState::CreateOptimizedGraph(
     DumpGraphDefToFile("before_pruning", graph_def);
   }
 
-  TF_ASSIGN_OR_RETURN(
-      result.graph,
-      CreatePrunedGraph(graph_def, build_graph_options.callable_options));
+  TF_ASSIGN_OR_RETURN(result.graph,
+                      CreatePrunedGraph(std::move(graph_def),
+                                        build_graph_options.callable_options));
   DCHECK(result.graph);
 
   if (VLOG_IS_ON(1)) {
@@ -308,7 +331,7 @@ Status TfrtGraphExecutionState::Extend(const GraphDef& graph) {
       functions_to_optimize_,
       PreprocessGraph(*graph_def, options_.run_placer_grappler_on_functions));
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 namespace {
@@ -484,7 +507,7 @@ Status PruneGraphDef(GraphDef& graph_def,
     *graph_def.add_node() = std::move(node);
   }
 
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 Status EliminateRefVariablesFromV1ControlFlow(tensorflow::GraphDef& graph_def) {
@@ -561,7 +584,7 @@ Status EliminateRefVariablesFromV1ControlFlow(tensorflow::GraphDef& graph_def) {
   }
 
   graph_def.mutable_node()->Swap(updated_graph_def.mutable_node());
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 void RemoveInputShapesInFunctions(tensorflow::GraphDef& graph_def) {
@@ -643,7 +666,7 @@ Status OptimizeFunctions(
 
     fdef = std::move(new_fdef);
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace

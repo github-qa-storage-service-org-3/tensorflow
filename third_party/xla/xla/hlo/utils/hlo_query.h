@@ -16,11 +16,16 @@ limitations under the License.
 #ifndef XLA_HLO_UTILS_HLO_QUERY_H_
 #define XLA_HLO_UTILS_HLO_QUERY_H_
 
+#include <cstdint>
+#include <utility>
+
 #include "absl/container/flat_hash_set.h"
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/util.h"
 
 namespace xla {
 
@@ -74,9 +79,56 @@ bool IsBroadcastOfScalarConstant(const HloInstruction& instr);
 // Returns whether the `instr` is a broadcast and its input is a parameter.
 bool IsBroadcastOfParameter(const HloInstruction& instr);
 
+// Returns true for a parameter or a parameter followed by a chain of no-op
+// instructions (bitcast, get-tuple-element).
+bool IsEffectiveParameter(const HloInstruction&);
+
 // Returns first HLO of the computation with the opcode, otherwise nullptr.
 HloInstruction* GetFirstInstructionWithOpcode(const HloComputation& computation,
                                               HloOpcode opcode);
+
+// Applies `fn` to a collection of instruction with `opcode` for a given
+// `computation`.
+template <typename Fn>
+void ForEachInstructionWithOpcode(HloComputation& computation, HloOpcode opcode,
+                                  Fn&& fn) {
+  for (HloInstruction* instr : computation.instructions()) {
+    if (instr->opcode() == opcode) {
+      fn(instr);
+    }
+  }
+}
+
+// Applies `fn` to a collection of instruction with `opcode` for a given
+// `module`.
+template <typename Fn>
+void ForEachInstructionWithOpcode(HloModule& module, HloOpcode opcode,
+                                  Fn&& fn) {
+  for (HloComputation* computation : module.computations()) {
+    ForEachInstructionWithOpcode(*computation, opcode, fn);
+  }
+}
+
+// Applies `fn` to a collection of instruction satisfying `pred` for a given
+// `computation`.
+template <typename Fn>
+void ForEachInstructionWithPred(HloComputation& computation, HloPredicate pred,
+                                Fn&& fn) {
+  for (HloInstruction* instr : computation.instructions()) {
+    if (pred(instr)) {
+      fn(instr);
+    }
+  }
+}
+
+// Applies `fn` to a collection of instruction satisfying `pred` for a given
+// `module`.
+template <typename Fn>
+void ForEachInstructionWithPred(HloModule& module, HloPredicate pred, Fn&& fn) {
+  for (HloComputation* computation : module.computations()) {
+    ForEachInstructionWithPred(*computation, pred, fn);
+  }
+}
 
 // Determines whether the given computation contains an instruction with one of
 // the given opcodes.  Checks both comp's instructions and the instructions of
@@ -124,6 +176,30 @@ int64_t NextChannelId(const HloModule& module);
 // This function is called after X64Rewriter, so X64 host transfers are already
 // rewritten into tuple shaped transfers.
 bool HasX64TransformedHostTransfer(const HloModule& module);
+
+// Returns the unique GTE instruction with the given operand and index. Returns
+// nullptr if no such instruction exists or is not unique.
+HloInstruction* GetUniqueGteInstruction(const HloInstruction* operand,
+                                        int64_t index);
+
+// Gets the computation from the given module with the given name.
+HloComputation* FindComputation(HloModule* module, absl::string_view name);
+
+// Gets the instruction from the given computation with the given instruction
+// name. Returns nullptr if no such instruction can be found.
+HloInstruction* FindInstruction(const HloComputation* computation,
+                                absl::string_view name);
+
+// Gets any instruction from the given computation with the given opcode.
+// Returns nullptr if no such instruction can be found.
+HloInstruction* FindInstruction(const HloComputation* computation,
+                                HloOpcode opcode);
+
+// Returns compile time optimization effort in range [-1.0, 1.0] where values <
+// 0.0 indicate skipping passes which might optimize the final runtime (thus
+// improving compile time), and values > 0.0 indicate running additional passes
+// which may improve runtime at the cost of compilation time.
+float ExecTimeOptimizationEffort(const HloModule& module);
 
 }  // namespace hlo_query
 }  // namespace xla

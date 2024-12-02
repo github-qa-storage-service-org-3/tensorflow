@@ -19,6 +19,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 
@@ -26,7 +27,7 @@ namespace tensorflow {
 // operators.
 class CombineTPUEmbeddingLoadRetrievePass : public GraphOptimizationPass {
  public:
-  Status Run(const GraphOptimizationPassOptions& options) override;
+  absl::Status Run(const GraphOptimizationPassOptions& options) override;
 };
 
 }  // namespace tensorflow
