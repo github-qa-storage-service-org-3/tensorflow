@@ -21,6 +21,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "xla/client/xla_computation.h"
 #include "xla/debug_options_flags.h"
@@ -34,7 +35,7 @@ limitations under the License.
 
 namespace xla {
 
-Client::Client(ServiceInterface* stub) : stub_(stub) {}
+Client::Client(Service* stub) : stub_(stub) {}
 
 Client::~Client() = default;
 
@@ -49,7 +50,7 @@ absl::StatusOr<Literal> Client::Transfer(const GlobalData& data,
 
   VLOG(1) << "making transfer request";
   VLOG(3) << "TransferToClientRequest: {" << request.DebugString() << "}";
-  Status s = stub_->TransferToClient(&request, &response);
+  absl::Status s = stub_->TransferToClient(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -76,7 +77,7 @@ absl::StatusOr<std::unique_ptr<GlobalData>> Client::TransferToServer(
 
   VLOG(1) << "making transfer to server request";
   VLOG(3) << "TransferToServerRequest: {" << request.DebugString() << "}";
-  Status s = stub_->TransferToServer(&request, &response);
+  absl::Status s = stub_->TransferToServer(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -93,8 +94,9 @@ absl::StatusOr<std::unique_ptr<GlobalData>> Client::TransferToServer(
   return std::make_unique<GlobalData>(stub_, response.data());
 }
 
-Status Client::TransferToInfeed(const LiteralSlice& literal, int64_t replica_id,
-                                const DeviceHandle* device_handle) {
+absl::Status Client::TransferToInfeed(const LiteralSlice& literal,
+                                      int64_t replica_id,
+                                      const DeviceHandle* device_handle) {
   TransferToInfeedRequest request;
   *request.mutable_literal() = literal.ToProto();
   if (device_handle) {
@@ -105,14 +107,14 @@ Status Client::TransferToInfeed(const LiteralSlice& literal, int64_t replica_id,
 
   VLOG(1) << "making transfer to infeed request";
   VLOG(3) << "TransferToInfeedRequest: {" << request.DebugString() << "}";
-  Status s = stub_->TransferToInfeed(&request, &response);
+  absl::Status s = stub_->TransferToInfeed(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
     return s;
   }
   VLOG(3) << "TransferToInfeedResponse: {" << response.DebugString() << "}";
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 absl::StatusOr<Literal> Client::TransferFromOutfeed(
@@ -130,7 +132,7 @@ absl::StatusOr<Literal> Client::TransferFromOutfeed(
 
   VLOG(1) << "making transfer from outfeed request";
   VLOG(3) << "TransferFromOutfeedRequest: {" << request.DebugString() << "}";
-  Status s = stub_->TransferFromOutfeed(&request, &response);
+  absl::Status s = stub_->TransferFromOutfeed(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -147,20 +149,20 @@ absl::StatusOr<Literal> Client::TransferFromOutfeed(
   return Literal::CreateFromProto(response.literal());
 }
 
-Status Client::ResetDevice() {
+absl::Status Client::ResetDevice() {
   ResetDeviceRequest request;
   ResetDeviceResponse response;
 
   VLOG(1) << "making reset device request";
   VLOG(3) << "ResetDeviceRequest: {" << request.DebugString() << "}";
-  Status s = stub_->ResetDevice(&request, &response);
+  absl::Status s = stub_->ResetDevice(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
     return s;
   }
   VLOG(3) << "ResetDeviceResponse: {" << response.DebugString() << "}";
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 absl::StatusOr<Literal> Client::ExecuteAndTransfer(
@@ -192,7 +194,7 @@ absl::StatusOr<Literal> Client::ComputeConstant(
   ComputeConstantResponse response;
 
   VLOG(2) << "making compute-constant-graph request";
-  Status s = stub_->ComputeConstantGraph(&request, &response);
+  absl::Status s = stub_->ComputeConstantGraph(&request, &response);
   VLOG(2) << "done with request";
 
   if (!s.ok()) {
@@ -238,7 +240,7 @@ absl::StatusOr<ExecutionHandle> Client::Compile(
 
   CompileResponse response;
   VLOG(1) << "making compile request: " << request.ShortDebugString();
-  Status s = stub_->Compile(&request, &response);
+  absl::Status s = stub_->Compile(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -260,7 +262,7 @@ absl::StatusOr<std::unique_ptr<GlobalData>> Client::Execute(
 
   ExecuteResponse response;
   VLOG(1) << "making execute request: " << request.ShortDebugString();
-  Status s = stub_->Execute(&request, &response);
+  absl::Status s = stub_->Execute(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -342,7 +344,7 @@ Client::ExecuteParallel(absl::Span<const XlaComputationInstance> computations) {
   ExecuteParallelResponse response;
   VLOG(1) << "making execute-graph-parallel request: "
           << request.ShortDebugString();
-  Status s = stub_->ExecuteGraphParallel(&request, &response);
+  absl::Status s = stub_->ExecuteGraphParallel(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -372,7 +374,7 @@ absl::StatusOr<std::vector<DeviceHandle>> Client::GetDeviceHandles(
 
   GetDeviceHandlesResponse response;
   VLOG(1) << "making get device request: " << request.ShortDebugString();
-  Status s = stub_->GetDeviceHandles(&request, &response);
+  absl::Status s = stub_->GetDeviceHandles(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -389,13 +391,13 @@ absl::StatusOr<std::vector<DeviceHandle>> Client::GetDeviceHandles(
   return device_handles;
 }
 
-Status Client::Unregister(const GlobalData& data) {
+absl::Status Client::Unregister(const GlobalData& data) {
   UnregisterRequest request;
   *request.add_data() = data.handle();
   UnregisterResponse response;
 
   VLOG(1) << "making unregister request";
-  Status s = stub_->Unregister(&request, &response);
+  absl::Status s = stub_->Unregister(&request, &response);
   VLOG(1) << "done with request";
 
   return s;
@@ -408,7 +410,7 @@ Client::DeconstructTuple(const GlobalData& data) {
   DeconstructTupleResponse response;
 
   VLOG(1) << "making DestructTuple request";
-  Status s = stub_->DeconstructTuple(&request, &response);
+  absl::Status s = stub_->DeconstructTuple(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -420,27 +422,6 @@ Client::DeconstructTuple(const GlobalData& data) {
     handles.push_back(std::make_unique<GlobalData>(stub_, handle));
   }
   return std::move(handles);
-}
-
-absl::StatusOr<ComputationStats> Client::GetComputationStats(
-    const XlaComputation& computation,
-    const DebugOptions& debug_options) const {
-  ComputationGraphStatsRequest request;
-
-  // TODO(b/74197823): Find a way to avoid the copy of the hlo proto.
-  *request.mutable_computation() = computation.proto();
-  *request.mutable_debug_options() = debug_options;
-  ComputationStatsResponse response;
-
-  VLOG(1) << "making computation graph stats request";
-  Status s = stub_->GetComputationGraphStats(&request, &response);
-  VLOG(1) << "done with request";
-
-  if (!s.ok()) {
-    return s;
-  }
-  CHECK(response.has_stats());
-  return response.stats();
 }
 
 absl::StatusOr<std::unique_ptr<ProgramShape>> Client::GetComputationShape(
@@ -455,7 +436,7 @@ absl::StatusOr<Shape> Client::GetShape(const GlobalData& data) {
   GetShapeResponse response;
 
   VLOG(1) << "making get shape request";
-  Status s = stub_->GetShape(&request, &response);
+  absl::Status s = stub_->GetShape(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {
@@ -465,27 +446,6 @@ absl::StatusOr<Shape> Client::GetShape(const GlobalData& data) {
   return Shape(response.shape());
 }
 
-absl::StatusOr<std::string> Client::ExecutionStatsAsString(
-    const XlaComputation& computation, const ExecutionProfile& profile) {
-  TF_ASSIGN_OR_RETURN(
-      auto computation_stats,
-      GetComputationStats(computation, GetDebugOptionsFromFlags()));
-  int64_t total_flops =
-      computation_stats.flop_count() + computation_stats.transcendental_count();
-  if (profile.compute_time_ns() > 0) {
-    int64_t nanoseconds = profile.compute_time_ns();
-    int64_t cycle_count = profile.compute_cycle_count();
-    double gflops = total_flops / nanoseconds;
-    return absl::StrCat(
-        "[Execution Statistics] flop count: ", computation_stats.flop_count(),
-        ", transcendental count: ", computation_stats.transcendental_count(),
-        ", compute execution time: ", nanoseconds, " nsec",
-        ", compute cycles: ", cycle_count, ", performance: ", gflops,
-        "gflop/s");
-  }
-  return std::string("[Execution Statistics] not available.");
-}
-
 absl::StatusOr<ChannelHandle> Client::CreateChannelHandleByType(
     ChannelHandle::ChannelType type) {
   CreateChannelHandleRequest request;
@@ -493,7 +453,7 @@ absl::StatusOr<ChannelHandle> Client::CreateChannelHandleByType(
   CreateChannelHandleResponse response;
 
   VLOG(1) << "making create channel handle request";
-  Status s = stub_->CreateChannelHandle(&request, &response);
+  absl::Status s = stub_->CreateChannelHandle(&request, &response);
   VLOG(1) << "done with request";
 
   if (!s.ok()) {

@@ -27,7 +27,7 @@ namespace interpreter {
 
 host::HostStream *AsExecutorStream(Stream *stream) {
   DCHECK(stream != nullptr);
-  return dynamic_cast<host::HostStream *>(stream->implementation());
+  return dynamic_cast<host::HostStream *>(stream);
 }
 
 DeviceMemoryBase XlaInterpreterExecutor::Allocate(uint64_t size,
@@ -76,21 +76,6 @@ bool XlaInterpreterExecutor::HostCallback(
     Stream *stream, absl::AnyInvocable<absl::Status() &&> callback) {
   AsExecutorStream(stream)->EnqueueTaskWithStatus(std::move(callback));
   return true;
-}
-
-bool XlaInterpreterExecutor::CreateStreamDependency(Stream *dependent,
-                                                    Stream *other) {
-  AsExecutorStream(dependent)->EnqueueTaskWithStatus(
-      [other]() { return other->BlockHostUntilDone(); });
-  absl::Status status = AsExecutorStream(dependent)->BlockUntilDone();
-  if (status.ok()) {
-    return true;
-  }
-
-  // TODO(b/199316985): Return 'tsl::Status' instead of 'bool', so we don't need
-  // to throw away error information here.
-  LOG(WARNING) << "CreateStreamDependency: error on stream: " << status;
-  return false;
 }
 
 absl::Status XlaInterpreterExecutor::BlockHostUntilDone(Stream *stream) {

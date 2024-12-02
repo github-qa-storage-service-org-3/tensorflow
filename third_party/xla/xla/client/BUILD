@@ -1,9 +1,9 @@
 # Description:
 #   XLA client libraries.
 
-load("//xla:xla.bzl", "xla_cc_test")
-load("@local_tsl//tsl:tsl.default.bzl", "filegroup")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla:xla.bzl", "xla_cc_test")
+load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -32,10 +32,10 @@ cc_library(
     srcs = ["global_data.cc"],
     hdrs = ["global_data.h"],
     deps = [
-        "//xla:service_interface",
         "//xla:types",
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
+        "//xla/service",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
@@ -50,6 +50,7 @@ cc_library(
         "//xla:statusor",
         "//xla:types",
         "//xla:util",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/lib/math:math_util",
         "@local_tsl//tsl/platform:logging",
@@ -76,13 +77,14 @@ cc_library(
         "//xla:debug_options_flags",
         "//xla:execution_options_util",
         "//xla:literal",
-        "//xla:service_interface",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:types",
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
+        "//xla/service",
         "//xla/service:hlo_proto_cc",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
@@ -103,6 +105,7 @@ cc_library(
         "//xla:util",
         "//xla:xla_proto_cc",
         "//xla/pjrt:compile_options_proto_cc",
+        "//xla/pjrt/distributed:key_value_store_interface",
         "//xla/service:compilation_environments",
         "//xla/service:computation_placer",
         "@com_google_absl//absl/algorithm:container",
@@ -140,6 +143,7 @@ cc_library(
         "//xla/service:stream_pool",
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -259,7 +263,6 @@ cc_library(
         "//xla:permutation_util",
         "//xla:shape_util",
         "//xla:sharding_op_util",
-        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:util",
@@ -275,6 +278,7 @@ cc_library(
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/lib/core:bitmap",
@@ -293,9 +297,9 @@ xla_cc_test(
         ":value_inference",
         ":xla_builder",
         ":xla_computation",
+        "//xla:comparison_util",
         "//xla:debug_options_flags",
         "//xla:shape_util",
-        "//xla:statusor",
         "//xla:test",
         "//xla:test_helpers",
         "//xla:util",
@@ -305,7 +309,10 @@ xla_cc_test(
         "//xla/service:pattern_matcher",
         "//xla/service:pattern_matcher_gmock",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",

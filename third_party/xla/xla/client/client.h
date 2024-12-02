@@ -26,7 +26,7 @@ limitations under the License.
 #include "xla/client/xla_computation.h"
 #include "xla/literal.h"
 #include "xla/service/hlo.pb.h"
-#include "xla/service_interface.h"
+#include "xla/service/service.h"
 #include "xla/statusor.h"
 #include "xla/types.h"
 #include "xla/xla.pb.h"
@@ -38,7 +38,7 @@ namespace xla {
 // lifetime-oriented methods.
 class Client {
  public:
-  explicit Client(ServiceInterface* stub);
+  explicit Client(Service* stub);
   virtual ~Client();
 
   // Compile the computation with the given argument shapes and returns the
@@ -151,8 +151,9 @@ class Client {
   // device_handle and replica_id together specify a particular device; a device
   // assigned for the given replica_id among the replicas that the given device
   // handle belongs to.
-  Status TransferToInfeed(const LiteralSlice& literal, int64_t replica_id = 0,
-                          const DeviceHandle* device_handle = nullptr);
+  absl::Status TransferToInfeed(const LiteralSlice& literal,
+                                int64_t replica_id = 0,
+                                const DeviceHandle* device_handle = nullptr);
 
   // Transfers from the Outfeed of the device.
   //
@@ -164,7 +165,7 @@ class Client {
       const DeviceHandle* device_handle = nullptr);
 
   // Resets the device, clearing all existing state on the device.
-  Status ResetDevice();
+  absl::Status ResetDevice();
 
   // Executes the computation with the given arguments and transfers the result
   // to the client as a literal. Parameters are defined the same as for
@@ -195,16 +196,11 @@ class Client {
       const Layout* output_layout = nullptr) const;
 
   // Unregister the memory for the given GlobalData on the device.
-  Status Unregister(const GlobalData& data);
+  absl::Status Unregister(const GlobalData& data);
 
   // Returns a vector of global data handles that point to the tuple elements.
   absl::StatusOr<std::vector<std::unique_ptr<GlobalData>>> DeconstructTuple(
       const GlobalData& data);
-
-  // Retrieves the statistics of the given computation.
-  absl::StatusOr<ComputationStats> GetComputationStats(
-      const XlaComputation& computation,
-      const DebugOptions& debug_options) const;
 
   // Returns the Shape of the given array specified by 'data'. The shape
   // includes the Layout of the array as it is stored on the service.
@@ -226,18 +222,13 @@ class Client {
 
   absl::StatusOr<XlaComputation> LoadSnapshot(const HloSnapshot& module);
 
-  ServiceInterface* stub() { return stub_; }
+  Service* stub() { return stub_; }
 
  private:
-  // Returns the execution statistics (e.g., gflop/s) as a string from the
-  // ExecutionProfile returned from an execution of the computation.
-  absl::StatusOr<std::string> ExecutionStatsAsString(
-      const XlaComputation& computation, const ExecutionProfile& profile);
-
   absl::StatusOr<ChannelHandle> CreateChannelHandleByType(
       ChannelHandle::ChannelType type);
 
-  ServiceInterface* stub_;  // Stub that this client is connected on.
+  Service* stub_;  // Stub that this client is connected on.
 
   Client(const Client&) = delete;
   Client& operator=(const Client&) = delete;

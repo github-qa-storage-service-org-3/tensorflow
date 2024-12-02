@@ -41,10 +41,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_attr.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v2/tf_executor_to_graph.h"
 #include "tensorflow/compiler/mlir/tfr/ir/tfr_ops.h"
 #include "tensorflow/compiler/mlir/tfr/passes/passes.h"
 #include "tensorflow/core/platform/path.h"
@@ -57,7 +57,7 @@ namespace tfr {
 
 const char* const kTFRLibEnv = "TF_MLIR_TFR_LIB_DIR";
 
-StatusOr<std::unique_ptr<TFRDecomposeContext>> TFRDecomposeContext::Get(
+absl::StatusOr<std::unique_ptr<TFRDecomposeContext>> TFRDecomposeContext::Get(
     mlir::MLIRContext* mlir_ctx) {
   Env* env = Env::Default();
   std::string tfr_lib_dir;
@@ -121,8 +121,8 @@ std::unique_ptr<TFRDecomposeContext> TFRDecomposeContext::GetFromText(
   return std::make_unique<TFRDecomposeContext>(module_op);
 }
 
-StatusOr<FunctionDef> TFRDecomposeContext::ExpandNode(const NodeDef& node_def,
-                                                      StringPiece func_name) {
+absl::StatusOr<FunctionDef> TFRDecomposeContext::ExpandNode(
+    const NodeDef& node_def, StringPiece func_name) {
   const OpDef* op_def;
   TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef(node_def.op(), &op_def));
   DataTypeVector input_dtys, output_dtys;
@@ -176,7 +176,8 @@ StatusOr<FunctionDef> TFRDecomposeContext::ExpandNode(const NodeDef& node_def,
   // Export the result as a FunctionDef.
   FunctionDef func_def;
   TF_RETURN_IF_ERROR(
-      ConvertMlirFunctionToFunctionLibraryDef(func, export_confs_, &func_def));
+      tensorflow::tf2xla::v2::ConvertMlirFunctionToFunctionLibraryDef(
+          func, export_confs_, &func_def));
   module.erase();
   return func_def;
 }
@@ -209,8 +210,8 @@ TFRDecomposeContext::TFRDecomposeContext(mlir::ModuleOp tfr_module)
 
 void TFRDecomposeContext::Destroy() { tfr_module_.erase(); }
 
-StatusOr<FunctionDef> ExpandNode(const NodeDef& node_def,
-                                 StringPiece func_name) {
+absl::StatusOr<FunctionDef> ExpandNode(const NodeDef& node_def,
+                                       StringPiece func_name) {
   mlir::MLIRContext mlir_ctx;
   TF_ASSIGN_OR_RETURN(auto ctx, TFRDecomposeContext::Get(&mlir_ctx));
   return ctx->ExpandNode(node_def, func_name);

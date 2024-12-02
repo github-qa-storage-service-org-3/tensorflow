@@ -21,12 +21,17 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "llvm/ADT/Twine.h"
-#include "tensorflow/core/lib/io/path.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_generated.h"
+#include "tensorflow/compiler/mlir/lite/schema/schema_utils.h"
 #include "tensorflow/core/platform/init_main.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/command_line_flags.h"
-#include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/schema/schema_utils.h"
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/model_builder.h"
 #include "tensorflow/lite/tools/optimize/test_util.h"
 #include "tsl/platform/logging.h"
 
@@ -215,9 +220,8 @@ TEST_F(QuantizeWeightsTest, QuantizationSucceeds) {
 TEST_F(QuantizeWeightsTest, QuantizationFails) {
   LoadBasicModel();
   flatbuffers::FlatBufferBuilder builder;
-  tflite::StderrReporter error_reporter;
-  auto status = QuantizeWeights(&builder, model_, &error_reporter,
-                                TensorType_UINT8, {}, {});
+  auto status =
+      QuantizeWeights(&builder, model_, TensorType_UINT8, {}, {}, 1024);
   EXPECT_EQ(status, kTfLiteError);
 }
 

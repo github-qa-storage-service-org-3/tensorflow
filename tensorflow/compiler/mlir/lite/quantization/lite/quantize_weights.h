@@ -22,9 +22,9 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
-#include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/model.h"
-#include "tensorflow/lite/schema/schema_generated.h"
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_generated.h"
+#include "tensorflow/lite/c/c_api_types.h"
 
 namespace mlir {
 namespace lite {
@@ -59,7 +59,6 @@ using CustomOpMap = std::unordered_map<std::string, CustomOpInfo>;
 // dynamic range quantization for verify_numeric and whole_model_verify flags.
 TfLiteStatus QuantizeWeights(
     flatbuffers::FlatBufferBuilder* builder, const tflite::Model* input_model,
-    tflite::ErrorReporter* error_reporter,
     const tflite::TensorType& inference_type,
     const absl::flat_hash_set<std::string>& denylisted_ops,
     const CustomOpMap& custom_op_map,

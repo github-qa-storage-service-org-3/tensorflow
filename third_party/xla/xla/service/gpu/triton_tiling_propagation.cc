@@ -39,6 +39,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_query.h"
+#include "xla/layout.h"
 #include "xla/permutation_util.h"
 #include "xla/service/gpu/triton_support.h"
 #include "xla/service/instruction_fusion.h"
@@ -77,6 +78,15 @@ const TensorIterationSpec::DimIterationSpec* TensorIterationSpec::Find(
     return &it->second;
   }
   return nullptr;
+}
+
+std::vector<int> TensorIterationSpec::GetDimensions() const {
+  std::vector<int> result;
+  result.reserve(dim_iteration_specs_.size());
+  for (const auto& [dim, _] : dim_iteration_specs_) {
+    result.push_back(dim);
+  }
+  return result;
 }
 
 bool TensorIterationSpec::IsPhysicallyEquivalent(
@@ -202,12 +212,6 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
   TensorIterationSpec tensor_spec;
   int64_t accumulated_stride = 1;
   int last_dim = -1;
-  auto remove_last_fragment_if_degenerate = [&tensor_spec](const int dim_idx) {
-    if (dim_idx >= 0 && !tensor_spec[dim_idx].empty() &&
-        tensor_spec[dim_idx].back().count == 1) {
-      tensor_spec[dim_idx].pop_back();
-    }
-  };
   for (int dim_order_index = 0; dim_order_index < dim_fragments.size();
        ++dim_order_index) {
     const DimensionOrder::Fragment& fragment = dim_fragments[dim_order_index];
@@ -234,7 +238,6 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
         dim_spec.back().subfragments.push_back(fragment.sliced_count());
       }
     } else {
-      remove_last_fragment_if_degenerate(last_dim);
       // Add part of the dimension.
       dim_spec.push_back(TensorIterationSpec::IterationSpecFragment{
           accumulated_stride,
@@ -247,7 +250,23 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
     accumulated_stride *= fragment.full_count();
     last_dim = fragment.dst_dim_number();
   }
-  remove_last_fragment_if_degenerate(last_dim);
+
+  // Remove degenerate fragments.
+  for (int dim_idx : tensor_spec.GetDimensions()) {
+    TensorIterationSpec::DimIterationSpec& dim_spec = tensor_spec[dim_idx];
+
+    // We should not remove the only fragment in a dimension, because if it is
+    // removed, the dimension will be removed from the TensorIterationSpec.
+    if (dim_spec.size() <= 1) continue;
+
+    TensorIterationSpec::DimIterationSpec filtered_dim_spec;
+    absl::c_copy_if(dim_spec, std::back_inserter(filtered_dim_spec),
+                    [](const TensorIterationSpec::IterationSpecFragment& f) {
+                      return f.count != 1;
+                    });
+    tensor_spec[dim_idx] = filtered_dim_spec;
+  }
+
   tensor_spec.RemoveEmptyDimensions();
   return tensor_spec;
 }
@@ -779,16 +798,27 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
           // TritonFusionAnalysis after the padding and the split-k transform
           // are applied.
           const std::vector<Fragment*>& fragments = src_logical[i];
-          // We must have 2 fragments at this point.
-          CHECK_EQ(fragments.size(), 2);
-          // The dst_dim_numbers must be the same for the 2 fragments of the
-          // contracting dimension after applying split-k.
-          CHECK_EQ(fragments[0]->dst_dim_number(),
-                   fragments[1]->dst_dim_number());
 
+          // We must have 2 non-trivial fragments at this point. We may have
+          // more than 2 fragments if there are trivial fragments with count 1.
+          CHECK_GE(fragments.size(), 2);
+          // The dst_dim_numbers must be the same for all fragments of the
+          // contracting dimension after applying split-k.
+          CHECK(absl::c_all_of(fragments, [&](const Fragment* fragment) {
+            return fragment->dst_dim_number() ==
+                   fragments.front()->dst_dim_number();
+          }));
+
+          std::vector<Fragment*> non_trivial_fragments;
+          absl::c_copy_if(fragments, std::back_inserter(non_trivial_fragments),
+                          [](const Fragment* fragment) {
+                            return fragment->full_count() > 1;
+                          });
+          CHECK_EQ(non_trivial_fragments.size(), 2);
           new_fragments.emplace_back(
-              fragments[0]->dst_dim_number(),
-              fragments[0]->full_count() * fragments[1]->full_count() -
+              non_trivial_fragments[0]->dst_dim_number(),
+              non_trivial_fragments[0]->full_count() *
+                      non_trivial_fragments[1]->full_count() -
                   padding);
           dst_logical[i] = {&new_fragments.back()};
         }
@@ -809,6 +839,29 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
           fragment->set_slice(
               fragment->slice_start() + slice->slice_starts(dim),
               fragment->sliced_count());
+        }
+      }
+    } else if (hlo.opcode() == HloOpcode::kDynamicSlice) {
+      // All operands after idx 0 are scalar indices. As such, we do not want
+      // to explicitly define dim orders.
+      if (dst != &hlo && hlo.operand_index(dst) >= 1) {
+        continue;
+      }
+      const auto dynamic_slice = Cast<HloDynamicSliceInstruction>(&hlo);
+      dst_logical.resize(src_logical.size());
+      for (int dim = 0; dim < src_logical.size(); ++dim) {
+        dst_logical[dim] = src_logical[dim];
+        if (dynamic_slice->slice_sizes(dim) != dst->shape().dimensions(dim)) {
+          if (dst_logical[dim].size() > 1) {
+            return FusionDecision("Slicing of fragmented dimension.");
+          }
+          auto fragment = dst_logical[dim].front();
+          fragment->set_count(dst->shape().dimensions(dim));
+
+          // As we do not know which section of the tensor we keep, we retain
+          // the whole part.
+          fragment->set_slice(fragment->slice_start(),
+                              dst->shape().dimensions(dim));
         }
       }
     } else {
@@ -860,9 +913,10 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
   if (hlo.opcode() != HloOpcode::kParameter &&
       direction == TransformDirection::kOutputToInput &&
       absl::c_any_of(hlo.users(), [](const HloInstruction* user) {
-        return user->opcode() == HloOpcode::kConcatenate;
+        return (user->opcode() == HloOpcode::kConcatenate ||
+                user->opcode() == HloOpcode::kDynamicSlice);
       })) {
-    return "No fusion into concatenations";
+    return "No fusion into concatenations or dynamic slice.";
   }
   if (hlo.opcode() == HloOpcode::kParameter ||
       hlo_query::IsScalarConstant(&hlo)) {
@@ -898,7 +952,7 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   } else if (hlo.operand_count() > 0 &&
-             IsTritonSupportedElementwise(
+             legacy_triton::IsTritonSupportedElementwise(
                  hlo.opcode(), hlo.operand(0)->shape().element_type())) {
     return GetPropagatedDimOrdersForElementwise(hlo, direction, src_dim_order);
   } else if (hlo.opcode() == HloOpcode::kBitcast) {
@@ -912,6 +966,24 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
     if (direction != TransformDirection::kOutputToInput) {
       return "Unsupported slice direction.";
     }
+
+    return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
+                                                  properties);
+  } else if (hlo.opcode() == HloOpcode::kDynamicSlice &&
+             direction == TransformDirection::kOutputToInput) {
+    // We handle the dynamic slice within EmitTensorPointer, which is only
+    // used for GEMM fusions.
+    if (!std::holds_alternative<DotProperties>(properties)) {
+      return "Dynamic slices for now are only supported in GEMM fusions.";
+    }
+
+    if (CodegenDecision decision = legacy_triton::IsTritonSupportedDynamicSlice(
+            *Cast<HloDynamicSliceInstruction>(&hlo));
+        !decision.CanFuse()) {
+      // CodegenDecision is actually the same type as FusionDecision.
+      return decision;
+    }
+
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   } else if (hlo.opcode() == HloOpcode::kReshape) {
@@ -925,9 +997,24 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
     if (!std::holds_alternative<DotProperties>(properties)) {
       return "Concatenations for now are only supported in GEMM fusions.";
     }
-    auto dim = LogicalIndexOfLabeledDimension(
-        hlo.shape(), src_dim_order,
-        std::get<DotProperties>(properties).noncontracting_dimension);
+
+    int64_t noncontracting_dim_label =
+        std::get<DotProperties>(properties).noncontracting_dimension;
+    const FragmentOrders& src_dim_fragments_orders =
+        src_dim_order.DimFragmentsOrders();
+
+    auto noncontracting_dim_fragment_order_it =
+        src_dim_fragments_orders.find(noncontracting_dim_label);
+    if (noncontracting_dim_fragment_order_it !=
+        src_dim_fragments_orders.end()) {
+      if (noncontracting_dim_fragment_order_it->second.size() > 1) {
+        return "Concatenations on split non-contracting dimensions are "
+               "unsupported.";
+      }
+    }
+
+    auto dim = LogicalIndexOfLabeledDimension(hlo.shape(), src_dim_order,
+                                              noncontracting_dim_label);
     if (!dim.has_value() || dim.value() != hlo.concatenate_dimension()) {
       return "Unsupported concatenation.";
     }
@@ -1049,12 +1136,13 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
     return "Pads are not fused yet.";
   }
   for (const HloInstruction* operand : hlo.operands()) {
-    if (!IsTritonSupportedDataType(operand->shape().element_type(),
-                                   gpu_version)) {
+    if (!legacy_triton::IsTritonSupportedDataType(
+            operand->shape().element_type(), gpu_version)) {
       return "Unsupported input data type.";
     }
   }
-  if (!IsTritonSupportedDataType(hlo.shape().element_type(), gpu_version)) {
+  if (!legacy_triton::IsTritonSupportedDataType(hlo.shape().element_type(),
+                                                gpu_version)) {
     return "Unsupported output data type.";
   }
   DimOrdersAndReqsOrError result_or_error =
@@ -1067,10 +1155,7 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
       std::move(std::get<DimOrdersAndReqs>(result_or_error));
   int fusion_level =
       hlo.GetModule()->config().debug_options().xla_gpu_triton_fusion_level();
-  if (!std::get<se::CudaComputeCapability>(gpu_version)
-           .IsAtLeast(se::CudaComputeCapability::AMPERE)) {
-    fusion_level = std::min(fusion_level, 1);
-  }
+  // TODO(ROCm): Check fusion level for ROCm.
   if (transform_direction == TransformDirection::kOutputToInput) {
     if (fusion_level < 2) {
       if (hlo.opcode() == HloOpcode::kConvert) {

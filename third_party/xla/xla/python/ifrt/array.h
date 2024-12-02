@@ -16,12 +16,15 @@ limitations under the License.
 #ifndef XLA_PYTHON_IFRT_ARRAY_H_
 #define XLA_PYTHON_IFRT_ARRAY_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
+#include "absl/status/status.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/dtype.h"
@@ -29,13 +32,14 @@ limitations under the License.
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
 #include "xla/python/ifrt/value.h"
-#include "xla/status.h"
-#include "tsl/concurrency/ref_count.h"
+#include "xla/tsl/concurrency/ref_count.h"
 
 namespace xla {
 namespace ifrt {
 
 class Client;
+
+using Layout = ::xla::PjRtLayout;
 
 // Semantics for operations that may copy or move sharded buffers in an array.
 enum class ArrayCopySemantics : int {
@@ -114,7 +118,7 @@ class Array : public llvm::RTTIExtends<Array, Value> {
   // an API that lets users query the alignment requirement of the specific
   // implementation.
   ABSL_MUST_USE_RESULT
-  virtual Future<Status> CopyToHostBuffer(
+  virtual Future<> CopyToHostBuffer(
       void* data, std::optional<absl::Span<const int64_t>> byte_strides,
       ArrayCopySemantics semantics) = 0;
 
@@ -134,6 +138,9 @@ class Array : public llvm::RTTIExtends<Array, Value> {
   //
   // It may fail if the buffer data would be sent from/to an unaddressable
   // device.
+  //
+  // TODO(b/343992694): Remove this API in favor of `Client::CopyArrays`.
+  ABSL_DEPRECATED("Use `Client::CopyArrays` instead")
   virtual absl::StatusOr<tsl::RCReference<Array>> Reshard(
       std::shared_ptr<const Sharding> new_sharding,
       ArrayCopySemantics semantics) = 0;

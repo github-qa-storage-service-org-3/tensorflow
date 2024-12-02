@@ -50,6 +50,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/metrics/error_collector.h"
 #include "tensorflow/compiler/mlir/lite/metrics/error_collector_inst.h"
 #include "tensorflow/compiler/mlir/lite/quantization/stablehlo/quantization.h"
+#include "tensorflow/compiler/mlir/lite/schema/schema_generated.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/op_stat_pass.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/passes.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/stablehlo_util.h"
@@ -80,7 +81,6 @@ limitations under the License.
 #include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/experimental/remat/metadata_util.h"
 #include "tensorflow/lite/python/metrics/converter_error_data.pb.h"
-#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/tools/optimize/quantize_weights.h"
 #include "tensorflow/lite/tools/optimize/reduced_precision_support.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
@@ -386,8 +386,9 @@ absl::Status ConvertTFExecutorToTFLOrFlatbuffer(
     mlir::ModuleOp module, bool export_to_mlir, toco::TocoFlags& toco_flags,
     const mlir::TFL::PassConfig& pass_config,
     const std::unordered_set<std::string>& saved_model_tags,
-    llvm::StringRef saved_model_dir, SavedModelBundle* saved_model_bundle,
-    std::string* result, bool serialize_stablehlo_ops,
+    llvm::StringRef saved_model_dir,
+    std::unique_ptr<SavedModelBundle> saved_model_bundle, std::string* result,
+    bool serialize_stablehlo_ops,
     const PyFunctionLibrary* quantization_py_function_lib) {
   // Explicitly disable dumping Op details on failures.
   module.getContext()->printOpOnDiagnostic(false);
@@ -433,8 +434,8 @@ absl::Status ConvertTFExecutorToTFLOrFlatbuffer(
     if (failed(RunHloToTfConversion(
             pass_config, saved_model_dir, saved_model_tags,
             toco_flags.mutable_quantization_config(),
-            quantization_py_function_lib, saved_model_bundle, pass_manager,
-            status_handler, module))) {
+            quantization_py_function_lib, saved_model_bundle.get(),
+            pass_manager, status_handler, module))) {
       return status_handler.ConsumeStatus();
     }
   }
@@ -453,6 +454,14 @@ absl::Status ConvertTFExecutorToTFLOrFlatbuffer(
         "TFLite converter object. For example, "
         "converter.experimental_enable_resource_variables = True"));
   }
+
+  // Its safe to reset the saved_model_bundle after variable freezing, as this
+  // function owns the saved_model_bundle via std::move into a unique_ptr.
+  saved_model_bundle.reset();
+
+  // set session to nullptr to avoid invalid access  as the session would be
+  // deleted along with the saved_model_bundle.
+  session = nullptr;
 
   pass_manager.clear();
 

@@ -166,6 +166,8 @@ extern const char* const kOneDnnLayerNormSymbolName =
     "__xla_cpu_runtime_OneDnnLayerNorm";
 extern const char* const kOneDnnMatMulReorderSymbolName =
     "__xla_cpu_runtime_OneDnnMatMulReorder";
+extern const char* const kHandleFfiCallSymbolName =
+    "__xla_cpu_runtime_HandleFfiCall";
 
 namespace {
 
@@ -543,9 +545,14 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY int __xla_cpu_runtime_PrintfToStderr(
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY int64_t __xla_cpu_runtime_TracingStart(
-    const void* /* ExecutableRunOptions*  run_options_ptr*/, const char* name) {
+    const void* /* ExecutableRunOptions*  run_options_ptr*/, const char* name,
+    const char* hlo_module, int64_t program_id) {
   VLOG(3) << "TracingStart " << name;
-  return tsl::profiler::TraceMe::ActivityStart(name);
+  auto trace_in =
+      tsl::profiler::TraceMeEncode(name, {{"hlo_op", name},
+                                          {"hlo_module", hlo_module},
+                                          {"program_id", program_id}});
+  return tsl::profiler::TraceMe::ActivityStart(trace_in);
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_TracingEnd(
