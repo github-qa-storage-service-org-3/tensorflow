@@ -11,13 +11,21 @@ enum MemBwType {
   // available as in C++.
   MEM_BW_TYPE_FIRST = 0;
   // Aggregated BW across on-chip and off-chip memory.
+  // For GPU, 1/2 is shared memory bandwisth.
   MEM_BW_TYPE_HBM_RW = 0;
   // On-chip memory read bw.
   MEM_BW_TYPE_SRAM_RD = 1;
   // On-chip memory write bw.
   MEM_BW_TYPE_SRAM_WR = 2;
+  MEM_BW_TYPE_CMEM_RD = 3;
+  MEM_BW_TYPE_CMEM_WR = 4;
+  MEM_BW_TYPE_VMEM_RD = 5;
+  MEM_BW_TYPE_VMEM_WR = 6;
 
   // Leave last.
+  // Leave this MAX unchanged now to avoid op profile changes.
+  // TODO(b/359279074) Revisit the memory breakdown in op profile since we have
+  // more memory types now.
   MEM_BW_TYPE_MAX = 2;
 }
 
@@ -62,7 +70,7 @@ message MemoryAccessBreakdown {
 }
 
 // Metrics for an operation (accumulated over all occurrences).
-// Next ID: 25
+// Next ID: 26
 message OpMetrics {
   // HLO module id. 0 for Framework ops.
   uint64 hlo_module_id = 13;
@@ -91,6 +99,9 @@ message OpMetrics {
   // Total FLOPs for the model. Can be 0, in which case assume it's same as
   // flops
   uint64 model_flops = 24;
+  // Fingerprint of the symbol (cs/xla::HloPrintOptions::Fingerprint),
+  // if 0, the fingerprint is not set.
+  uint64 fingerprint = 25;
   // Total bytes accessed.
   uint64 bytes_accessed = 5;
   // Breakdown of memory accessed by operation type and memory space.

@@ -52,7 +52,7 @@ struct StatusCallbackInvocationParams {
 void InvokeStatusCallbackFn(void* arg) {
   StatusCallbackInvocationParams* params =
       reinterpret_cast<StatusCallbackInvocationParams*>(arg);
-  tensorflow::Status cc_status = StatusFromTF_Status(params->status);
+  absl::Status cc_status = StatusFromTF_Status(params->status);
   // Invokes the "done" callback here.
   params->callback(cc_status);
   // Explicitly delete the params after callback is done.
@@ -73,10 +73,10 @@ NextPluggableDeviceContext::~NextPluggableDeviceContext() {
 void NextPluggableDeviceContext::CopyDeviceTensorToCPU(
     const Tensor* device_tensor, absl::string_view tensor_name, Device* device,
     Tensor* cpu_tensor, StatusCallback done) {
-  profiler::TraceMeProducer traceme(
+  tsl::profiler::TraceMeProducer traceme(
       [] { return "NextPluggableDeviceContext::CopyDeviceTensorToCPU"; },
-      profiler::ContextType::kGeneric);
-  tensorflow::Status s;
+      tsl::profiler::ContextType::kGeneric);
+  absl::Status s;
   TF_Tensor* c_cpu_tensor = TF_TensorFromTensor(*cpu_tensor, &s);
   if (!s.ok()) {
     done(s);
@@ -102,10 +102,10 @@ void NextPluggableDeviceContext::CopyDeviceTensorToCPU(
 void NextPluggableDeviceContext::CopyCPUTensorToDevice(
     const Tensor* cpu_tensor, Device* device, Tensor* device_tensor,
     StatusCallback done, bool sync_dst_compute) const {
-  profiler::TraceMeProducer traceme(
+  tsl::profiler::TraceMeProducer traceme(
       [] { return "NextPluggableDeviceContext::CopyCPUTensorToDevice"; },
-      profiler::ContextType::kGeneric);
-  tensorflow::Status s;
+      tsl::profiler::ContextType::kGeneric);
+  absl::Status s;
   TF_Tensor* c_cpu_tensor = TF_TensorFromTensor(*cpu_tensor, &s);
   if (!s.ok()) {
     done(s);

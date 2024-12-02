@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/lite/core/c/c_api.h"
 #include "tensorflow/lite/core/c/c_api_types.h"  // IWYU pragma: export
 #include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/core/c/operator.h"  // IWYU pragma: export
 
 #ifdef __cplusplus
 extern "C" {
@@ -288,7 +289,7 @@ TFL_CAPI_EXPORT int TfLiteOpaqueNodeNumberOfOutputs(
 
 /// Returns opaque data provided by the node implementer. The value returned
 /// from this function is the value that was returned from the `init` callback
-/// that was passed to `TfLiteRegistrationExternalSetInit`.
+/// that was passed to `TfLiteOperatorSetInit`.
 TFL_CAPI_EXPORT extern void* TfLiteOpaqueNodeGetUserData(
     const TfLiteOpaqueNode* opaque_node);
 
@@ -400,6 +401,14 @@ typedef struct TfLiteIntArray TfLiteIntArray;
 TFL_CAPI_EXPORT extern TfLiteStatus TfLiteOpaqueContextGetExecutionPlan(
     TfLiteOpaqueContext* opaque_context, TfLiteIntArray** execution_plan);
 
+/// Returns the external context of the specified type associated with the
+/// provided `opaque_context`. Returns `kTfLiteOk` if the external context was
+/// successfully loaded. A return value different from `kTfLiteOk` indicates a
+/// failure and the `external_context` will be left in an unspecified state.
+TFL_CAPI_EXPORT extern TfLiteStatus TfLiteOpaqueContextGetExternalContext(
+    TfLiteOpaqueContext* opaque_context, void** external_context,
+    TfLiteExternalContextType type);
+
 /// Given the specified 'opaque_context' and 'node_index', load the caller's
 /// opaque '*node' and '*registration_external' pointer.  Return 'kTfLiteOk' if
 /// both the '*node' as well as the '*registration_external' have been loaded
@@ -416,7 +425,7 @@ TFL_CAPI_EXPORT extern TfLiteStatus TfLiteOpaqueContextGetExecutionPlan(
 ///
 /// This function is expected to be called from within a delegate callback, like
 /// 'Prepare', or a delegate kernel callback (i.e., a callback registered with
-/// a 'TfLiteRegistrationExternal' object).
+/// a 'TfLiteOperator' object).
 ///
 /// The loaded '*node' and '*registration_external' pointers will generally
 /// remain valid for the lifetime of the associated 'opaque_context', but can be
@@ -428,8 +437,7 @@ TFL_CAPI_EXPORT extern TfLiteStatus TfLiteOpaqueContextGetExecutionPlan(
 // are returned to the users and which actions invalidate them.
 TFL_CAPI_EXPORT TfLiteStatus TfLiteOpaqueContextGetNodeAndRegistration(
     struct TfLiteOpaqueContext* opaque_context, int node_index,
-    TfLiteOpaqueNode** node,
-    TfLiteRegistrationExternal** registration_external);
+    TfLiteOpaqueNode** node, TfLiteOperator** registration_external);
 
 /// Entry point for C API ReplaceNodeSubsetsWithDelegateKernels
 ///
@@ -446,7 +454,7 @@ TFL_CAPI_EXPORT TfLiteStatus TfLiteOpaqueContextGetNodeAndRegistration(
 TFL_CAPI_EXPORT TfLiteStatus
 TfLiteOpaqueContextReplaceNodeSubsetsWithDelegateKernels(
     struct TfLiteOpaqueContext* opaque_context,
-    TfLiteRegistrationExternal* registration_external,
+    TfLiteOperator* registration_external,
     const TfLiteIntArray* nodes_to_replace,
     TfLiteOpaqueDelegate* opaque_delegate);
 
@@ -638,6 +646,17 @@ TfLiteStatus TfLiteOpaqueContextAddTensor(TfLiteOpaqueContext* context,
 TFL_CAPI_EXPORT
 TfLiteStatus TfLiteOpaqueContextGetSizeOfType(TfLiteOpaqueContext* context,
                                               TfLiteType type, size_t* bytes);
+
+/// Retrieves named metadata buffer from the TFLite model.
+/// Returns kTfLiteOk if metadata is successfully obtained from the flatbuffer
+/// model. That is, there exists a `metadata` entry with given `name` string.
+/// (see TFLite's schema.fbs).
+/// The corresponding `buffer` information is populated in `ptr` & `bytes`.
+/// The data from `ptr` is valid for the lifetime of the Interpreter.
+TFL_CAPI_EXPORT
+TfLiteStatus TfLiteOpaqueContextGetMetadata(TfLiteOpaqueContext* context,
+                                            const char* name, const char** ptr,
+                                            size_t* bytes);
 
 /// Reports an error message formed by using the provided 'format' string in
 /// combination with the data provided via the unnamed arguments following

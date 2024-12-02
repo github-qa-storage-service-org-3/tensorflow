@@ -18,19 +18,20 @@ limitations under the License.
 #include <memory>
 #include <string>
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/literal.h"
 #include "xla/shape_util.h"
-#include "xla/status_macros.h"
-#include "xla/types.h"
 #include "tsl/platform/env.h"
+#include "tsl/platform/file_system.h"
 
 namespace xla {
 
-/* static */ Status TextLiteralWriter::WriteToPath(const Literal& literal,
-                                                   absl::string_view path) {
+/* static */ absl::Status TextLiteralWriter::WriteToPath(
+    const Literal& literal, absl::string_view path) {
   std::unique_ptr<tsl::WritableFile> f;
   auto s = tsl::Env::Default()->NewWritableFile(std::string(path), &f);
   if (!s.ok()) {
@@ -42,7 +43,7 @@ namespace xla {
     return s;
   }
 
-  Status status;
+  absl::Status status;
   tsl::WritableFile* f_ptr = f.get();
   literal.EachCellAsString([f_ptr, &status](absl::Span<const int64_t> indices,
                                             const std::string& value) {

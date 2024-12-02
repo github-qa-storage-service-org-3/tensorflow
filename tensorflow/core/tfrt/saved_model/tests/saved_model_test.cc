@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "tensorflow/core/tfrt/saved_model/saved_model.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <iterator>
@@ -22,19 +24,38 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tfrt/backend_compiler.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/monitoring/cell_reader.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/resource_loader.h"
-#include "tensorflow/core/tfrt/fallback/cost_recorder.h"
 #include "tensorflow/core/tfrt/graph_executor/config.h"
 #include "tensorflow/core/tfrt/graph_executor/test_config.pb.h"
 #include "tensorflow/core/tfrt/run_handler_thread_pool/run_handler_concurrent_work_queue.h"
+#include "tensorflow/core/tfrt/runtime/runtime.h"
+#include "tensorflow/core/tfrt/runtime/work_queue_interface.h"
 #include "tensorflow/core/tfrt/saved_model/saved_model_testutil.h"
+#include "tensorflow/core/tfrt/saved_model/saved_model_util.h"
+#include "tsl/platform/status.h"
+#include "tsl/platform/statusor.h"
+#include "tfrt/host_context/concurrent_work_queue.h"  // from @tf_runtime
 
 namespace tensorflow {
 namespace tfrt_stub {
 namespace {
+
+using ::tsl::monitoring::testing::CellReader;
 
 struct TestParams {
   bool enable_grappler = false;
@@ -1070,7 +1091,7 @@ TEST(SavedModelTest, CustomModelConfig) {
         test_config = model_context.graph_execution_options()
                           .runtime_config.Get<TestConfig1>()
                           .value();
-        EXPECT_TRUE(model_context.meta_graph_def());
+        EXPECT_TRUE(model_context.graph_def());
         return absl::OkStatus();
       });
 
@@ -1160,7 +1181,34 @@ TEST(SavedModelTest, CustomCompiler) {
   tfrt::SavedModel::RunOptions run_options;
   TF_ASSERT_OK(saved_model->Run(run_options, "toy", inputs, &outputs));
 
-  EXPECT_EQ(test_context.signature_name, "input1:0^result1:0^");
+  EXPECT_EQ(test_context.signature_name, "toy");
+}
+
+// TODO(b/374165187): Add a test case for positive identification of JAX models.
+// Currently we don't have those in our testdata.
+TEST(SavedModelTest, EmitModelTypeMetric) {
+  // SavedModel toy contains a graph of a single 'tf.AddV2' op. It is generated
+  // using the following python code:
+  //  x = tf.placeholder(tf.int32, shape=(3))
+  //  y = tf.compat.v1.get_variable(name='y', initializer=[1, 2, 3])
+  //  r = tf.matmul(x, y)
+  std::string saved_model_dir = tensorflow::GetDataDependencyFilepath(
+      "tensorflow/core/tfrt/saved_model/tests/toy_v1/1");
+
+  auto inferred_model_type_count_reader =
+      CellReader<int64_t>("/tensorflow/tfrt/inferred_model_type");
+
+  auto runtime = DefaultTfrtRuntime(/*num_threads=*/1);
+  auto options = DefaultSavedModelOptions(runtime.get());
+  options.emit_model_type_metric = true;
+
+  auto saved_model = SavedModelImpl::LoadSavedModel(options, saved_model_dir,
+                                                    /*tags=*/{"serve"});
+  TF_CHECK_OK(saved_model.status());
+
+  // TODO(b/374165187): We currently get the model name from graph execution
+  // options but our test setup does not populate that.
+  EXPECT_EQ(inferred_model_type_count_reader.Delta("", "0", "UNKNOWN"), 1);
 }
 
 }  // namespace

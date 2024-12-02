@@ -18,11 +18,13 @@ limitations under the License.
 #include <optional>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/layout_util.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
 
@@ -107,7 +109,7 @@ absl::StatusOr<HloInstruction*> AllToAllDecomposer::ExpandInstruction(
       std::vector<const Shape*>(all_to_all_group_size, &slice_shape));
   HloInstruction* new_all_to_all =
       all_to_all->parent()->AddInstruction(HloInstruction::CreateAllToAll(
-          all_to_all_shape, slices, all_to_all->replica_groups(), false,
+          all_to_all_shape, slices, all_to_all->device_list(), false,
           all_to_all->channel_id(), std::nullopt));
   std::vector<HloInstruction*> gtes;
   gtes.reserve(all_to_all_group_size);

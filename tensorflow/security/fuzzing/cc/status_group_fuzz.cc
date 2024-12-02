@@ -16,6 +16,7 @@ limitations under the License.
 #include <string>
 
 #include "fuzztest/fuzztest.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/security/fuzzing/cc/fuzz_domains.h"
 
@@ -28,10 +29,10 @@ namespace {
 void FuzzTest(absl::StatusCode error_code, bool is_derived) {
   const std::string error_message = "ERROR";
   tensorflow::StatusGroup sg;
-  tensorflow::Status s = tensorflow::Status(error_code, error_message);
+  absl::Status s = absl::Status(error_code, error_message);
 
   if (is_derived) {
-    tensorflow::Status derived_s = tensorflow::StatusGroup::MakeDerived(s);
+    absl::Status derived_s = tensorflow::StatusGroup::MakeDerived(s);
     sg.Update(derived_s);
   } else {
     sg.Update(s);

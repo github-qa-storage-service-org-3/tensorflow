@@ -25,6 +25,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -80,9 +81,13 @@ T GetInitialValue(ReductionKind reduction_kind) {
     case ReductionKind::PRODUCT:
       return static_cast<T>(1);
     case ReductionKind::MIN:
-      return std::numeric_limits<T>::max();
+      return std::numeric_limits<T>::has_infinity
+                 ? std::numeric_limits<T>::infinity()
+                 : std::numeric_limits<T>::max();
     case ReductionKind::MAX:
-      return std::numeric_limits<T>::min();
+      return std::numeric_limits<T>::has_infinity
+                 ? -std::numeric_limits<T>::infinity()
+                 : std::numeric_limits<T>::lowest();
   }
 }
 

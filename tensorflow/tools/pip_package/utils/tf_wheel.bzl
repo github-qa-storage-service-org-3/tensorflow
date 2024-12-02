@@ -23,17 +23,69 @@ Should be set via --repo_env=WHEEL_NAME=tensorflow_cpu.
 6) `--xla_aot` - paths to files that should be in xla_aot directory. 
 """
 
-load("@python_version_repo//:py_version.bzl", "WHEEL_COLLAB", "WHEEL_NAME")
-load("//tensorflow:tensorflow.bzl", "VERSION")
+load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
+load(
+    "@python_version_repo//:py_version.bzl",
+    "HERMETIC_PYTHON_VERSION",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "WHEEL_COLLAB",
+    "WHEEL_NAME",
+)
+load("//tensorflow:tensorflow.bzl", "VERSION", "WHEEL_VERSION")
+
+def _get_wheel_platform_name(platform_name, platform_tag):
+    macos_platform_version = "{}_".format(MACOSX_DEPLOYMENT_TARGET.replace(".", "_")) if MACOSX_DEPLOYMENT_TARGET else ""
+    tag = platform_tag
+    if platform_tag == "x86_64" and platform_name == "win":
+        tag = "amd64"
+    if platform_tag == "arm64" and platform_name == "linux":
+        tag = "aarch64"
+    return "{platform_name}_{platform_version}{platform_tag}".format(
+        platform_name = platform_name,
+        platform_tag = tag,
+        platform_version = macos_platform_version,
+    )
+
+def _get_full_wheel_name(platform_name, platform_tag):
+    python_version = HERMETIC_PYTHON_VERSION.replace(".", "")
+    return "{wheel_name}-{wheel_version}-cp{python_version}-cp{python_version}-{wheel_platform_tag}.whl".format(
+        wheel_name = WHEEL_NAME,
+        wheel_version = WHEEL_VERSION.replace("-", "."),
+        python_version = python_version,
+        wheel_platform_tag = _get_wheel_platform_name(platform_name, platform_tag),
+    )
 
 def _tf_wheel_impl(ctx):
+    include_cuda_libs = ctx.attr.include_cuda_libs[BuildSettingInfo].value
+    override_include_cuda_libs = ctx.attr.override_include_cuda_libs[BuildSettingInfo].value
+    if include_cuda_libs and not override_include_cuda_libs:
+        fail("TF wheel shouldn't be built with CUDA dependencies." +
+             " Please provide `--config=cuda_wheel` for bazel build command." +
+             " If you absolutely need to add CUDA dependencies, provide" +
+             " `--@local_config_cuda//cuda:override_include_cuda_libs=true`.")
     executable = ctx.executable.wheel_binary
 
-    output = ctx.actions.declare_directory("wheel_house")
+    full_wheel_name = _get_full_wheel_name(
+        platform_name = ctx.attr.platform_name,
+        platform_tag = ctx.attr.platform_tag,
+    )
+    wheel_dir_name = "wheel_house"
+    output_file = ctx.actions.declare_file("{wheel_dir}/{wheel_name}".format(
+        wheel_dir = wheel_dir_name,
+        wheel_name = full_wheel_name,
+    ))
+    wheel_dir = output_file.path[:output_file.path.rfind("/")]
+    check_wheel_compliance = (ctx.attr.platform_name == "linux" and
+                              ctx.attr.verify_wheel_compliance[BuildSettingInfo].value and
+                              ctx.attr.linux_wheel_compliance_tag)
     args = ctx.actions.args()
     args.add("--project-name", WHEEL_NAME)
+    args.add("--platform", _get_wheel_platform_name(
+        ctx.attr.platform_name,
+        ctx.attr.platform_tag,
+    ))
     args.add("--collab", str(WHEEL_COLLAB))
-    args.add("--output-name", output.path)
+    args.add("--output-name", wheel_dir)
     args.add("--version", VERSION)
 
     headers = ctx.files.headers[:]
@@ -55,10 +107,25 @@ def _tf_wheel_impl(ctx):
     ctx.actions.run(
         arguments = [args],
         inputs = srcs + headers + xla_aot,
-        outputs = [output],
+        outputs = [output_file],
         executable = executable,
     )
-    return [DefaultInfo(files = depset(direct = [output]))]
+    compliance_verification_log = None
+    if check_wheel_compliance:
+        compliance_verification_log = ctx.actions.declare_file("compliance_verification.log")
+        args = ctx.actions.args()
+        args.add("--wheel_path", output_file.path)
+        args.add("--compliance-tag", ctx.attr.linux_wheel_compliance_tag)
+        args.add("--compliance-verification-log-path", compliance_verification_log.path)
+        ctx.actions.run(
+            arguments = [args],
+            inputs = [output_file],
+            outputs = [compliance_verification_log],
+            executable = ctx.executable.verify_wheel_compliance_binary,
+        )
+
+    verification_output = [compliance_verification_log] if compliance_verification_log else []
+    return [DefaultInfo(files = depset(direct = [output_file] + verification_output))]
 
 tf_wheel = rule(
     attrs = {
@@ -70,6 +137,20 @@ tf_wheel = rule(
             executable = True,
             cfg = "exec",
         ),
+        "verify_wheel_compliance_binary": attr.label(
+            default = Label("@local_tsl//third_party/py:verify_wheel_compliance_py"),
+            executable = True,
+            cfg = "exec",
+        ),
+        "include_cuda_libs": attr.label(default = Label("@local_config_cuda//cuda:include_cuda_libs")),
+        "override_include_cuda_libs": attr.label(default = Label("@local_config_cuda//cuda:override_include_cuda_libs")),
+        "platform_tag": attr.string(mandatory = True),
+        "platform_name": attr.string(mandatory = True),
+        "verify_wheel_compliance": attr.label(default = Label("@local_tsl//third_party/py:wheel_compliance")),
+        "linux_wheel_compliance_tag": attr.string(),
     },
     implementation = _tf_wheel_impl,
 )
+
+def tf_wheel_dep():
+    return ["@pypi_{}//:pkg".format(WHEEL_NAME)]

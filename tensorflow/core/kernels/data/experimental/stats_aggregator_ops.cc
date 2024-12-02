@@ -49,7 +49,7 @@ class StatsAggregatorImpl : public StatsAggregator {
  public:
   StatsAggregatorImpl() {}
 
-  void AddToHistogram(const string& name, gtl::ArraySlice<double> values,
+  void AddToHistogram(const string& name, absl::Span<const double> values,
                       const int64_t steps) override {
     mutex_lock l(mu_);
     histogram::Histogram& histogram = histograms_[name];
@@ -84,7 +84,7 @@ class StatsAggregatorImpl : public StatsAggregator {
 
   // StatsAggregator implementation for V2 is based on push-based summary, no-op
   // in V1.
-  Status SetSummaryWriter(
+  absl::Status SetSummaryWriter(
       SummaryWriterInterface* summary_writer_interface) override {
     return absl::OkStatus();
   }
@@ -121,7 +121,7 @@ class StatsAggregatorHandleOp
       : ResourceOpKernel<StatsAggregatorResource>(ctx) {}
 
  private:
-  Status CreateResource(StatsAggregatorResource** ret) override
+  absl::Status CreateResource(StatsAggregatorResource** ret) override
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     *ret = new StatsAggregatorResource(std::make_unique<StatsAggregatorImpl>());
     return absl::OkStatus();
@@ -138,7 +138,7 @@ class StatsAggregatorImplV2 : public StatsAggregator {
     }
   }
 
-  void AddToHistogram(const string& name, gtl::ArraySlice<double> values,
+  void AddToHistogram(const string& name, absl::Span<const double> values,
                       const int64_t steps) override {
     mutex_lock l(mu_);
     histogram::Histogram& histogram = histograms_[name];
@@ -155,7 +155,7 @@ class StatsAggregatorImplV2 : public StatsAggregator {
   }
 
   // TODO(b/116314787): expose this is public API to manually flush summary.
-  Status Flush() {
+  absl::Status Flush() {
     mutex_lock l(mu_);
     if (summary_writer_interface_)
       TF_RETURN_IF_ERROR(summary_writer_interface_->Flush());
@@ -181,7 +181,7 @@ class StatsAggregatorImplV2 : public StatsAggregator {
   // in V2.
   void EncodeToProto(Summary* out_summary) override {}
 
-  Status SetSummaryWriter(
+  absl::Status SetSummaryWriter(
       SummaryWriterInterface* summary_writer_interface) override {
     mutex_lock l(mu_);
     if (summary_writer_interface_) {
@@ -246,7 +246,7 @@ class StatsAggregatorHandleOpV2
       : ResourceOpKernel<StatsAggregatorResource>(ctx) {}
 
  private:
-  Status CreateResource(StatsAggregatorResource** ret) override
+  absl::Status CreateResource(StatsAggregatorResource** ret) override
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     *ret =
         new StatsAggregatorResource(std::make_unique<StatsAggregatorImplV2>());

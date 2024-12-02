@@ -26,7 +26,7 @@ limitations under the License.
 #include <optional>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/Dialect/Tosa/Utils/ShapeUtils.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -202,7 +202,7 @@ TosaOp CreateOpAndInfer(ImplicitLocOpBuilder& builder, Type result_ty,
 
   // Compute the knowledge based on the inferred type.
   auto inferredKnowledge = ValueKnowledge::getPessimisticValueState();
-  inferredKnowledge.dtype = result_ty.cast<ShapedType>().getElementType();
+  inferredKnowledge.dtype = mlir::cast<ShapedType>(result_ty).getElementType();
   inferredKnowledge.hasRank = predictedShape.hasRank();
   if (predictedShape.hasRank()) {
     for (auto dim : predictedShape.getDims()) {

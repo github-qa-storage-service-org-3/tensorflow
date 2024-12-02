@@ -19,6 +19,8 @@ limitations under the License.
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "xla/util.h"
 
 namespace xla {
@@ -33,7 +35,7 @@ absl::string_view HloOpcodeString(HloOpcode opcode) {
   }
 }
 
-StatusOr<HloOpcode> StringToHloOpcode(absl::string_view opcode_name) {
+absl::StatusOr<HloOpcode> StringToHloOpcode(absl::string_view opcode_name) {
   static auto* opcode_map = new absl::flat_hash_map<std::string, HloOpcode>({
 #define STRING_TO_OPCODE_ENTRY(enum_name, opcode_name, ...) \
   {opcode_name, HloOpcode::enum_name},

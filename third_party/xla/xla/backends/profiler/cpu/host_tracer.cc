@@ -14,21 +14,23 @@ limitations under the License.
 ==============================================================================*/
 #include "xla/backends/profiler/cpu/host_tracer.h"
 
+#include <cstdint>
 #include <memory>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "xla/tsl/profiler/backends/cpu/host_tracer_utils.h"
+#include "xla/tsl/profiler/backends/cpu/threadpool_listener.h"
+#include "xla/tsl/profiler/backends/cpu/traceme_recorder.h"
+#include "xla/tsl/profiler/utils/time_utils.h"
+#include "xla/tsl/profiler/utils/xplane_schema.h"
+#include "xla/tsl/profiler/utils/xplane_utils.h"
 #include "tsl/platform/errors.h"
-#include "tsl/profiler/backends/cpu/host_tracer_utils.h"
-#include "tsl/profiler/backends/cpu/traceme_recorder.h"
+#include "tsl/profiler/lib/profiler_collection.h"
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
-#include "tsl/profiler/utils/time_utils.h"
-#include "tsl/profiler/utils/xplane_schema.h"
-#include "tsl/profiler/utils/xplane_utils.h"
 
 namespace xla {
 namespace profiler {
@@ -115,7 +117,12 @@ absl::Status HostTracer::CollectData(  // TENSORFLOW_STATUS_OK
 std::unique_ptr<tsl::profiler::ProfilerInterface> CreateHostTracer(
     const HostTracerOptions& options) {
   if (options.trace_level == 0) return nullptr;
-  return std::make_unique<HostTracer>(options.trace_level);
+  std::vector<std::unique_ptr<tsl::profiler::ProfilerInterface>> profilers;
+  profilers.push_back(std::make_unique<HostTracer>(options.trace_level));
+  profilers.push_back(
+      std::make_unique<tsl::profiler::ThreadpoolProfilerInterface>());
+  return std::make_unique<tsl::profiler::ProfilerCollection>(
+      std::move(profilers));
 }
 
 }  // namespace profiler

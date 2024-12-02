@@ -25,7 +25,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/gpu/kernel_arguments.h"
-#include "xla/service/gpu/thunk.h"
+#include "xla/service/gpu/runtime/thunk.h"
 #include "xla/stream_executor/dnn.h"
 
 namespace xla {
@@ -34,8 +34,9 @@ namespace gpu {
 // Wraps executable cuDNN graph objects.
 class CuDnnThunk : public Thunk {
  public:
-  CuDnnThunk(std::string serialized_graph, ThunkInfo,
-             absl::Span<const KernelArgument>);
+  CuDnnThunk(std::string fingerprint, ThunkInfo,
+             absl::Span<const KernelArgument>,
+             std::optional<int64_t> sdpa_dropout_seed = std::nullopt);
   CuDnnThunk(const CuDnnThunk&) = delete;
   CuDnnThunk& operator=(const CuDnnThunk&) = delete;
   ~CuDnnThunk() override = default;
@@ -43,16 +44,18 @@ class CuDnnThunk : public Thunk {
   absl::Status Initialize(const InitializeParams&) override;
   absl::Status ExecuteOnStream(const ExecuteParams&) override;
 
-  const se::dnn::DnnGraph& graph() const { return *graph_; }
+  std::shared_ptr<se::dnn::LazyDnnGraph> graph() const { return graph_; }
   const std::vector<BufferAllocation::Slice>& arguments() const {
     return args_;
   }
 
  private:
   absl::once_flag once_flag_;
-  std::string serialized_graph_;
-  std::unique_ptr<se::dnn::DnnGraph> graph_;
+  std::string fingerprint_;
+  std::shared_ptr<se::dnn::LazyDnnGraph> graph_;
   std::vector<BufferAllocation::Slice> args_;
+  // Sdpa dropout seed
+  std::optional<int64_t> sdpa_dropout_seed_;
 };
 
 }  // namespace gpu

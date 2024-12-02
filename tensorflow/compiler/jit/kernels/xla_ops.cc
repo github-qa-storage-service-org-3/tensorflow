@@ -24,10 +24,10 @@ limitations under the License.
 #include <string_view>
 #include <tuple>
 #include <utility>
-#include <variant>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
@@ -52,7 +52,7 @@ limitations under the License.
 #include "xla/executable_run_options.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
-#include "xla/statusor.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -205,7 +205,8 @@ XlaComputationLaunchContext GetLaunchContext(
   return launch_context;
 }
 
-Status GetTaskName(const std::string_view device_name, std::string* task_name) {
+absl::Status GetTaskName(const std::string_view device_name,
+                         std::string* task_name) {
   string ignored;
   if (!DeviceNameUtils::SplitDeviceName(device_name, task_name, &ignored)) {
     return errors::InvalidArgument("Unable to parse device name: ",
@@ -224,7 +225,7 @@ xla::SendDeviceMemoryFunction GetSendDeviceMemoryFunction(
           int64_t channel_id, se::Stream* stream, const xla::Shape& shape,
           const se::DeviceMemoryBase& device_memory_base,
           const absl::flat_hash_map<std::string, std::string>& frontend_attrs)
-          -> absl::StatusOr<tsl::AsyncValueRef<se::Event>> {
+          -> absl::StatusOr<tsl::AsyncValueRef<std::unique_ptr<se::Event>>> {
         auto iter = frontend_attrs.find("_xla_host_transfer_rendezvous");
 
         // Generate the Rendezvous key.
@@ -244,12 +245,10 @@ xla::SendDeviceMemoryFunction GetSendDeviceMemoryFunction(
         RendezvousInterface::ParsedKey parsed_key;
         TF_RETURN_IF_ERROR(Rendezvous::ParseKey(rendezvous_key, &parsed_key));
 
-        tsl::AsyncValueRef<se::Event> done_event =
-            tsl::MakeConstructedAsyncValueRef<se::Event>(stream->parent());
-        if (!done_event->Init()) {
-          return errors::Internal(
-              "Failed to initialize done event (channel_id=%d)", channel_id);
-        }
+        TF_ASSIGN_OR_RETURN(auto event, stream->parent()->CreateEvent());
+        tsl::AsyncValueRef<std::unique_ptr<se::Event>> done_event =
+            tsl::MakeConstructedAsyncValueRef<std::unique_ptr<se::Event>>(
+                std::move(event));
 
         Rendezvous::Args args;
         // Rendezvous::Args owns the device context pointer.
@@ -273,7 +272,7 @@ xla::RecvDeviceMemoryFunction GetRecvDeviceMemoryFunction(
           int64_t channel_id, se::Stream* stream, const xla::Shape& shape,
           se::DeviceMemoryBase* device_memory_base,
           const absl::flat_hash_map<std::string, std::string>& frontend_attrs)
-          -> absl::StatusOr<tsl::AsyncValueRef<se::Event>> {
+          -> absl::StatusOr<tsl::AsyncValueRef<std::unique_ptr<se::Event>>> {
         auto iter = frontend_attrs.find("_xla_host_transfer_rendezvous");
 
         // Generate the Rendezvous key.
@@ -293,12 +292,10 @@ xla::RecvDeviceMemoryFunction GetRecvDeviceMemoryFunction(
         RendezvousInterface::ParsedKey parsed_key;
         TF_RETURN_IF_ERROR(Rendezvous::ParseKey(rendezvous_key, &parsed_key));
 
-        tsl::AsyncValueRef<se::Event> done_event =
-            tsl::MakeConstructedAsyncValueRef<se::Event>(stream->parent());
-        if (!done_event->Init()) {
-          return errors::Internal(
-              "Failed to initialize done event (channel_id=%d)", channel_id);
-        }
+        TF_ASSIGN_OR_RETURN(auto event, stream->parent()->CreateEvent());
+        tsl::AsyncValueRef<std::unique_ptr<se::Event>> done_event =
+            tsl::MakeConstructedAsyncValueRef<std::unique_ptr<se::Event>>(
+                std::move(event));
 
         Rendezvous::Args args;
         // Rendezvous::Args owns the device context pointer.
@@ -370,7 +367,7 @@ GetXlaCompilerArgsAndSnapshotVariables(
   return result;
 }
 
-Status CompileToLocalExecutable(
+absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
     const XlaPlatformInfo& platform_info,
     const std::vector<XlaCompiler::Argument>& args,
@@ -423,7 +420,7 @@ Status CompileToLocalExecutable(
       compilation_result, executable);
 }
 
-Status GetUpdatedVariables(
+absl::Status GetUpdatedVariables(
     const OpKernelContext* ctx, absl::Span<const Tensor* const> inputs,
     absl::Span<const int> variable_indices,
     const XlaCompiler::CompilationResult& compilation_result,
@@ -513,7 +510,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
     std::set<int> variables_updated;
     // Here we only need to reader-lock the variables, so we pass an empty
     // variables_updated set here.
-    Status status = GetVariableInfosFromInputs(
+    absl::Status status = GetVariableInfosFromInputs(
         ctx->resource_manager(), ctx->device(), inputs, resources_,
         &variables_updated, &variable_infos);
     OP_REQUIRES_OK_ASYNC(ctx, status, done);
@@ -532,7 +529,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
                           platform_info_.device_type());
   if (use_pjrt) {
     VLOG(2) << "Compiling using PJRT";
-    Status status = CompileToPjRtLoadedExecutable(
+    absl::Status status = CompileToPjRtLoadedExecutable(
         *ctx, platform_info_, function_, xla_compiler_args,
         DeviceCompileMode::kStrict, has_ref_vars_,
         /*may_alias_resource_update=*/true, &compilation_result, &pjrt_client,
@@ -573,7 +570,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
     return;
   }
 
-  Status status = CompileToLocalExecutable(
+  absl::Status status = CompileToLocalExecutable(
       ctx, function_, /*has_ref_vars=*/has_ref_vars_, platform_info_,
       xla_compiler_args, DeviceCompileMode::kStrict,
       /*may_alias_resource_update=*/true, &client, &compilation_result,
@@ -780,7 +777,7 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
 
     // Do not alias resource updates as locking variables in XlaCompile and
     // unlocking them in XlaRun may lead to deadlocks.
-    Status status;
+    absl::Status status;
     if (use_pjrt) {
       VLOG(2) << "Using PJRT for compilation. Function name: "
               << function_.name();
@@ -921,13 +918,13 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   absl::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
   std::map<int, const Tensor*> snapshot_ptrs;
   {
-    tensorflow::profiler::TraceMe hlo_module_activity(
+    tsl::profiler::TraceMe hlo_module_activity(
         [&] {
           return absl::StrCat(
               "Populate Inputs (",
               closure.compilation_result()->xla_input_shapes.size(), ")");
         },
-        tensorflow::profiler::TraceMeLevel::kInfo);
+        tsl::profiler::TraceMeLevel::kInfo);
 
     for (const auto& [variable_index, variable_tensor] :
          closure.resource_var_snapshots()) {
@@ -957,11 +954,11 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       closure.executable(), ctx, allocator.get());
   OP_REQUIRES(ctx, execution_output.ok(), execution_output.status());
 
-  tensorflow::profiler::TraceMe hlo_module_activity(
+  tsl::profiler::TraceMe hlo_module_activity(
       [&] {
         return absl::StrCat("Populate Outputs (", ctx->num_outputs(), ")");
       },
-      tensorflow::profiler::TraceMeLevel::kInfo);
+      tsl::profiler::TraceMeLevel::kInfo);
 
   absl::StatusOr<std::vector<VariableInfo>> variable_infos = GatherVariableInfo(
       ctx, *closure.compilation_result(), closure.num_constant_args());

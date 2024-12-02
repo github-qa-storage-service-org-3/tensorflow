@@ -18,6 +18,7 @@ import enum
 import os
 import platform
 import sys
+import warnings
 
 import numpy as np
 
@@ -39,6 +40,12 @@ else:
 
 
 # pylint: enable=g-import-not-at-top
+
+_INTERPRETER_DEPRECATION_WARNING = """\
+    Warning: Please use the LiteRT interpreter from the ai_edge_litert package.
+    See the [migration guide](https://ai.google.dev/edge/litert/migration)
+    for details.
+    """
 
 
 class Delegate:
@@ -396,6 +403,7 @@ class Interpreter:
       experimental_op_resolver_type=OpResolverType.AUTO,
       experimental_preserve_all_tensors=False,
       experimental_disable_delegate_clustering=False,
+      experimental_default_delegate_latest_features=False,
   ):
     """Constructor.
 
@@ -409,10 +417,7 @@ class Interpreter:
         available to CPU kernels. If not set, the interpreter will use an
         implementation-dependent default number of threads. Currently, only a
         subset of kernels, such as conv, support multi-threading. num_threads
-        should be >= -1. Setting num_threads to 0 has the effect to disable
-        multithreading, which is equivalent to setting num_threads to 1. If set
-        to the value -1, the number of threads used will be
-        implementation-defined and platform-dependent.
+        should be >= 1.
       experimental_op_resolver_type: The op resolver used by the interpreter. It
         must be an instance of OpResolverType. By default, we use the built-in
         op resolver which corresponds to tflite::ops::builtin::BuiltinOpResolver
@@ -437,10 +442,13 @@ class Interpreter:
         this flag is currently experimental, and it might be removed/updated if
         the TF Lite converter doesn't drop such control dependencies in the
         model. Default is False.
+      experimental_default_delegate_latest_features: If true, default delegates
+        may enable all flag protected features. Default is False;
 
     Raises:
       ValueError: If the interpreter was unable to create.
     """
+    warnings.warn(_INTERPRETER_DEPRECATION_WARNING)
     if not hasattr(self, '_custom_op_registerers'):
       self._custom_op_registerers = []
 
@@ -453,6 +461,12 @@ class Interpreter:
     if op_resolver_id is None:
       raise ValueError('Unrecognized passed in op resolver type: {}'.format(
           experimental_op_resolver_type))
+
+    if num_threads is not None:
+      if not isinstance(num_threads, int):
+        raise ValueError('type of num_threads should be int')
+      if num_threads < 1:
+        raise ValueError('num_threads should >= 1')
 
     if model_path and not model_content:
       custom_op_registerers_by_name = [
@@ -468,6 +482,8 @@ class Interpreter:
           custom_op_registerers_by_func,
           experimental_preserve_all_tensors,
           experimental_disable_delegate_clustering,
+          int(num_threads or 1),
+          experimental_default_delegate_latest_features,
       )
       if not self._interpreter:
         raise ValueError('Failed to open {}'.format(model_path))
@@ -489,18 +505,13 @@ class Interpreter:
           custom_op_registerers_by_func,
           experimental_preserve_all_tensors,
           experimental_disable_delegate_clustering,
+          int(num_threads or 1),
+          experimental_default_delegate_latest_features,
       )
     elif not model_content and not model_path:
       raise ValueError('`model_path` or `model_content` must be specified.')
     else:
       raise ValueError('Can\'t both provide `model_path` and `model_content`')
-
-    if num_threads is not None:
-      if not isinstance(num_threads, int):
-        raise ValueError('type of num_threads should be int')
-      if num_threads < 1:
-        raise ValueError('num_threads should >= 1')
-      self._interpreter.SetNumThreads(num_threads)
 
     # Each delegate is a wrapper that owns the delegates that have been loaded
     # as plugins. The interpreter wrapper will be using them, but we need to
@@ -599,7 +610,7 @@ class Interpreter:
     Returns:
       A dictionary containing the following fields of the tensor:
         'name': The tensor name.
-        'index': The tensor index in the interpreter.
+        'index': The tensor index in the subgraph.
         'shape': The shape of the tensor.
         'quantization': Deprecated, use 'quantization_parameters'. This field
             only works for per-tensor quantization, whereas
@@ -642,7 +653,7 @@ class Interpreter:
             'zero_points': tensor_quantization_params[1],
             'quantized_dimension': tensor_quantization_params[2],
         },
-        'sparsity_parameters': tensor_sparsity_params
+        'sparsity_parameters': tensor_sparsity_params,
     }
 
     return details
@@ -659,21 +670,36 @@ class Interpreter:
         self._get_op_details(idx) for idx in range(self._interpreter.NumNodes())
     ]
 
-  def get_tensor_details(self):
-    """Gets tensor details for every tensor with valid tensor details.
+  def num_subgraphs(self):
+    """Returns the number of subgraphs in the model."""
+    return self._interpreter.NumSubgraphs()
+
+  def get_tensor_details(self, subgraph_index=0):
+    """Gets tensor details for every tensor with valid tensor details from a subgraph.
 
     Tensors where required information about the tensor is not found are not
     added to the list. This includes temporary tensors without a name.
+
+    Args:
+      subgraph_index: Index of the subgraph to fetch the tensor.
 
     Returns:
       A list of dictionaries containing tensor information.
     """
     tensor_details = []
-    for idx in range(self._interpreter.NumTensors(0)):
+    num_subgraphs = self._interpreter.NumSubgraphs()
+    if subgraph_index < 0 or subgraph_index >= num_subgraphs:
+      raise ValueError(
+          f'subgraph_index is out of range: {subgraph_index} for the model,'
+          f' which has {num_subgraphs} subgraphs.'
+      )
+
+    for idx in range(self._interpreter.NumTensors(subgraph_index)):
       try:
-        tensor_details.append(self._get_tensor_details(idx, subgraph_index=0))
+        tensor_details.append(self._get_tensor_details(idx, subgraph_index))
       except ValueError:
         pass
+
     return tensor_details
 
   def get_input_details(self):

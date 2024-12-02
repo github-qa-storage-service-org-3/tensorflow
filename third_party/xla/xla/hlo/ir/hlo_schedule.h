@@ -23,11 +23,15 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/status.h"
+#include "xla/service/hlo.pb.h"
 
 namespace xla {
 
@@ -86,6 +90,11 @@ class HloInstructionSequence {
     id_sequence_.insert(id_sequence_.begin() + index, instruction->unique_id());
   }
 
+  bool contains(const HloInstruction* inst) const {
+    return absl::c_find(instruction_sequence_, inst) !=
+           instruction_sequence_.end();
+  }
+
   // Clears the sequence of all instructions.
   void clear() {
     instruction_sequence_.clear();
@@ -122,9 +131,9 @@ class HloSchedule {
   explicit HloSchedule(const HloModule* module) : module_(module) {}
 
   // (De)Serialize an HloSchedule to/from a HloScheduleProto.
-  static StatusOr<HloSchedule> CreateFromProto(const HloModule* module,
-                                               const HloScheduleProto& proto);
-  StatusOr<HloScheduleProto> ToProto() const;
+  static absl::StatusOr<HloSchedule> CreateFromProto(
+      const HloModule* module, const HloScheduleProto& proto);
+  absl::StatusOr<HloScheduleProto> ToProto() const;
 
   // Returns a reference to the sequence for the given computation.
   const HloInstructionSequence& sequence(
@@ -190,14 +199,14 @@ class HloSchedule {
   // remain in the same order in the updated schedule. Instructions which exist
   // in the module but not in the given schedule will be placed as early as
   // possible in the updated schedule.
-  Status Update(
+  absl::Status Update(
       const absl::flat_hash_set<absl::string_view>& execution_threads = {});
 
   // Verifies that the given schedule is valid for the given module.
   // Specifically, the schedule contains exactly the instructions in the
   // non-fusion computations in the module and every dependency in the module is
   // satisfied in the schedule.
-  Status Verify() const;
+  absl::Status Verify() const;
 
   std::string ToString() const;
 
@@ -207,7 +216,7 @@ class HloSchedule {
 
  private:
   // Updates the instruction sequence for the given computation.
-  Status UpdateComputationSchedule(const HloComputation* computation);
+  absl::Status UpdateComputationSchedule(const HloComputation* computation);
 
   const HloModule* module_;
 
