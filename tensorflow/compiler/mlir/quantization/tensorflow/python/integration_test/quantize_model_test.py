@@ -346,25 +346,10 @@ class QuantizationOptionsTest(quantize_model_test_base.QuantizedModelTest):
           self._input_saved_model_path, quantization_options=options
       )
 
-  @test_util.run_in_graph_and_eager_modes
   def test_force_graph_mode_calibration(self):
-    input_type = dtypes.int32
-    input_placeholder = self._create_and_save_tf1_gather_model(
-        self._input_saved_model_path,
-        signature_key=signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY,
-        tags={tag_constants.SERVING},
-        input_key='x',
-        output_key='output',
-        input_type=input_type,
-    )
+    model = self.SimpleModel()
 
-    data_gen = self._create_data_generator(
-        input_key='x',
-        shape=input_placeholder.shape,
-        minval=0,
-        maxval=10,
-        dtype=input_type,
-    )
+    saved_model_save.save(model, self._input_saved_model_path)
 
     options = quant_opts_pb2.QuantizationOptions(
         quantization_method=quant_opts_pb2.QuantizationMethod(
@@ -383,7 +368,7 @@ class QuantizationOptionsTest(quantize_model_test_base.QuantizedModelTest):
         quantize_model.quantize(
             self._input_saved_model_path,
             quantization_options=options,
-            representative_dataset=data_gen,
+            representative_dataset=self._simple_model_data_gen(),
         )
       finally:
         # Restore the logger verbosity.
@@ -1178,8 +1163,12 @@ class StaticRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
         quantization_options,
     )
     self.assertIsNotNone(converted_model)
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path, self._input_saved_model_path, 0.5
+    # Due to other meta data, the compression is not exactly 1/4.
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        0.5,
     )
 
   def test_qat_vocab_table_lookup_model(self):
@@ -2016,15 +2005,22 @@ class StaticRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     output_graphdef = output_loader.get_meta_graph_def_from_tags(tags).graph_def
 
     if target_opset == quant_opts_pb2.UNIFORM_QUANTIZED:
-      self.assertSizeRatioGreaterThan(
-          self._output_saved_model_path, self._input_saved_model_path, 0.68
+      self.assertGreater(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          0.68,
       )
       self.assertTrue(
           self._contains_op(output_graphdef, 'UniformQuantizedConvolution')
       )
     else:
-      self.assertSizeRatioLessThan(
-          self._output_saved_model_path, self._input_saved_model_path, 1 / 3
+      # Due to other meta data, the compression is not exactly 1/4.
+      self.assertLess(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          1 / 3,
       )
       if target_opset == quant_opts_pb2.XLA:
         self.assertTrue(self._contains_op(output_graphdef, 'XlaConvV2'))
@@ -2975,12 +2971,19 @@ class StaticRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     )
 
     if expect_quantized_gather:
-      self.assertSizeRatioLessThan(
-          self._output_saved_model_path, self._input_saved_model_path, 1 / 3
+      # Due to other meta data, the compression is not exactly 1/4.
+      self.assertLess(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          1 / 3,
       )
     else:
-      self.assertSizeRatioGreaterThan(
-          self._output_saved_model_path, self._input_saved_model_path, 2 / 3
+      self.assertGreater(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          2 / 3,
       )
 
   @test_util.run_in_graph_and_eager_modes
@@ -3577,7 +3580,9 @@ class StaticRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
         for _ in range(8)
     ]
 
-    with self.assertRaisesRegex(ValueError, 'Invalid representative dataset.'):
+    with self.assertRaisesRegex(
+        Exception, 'Representative dataset is not a mapping'
+    ):
       quantize_model.quantize(
           self._input_saved_model_path,
           output_directory=self._output_saved_model_path,
@@ -3932,8 +3937,8 @@ class StaticRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     )
 
     with self.assertRaisesRegex(
-        ValueError,
-        'Failed to run graph for post-training quantization calibration',
+        Exception,
+        'Invalid input keys for representative sample.',
     ):
       quantize_model.quantize(
           self._input_saved_model_path,
@@ -4876,12 +4881,19 @@ class DynamicRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     )
 
     if target_opset == quant_opts_pb2.UNIFORM_QUANTIZED:
-      self.assertSizeRatioGreaterThan(
-          self._output_saved_model_path, self._input_saved_model_path, 0.65
+      self.assertGreater(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          0.65,
       )
     else:
-      self.assertSizeRatioLessThan(
-          self._output_saved_model_path, self._input_saved_model_path, 1 / 3
+      # Due to other meta data, the compression is not exactly 1/4.
+      self.assertLess(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          1 / 3,
       )
 
   @parameterized.named_parameters(
@@ -4930,8 +4942,11 @@ class DynamicRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     output_graphdef = output_loader.get_meta_graph_def_from_tags(tags).graph_def
 
     if target_opset == quant_opts_pb2.UNIFORM_QUANTIZED:
-      self.assertSizeRatioGreaterThan(
-          self._output_saved_model_path, self._input_saved_model_path, 0.65
+      self.assertGreater(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          0.65,
       )
       self.assertTrue(
           self._contains_op(
@@ -4939,8 +4954,12 @@ class DynamicRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
           )
       )
     else:
-      self.assertSizeRatioLessThan(
-          self._output_saved_model_path, self._input_saved_model_path, 1 / 3
+      # Due to other meta data, the compression is not exactly 1/4.
+      self.assertLess(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          1 / 3,
       )
       if target_opset == quant_opts_pb2.XLA:
         self.assertTrue(self._contains_op(output_graphdef, 'XlaConvV2'))
@@ -5096,14 +5115,20 @@ class DynamicRangeQuantizationTest(quantize_model_test_base.QuantizedModelTest):
 
     if target_opset == quant_opts_pb2.UNIFORM_QUANTIZED:
       threshold = 0.45 if use_variable else 0.7
-      self.assertSizeRatioGreaterThan(
-          self._output_saved_model_path, self._input_saved_model_path, threshold
+      self.assertGreater(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          threshold,
       )
 
     else:
       threshold = 0.19 if use_variable else 0.42
-      self.assertSizeRatioLessThan(
-          self._output_saved_model_path, self._input_saved_model_path, threshold
+      self.assertLess(
+          testing.get_size_ratio(
+              self._output_saved_model_path, self._input_saved_model_path
+          ),
+          threshold,
       )
 
   @test_util.run_in_graph_and_eager_modes
@@ -5357,10 +5382,11 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
         )
     )
     # Due to other meta data, the compression is not exactly 1/4.
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path,
-        self._input_saved_model_path,
-        threshold=0.5,
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        0.5,
     )
 
   @parameterized.named_parameters(
@@ -5408,10 +5434,11 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
 
     # Due to other meta data, the compression is not exactly 1/4.
     self.assertTrue(self._contains_op(output_graphdef, 'XlaDotV2'))
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path,
-        self._input_saved_model_path,
-        threshold=0.3,
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        0.3,
     )
 
   @parameterized.named_parameters(
@@ -5468,10 +5495,11 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     output_graphdef = output_loader.get_meta_graph_def_from_tags(tags).graph_def
 
     # Due to other meta data, the compression is not exactly 1/4.
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path,
-        self._input_saved_model_path,
-        threshold=0.3,
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        0.3,
     )
 
     if enable_per_channel_quantization:
@@ -5560,10 +5588,11 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
 
     # Due to other meta data, the compression is not exactly 1/4.
     size_threshold = 0.5 if enable_per_channel_quantization else 0.32
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path,
-        self._input_saved_model_path,
-        threshold=size_threshold,
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        size_threshold,
     )
 
     if enable_per_channel_quantization:
@@ -5658,8 +5687,12 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     self.assertCountEqual(
         converted_model.signatures._signatures.keys(), {'serving_default'}
     )
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path, self._input_saved_model_path, 0.3
+    # Due to other meta data, the compression is not exactly 1/4.
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        0.3,
     )
 
   @parameterized.named_parameters(
@@ -5719,8 +5752,12 @@ class WeightOnlyQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     )
     output_graphdef = output_loader.get_meta_graph_def_from_tags(tags).graph_def
     self.assertTrue(self._contains_op(output_graphdef, 'XlaConvV2'))
-    self.assertSizeRatioLessThan(
-        self._output_saved_model_path, self._input_saved_model_path, 1 / 3
+    # Due to other meta data, the compression is not exactly 1/4.
+    self.assertLess(
+        testing.get_size_ratio(
+            self._output_saved_model_path, self._input_saved_model_path
+        ),
+        1 / 3,
     )
 
   @test_util.run_in_graph_and_eager_modes
@@ -6159,25 +6196,25 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
               stablehlo_quant_config_pb2.CalibrationOptions(
                   calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_PERCENTILE,
                   calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                      initial_num_bins=10,
+                      num_bins=32,
                   ),
               ),
               stablehlo_quant_config_pb2.CalibrationOptions(
                   calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_BRUTEFORCE,
                   calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                      initial_num_bins=10,
+                      num_bins=32,
                   ),
               ),
               stablehlo_quant_config_pb2.CalibrationOptions(
                   calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_MAX_FREQUENCY,
                   calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                      initial_num_bins=10,
+                      num_bins=32,
                   ),
               ),
               stablehlo_quant_config_pb2.CalibrationOptions(
                   calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_SYMMETRIC,
                   calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                      initial_num_bins=10,
+                      num_bins=32,
                   ),
               ),
           ],
@@ -6324,7 +6361,7 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
           'default_calibration_options': stablehlo_quant_config_pb2.CalibrationOptions(
               calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_PERCENTILE,
               calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                  initial_num_bins=256,
+                  num_bins=512,
                   min_percentile=0.001,
                   max_percentile=99.999,
               ),
@@ -6338,7 +6375,7 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
           'default_calibration_options': stablehlo_quant_config_pb2.CalibrationOptions(
               calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_BRUTEFORCE,
               calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                  initial_num_bins=256
+                  num_bins=512
               ),
           ),
       },
@@ -6350,7 +6387,7 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
           'default_calibration_options': stablehlo_quant_config_pb2.CalibrationOptions(
               calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_MAX_FREQUENCY,
               calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                  initial_num_bins=256
+                  num_bins=512
               ),
           ),
       },
@@ -6362,7 +6399,7 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
           'default_calibration_options': stablehlo_quant_config_pb2.CalibrationOptions(
               calibration_method=_CalibrationMethod.CALIBRATION_METHOD_HISTOGRAM_MSE_SYMMETRIC,
               calibration_parameters=stablehlo_quant_config_pb2.CalibrationOptions.CalibrationParameters(
-                  initial_num_bins=256
+                  num_bins=512
               ),
           ),
       },
@@ -6389,8 +6426,8 @@ class CalibrationOptionsTest(quantize_model_test_base.QuantizedModelTest):
         default_calibration_options.calibration_method,
     )
     self.assertEqual(
-        quant_opts.calibration_options.calibration_parameters.initial_num_bins,
-        default_calibration_options.calibration_parameters.initial_num_bins,
+        quant_opts.calibration_options.calibration_parameters.num_bins,
+        default_calibration_options.calibration_parameters.num_bins,
     )
     self.assertEqual(
         quant_opts.calibration_options.calibration_parameters.min_percentile,
@@ -6879,8 +6916,11 @@ class SelectiveQuantizationTest(quantize_model_test_base.QuantizedModelTest):
     # The Conv2D op shouldn't be quantized as it has no FakeQuant on input.
     self.assertTrue(self._contains_op(graphdef, 'Conv2D'))
     # If the Gather op is quantized, input_model_size / output_model_size > 2.
-    self.assertSizeRatioLessThan(
-        self._input_saved_model_path, self._output_saved_model_path, 1.15
+    self.assertLess(
+        testing.get_size_ratio(
+            self._input_saved_model_path, self._output_saved_model_path
+        ),
+        1.15,
     )
 
 

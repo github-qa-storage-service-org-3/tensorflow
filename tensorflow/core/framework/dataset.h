@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -28,6 +29,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
@@ -89,7 +91,7 @@ using TraceMeMetadata = std::vector<std::pair<StringPiece, string>>;
 
 // Maps the index of dataset elements to a globally shuffled index. See the
 // comment for IteratorContext::Params::index_mapper for more details.
-using IndexMapperFn = std::function<size_t(size_t)>;
+using IndexMapperFn = std::function<absl::StatusOr<size_t>(size_t)>;
 
 constexpr char kTFDataFunction[] = "_tf_data_function";
 
@@ -896,6 +898,10 @@ class IteratorContext {
 
   void SetModel(std::shared_ptr<model::Model> model) { params_.model = model; }
 
+  void SetIndexMapper(const IndexMapperFn& index_mapper) {
+    params_.index_mapper = index_mapper;
+  };
+
   std::unique_ptr<thread::ThreadPool> CreateThreadPool(const string& name,
                                                        int num_threads) {
     if (params_.thread_pool) {
@@ -977,6 +983,26 @@ class IteratorContext {
  private:
   Params params_;
   MemoryCheckpoint checkpoint_;
+};
+
+// Generic context that can be constructed with either an `OpKernelContext` or
+// `IteratorContext`.
+struct AnyContext {
+  Allocator* allocator;
+  std::function<void(std::function<void()>)>* runner;
+  int64_t runner_threadpool_size;
+
+  explicit AnyContext(IteratorContext* ctx) {
+    allocator = ctx->allocator({});
+    runner = ctx->runner();
+    runner_threadpool_size = ctx->runner_threadpool_size();
+  }
+
+  explicit AnyContext(OpKernelContext* ctx) {
+    allocator = ctx->get_allocator({});
+    runner = ctx->runner();
+    runner_threadpool_size = GetRunnerThreadpoolSizeFromOpKernelContext(ctx);
+  }
 };
 
 // Represents the current position in a range of outputs, where the
@@ -1346,9 +1372,11 @@ class DatasetBase : public core::RefCounted {
   virtual Status Get(OpKernelContext* ctx, int64 index,
                      std::vector<Tensor>* out_tensors) const;
 
-  // Same as above, but without an `OpKernelContext`. Used to support datasets
+  // Same as above, but with an `AnyContext`, which can be constructed from
+  // either an `OpKernelContext` or `IteratorContext`. Used to support datasets
   // that provide random access through both the dataset and iterator APIs.
-  virtual Status Get(int64 index, std::vector<Tensor>* out_tensors) const;
+  virtual Status Get(AnyContext ctx, int64 index,
+                     std::vector<Tensor>* out_tensors) const;
 
   // Returns true if the dataset and its inputs support random access.
   virtual absl::Status RandomIndexingCompatible() const {

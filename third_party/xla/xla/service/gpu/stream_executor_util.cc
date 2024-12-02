@@ -56,12 +56,12 @@ limitations under the License.
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
+#include "xla/tsl/util/env_var.h"
+#include "xla/tsl/util/proto/proto_utils.h"
 #include "xla/util.h"
 #include "tsl/platform/ml_dtypes.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
-#include "tsl/util/env_var.h"
-#include "tsl/util/proto/proto_utils.h"
 
 namespace xla {
 namespace gpu {
@@ -530,33 +530,22 @@ absl::StatusOr<se::dnn::NormKind> GetDNNNormKindFromCudnnNormKind(
   }
 }
 
-absl::StatusOr<se::dnn::FusedMHAKind> GetDNNFusedMHAKindFromCudnnfMHAKind(
-    CudnnfMHAKind kind) {
+absl::StatusOr<se::dnn::FMHAMaskKind> GetDNNFmhaMaskKindFromCudnnFmhaMaskKind(
+    CudnnfMHAMaskKind kind) {
   switch (kind) {
-    case CudnnfMHAKind::kScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBmmBmm:
-    case CudnnfMHAKind::kScaleBiasMaskSoftmax:
-    case CudnnfMHAKind::kScaleMaskSoftmax:
-    case CudnnfMHAKind::kScaleBiasSoftmax:
-    case CudnnfMHAKind::kScaleBiasSoftmaxDropout:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_INPUT_TYPE;
-    case CudnnfMHAKind::kSoftmaxDropout:
-    case CudnnfMHAKind::kSoftmax:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_FLOAT;
-    // backward
-    case CudnnfMHAKind::kBackwardScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardBmmBmm:
-    case CudnnfMHAKind::kBackwardScaleBiasMaskSoftmax:
-    case CudnnfMHAKind::kBackwardScaleMaskSoftmax:
-    case CudnnfMHAKind::kBackwardScaleBiasSoftmax:
-    case CudnnfMHAKind::kBackwardScaleBiasSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardSoftmaxDropout:
-    case CudnnfMHAKind::kBackwardSoftmax:
-      return se::dnn::FusedMHAKind::BMM1_OUTPUT_INPUT_TYPE;
+    case CudnnfMHAMaskKind::kNoMask:
+      return se::dnn::NO_MASK;
+    case CudnnfMHAMaskKind::kPadding:
+      return se::dnn::PADDING;
+    case CudnnfMHAMaskKind::kCausal:
+      return se::dnn::CAUSAL;
+    case CudnnfMHAMaskKind::kPaddingCausal:
+      return se::dnn::PADDING_CAUSAL;
+    case CudnnfMHAMaskKind::kAlibi:
+      return se::dnn::ALIBI;
+    default:
+      return Internal("Unexpected fmha mask kind");
   }
-  return Internal("Unexpected fMHA kind");
 }
 
 absl::StatusOr<se::dnn::DataType> GetDNNDataTypeFromPrimitiveType(
@@ -660,7 +649,7 @@ absl::Span<AutotuneResult const> TopResultsWithinMeasurementError(
   // This value was picked by repeatedly running a few kernels that run for a
   // short time and observing the run-time variance. A more rigorous analysis
   // of the measurement error might yield a better error threshold.
-  constexpr absl::Duration kMeasurementError = absl::Microseconds(2);
+  constexpr absl::Duration kMeasurementError = absl::Microseconds(4);
 
   absl::Duration min_time = tsl::proto_utils::FromDurationProto(
       results_sorted_by_runtime.front().run_time());

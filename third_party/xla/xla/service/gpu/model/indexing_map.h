@@ -31,13 +31,12 @@ limitations under the License.
 #include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/model/affine_map_printer.h"
 
 namespace xla {
 namespace gpu {
-
-class IndexingContext;
 
 // Interval represents a closed interval [lower_bound, upper_bound].
 struct Interval {
@@ -45,6 +44,7 @@ struct Interval {
   void Print(std::ostream& out) const;
 
   bool IsPoint() const { return lower == upper; }
+  int64_t NumElements() const { return upper - lower + 1; }
 
   bool Contains(int64_t value) const {
     return value >= lower && value <= upper;
@@ -167,15 +167,21 @@ H AbslHashValue(H h, const RangeVar& range_var) {
 // RTSymbol variable represents a runtime symbol, e.g. a dynamic offset in
 // HLO dynamic-update-slice op. RTSymbol variables correspond to the back
 // portion of the symbols in `affine_map_`.
-using RTVarID = int64_t;
 struct RTVar {
-  RTVarID id;
+  Interval feasible_values;
+  const HloInstruction* hlo;
+  // This is a map from the iteration space of the corresponding indexing map to
+  // the iteration space of `hlo`. It shows what element of `hlo` we need to
+  // extract to get the runtime value for the RTVar.
+  mlir::AffineMap map;
 };
 bool operator==(const RTVar& lhs, const RTVar& rhs);
 
 template <typename H>
 H AbslHashValue(H h, const RTVar& rt_var) {
-  return H::combine(std::move(h), rt_var.id);
+  llvm::hash_code map_hash = llvm::hash_combine(rt_var.map);
+  return H::combine(std::move(h), rt_var.feasible_values, rt_var.hlo,
+                    static_cast<size_t>(map_hash));
 }
 
 std::vector<DimVar> DimVarsFromTensorSizes(
@@ -212,12 +218,10 @@ std::vector<RangeVar> RangeVarsFromTensorSizes(
 class IndexingMap {
  public:
   IndexingMap(
-      IndexingContext* indexing_context, mlir::AffineMap affine_map,
-      std::vector<DimVar> dimensions, std::vector<RangeVar> range_vars,
-      std::vector<RTVar> rt_vars,
+      mlir::AffineMap affine_map, std::vector<DimVar> dimensions,
+      std::vector<RangeVar> range_vars, std::vector<RTVar> rt_vars,
       absl::Span<std::pair<mlir::AffineExpr, Interval>> constraints = {})
-      : indexing_context_(indexing_context),
-        affine_map_(affine_map),
+      : affine_map_(affine_map),
         dim_vars_(std::move(dimensions)),
         range_vars_(std::move(range_vars)),
         rt_vars_(std::move(rt_vars)) {
@@ -225,12 +229,10 @@ class IndexingMap {
       AddConstraint(expr, range);
     }
   }
-  IndexingMap(IndexingContext* indexing_context, mlir::AffineMap affine_map,
-              std::vector<DimVar> dimensions, std::vector<RangeVar> range_vars,
-              std::vector<RTVar> rt_vars,
+  IndexingMap(mlir::AffineMap affine_map, std::vector<DimVar> dimensions,
+              std::vector<RangeVar> range_vars, std::vector<RTVar> rt_vars,
               const llvm::DenseMap<mlir::AffineExpr, Interval>& constraints)
-      : indexing_context_(indexing_context),
-        affine_map_(affine_map),
+      : affine_map_(affine_map),
         dim_vars_(std::move(dimensions)),
         range_vars_(std::move(range_vars)),
         rt_vars_(std::move(rt_vars)),
@@ -239,8 +241,7 @@ class IndexingMap {
   static IndexingMap GetUndefined() { return IndexingMap(); }
 
   static IndexingMap FromTensorSizes(
-      IndexingContext* indexing_context, mlir::AffineMap affine_map,
-      absl::Span<const int64_t> dim_upper_bounds,
+      mlir::AffineMap affine_map, absl::Span<const int64_t> dim_upper_bounds,
       absl::Span<const int64_t> symbol_upper_bounds);
 
   std::string ToString(
@@ -248,14 +249,16 @@ class IndexingMap {
 
   void Print(std::ostream& out, const AffineMapPrinter& printer) const;
 
+  // TODO(hebecker): Rearrange code structure so that we can call
+  // `ComputeInputToOutputIndexing` from `:indexing_analysis` directly.
+  using IndexingMapProvider = llvm::function_ref<IndexingMap(
+      const HloInstruction*, int64_t /*operand id*/, mlir::MLIRContext*)>;
+
   // Returns true if the map was simplified.
-  bool Simplify();
+  bool Simplify(IndexingMapProvider indexing_map_provider);
 
   // Return MLIRContext.
   mlir::MLIRContext* GetMLIRContext() const;
-
-  // Return IndexingContext.
-  IndexingContext* GetIndexingContext() const;
 
   // Returns the affine map.
   mlir::AffineMap GetAffineMap() const { return affine_map_; }
@@ -320,7 +323,19 @@ class IndexingMap {
   bool IsUndefined() const { return affine_map_ == mlir::AffineMap(); }
 
   // Removes unused symbols from the `affine_map_` and constraints.
-  void RemoveUnusedSymbols();
+  // Returns a bit vector of symbols that were removed. If none of the symbols
+  // were removed, returns {}.
+  llvm::SmallBitVector RemoveUnusedSymbols();
+
+  // Rescales all symbols that are sufficiently constrained through `s? mod x =
+  // [N, N]` constraints. Returns true if a rescale took place, otherwise false.
+  bool RescaleSymbols();
+
+  // Does `symbol` correspond to a range var?
+  bool IsRangeVarSymbol(mlir::AffineSymbolExpr symbol) const;
+
+  // Does `symbol` correspond to an RTVar?
+  bool IsRTVarSymbol(mlir::AffineSymbolExpr symbol) const;
 
  private:
   IndexingMap() = default;
@@ -333,7 +348,13 @@ class IndexingMap {
   // Returns true if simplification was performed.
   bool SimplifyConstraintRanges();
 
-  IndexingContext* indexing_context_ = nullptr;
+  // Merges "mod" constraints for the same AffineExpr.
+  void MergeModConstraints();
+
+  // Replace RTVars that yield constants by indexing expressions.
+  // Returns true if a replacement was performed, otherwise false.
+  bool ReplaceConstantRTVars(IndexingMapProvider indexing_map_provider);
+
   mlir::AffineMap affine_map_;
   std::vector<DimVar> dim_vars_;
   std::vector<RangeVar> range_vars_;
@@ -351,6 +372,21 @@ IndexingMap operator*(const IndexingMap& lhs, const IndexingMap& rhs);
 IndexingMap ComposeIndexingMaps(const IndexingMap& first,
                                 const IndexingMap& second);
 
+// Prints the RTVars.
+//
+// This is exposed to allow SymbolicTile to reuse it.
+//
+// `first_rt_var_symbol_index`: The index of the symbol associated with the
+// first RTVar. The RTVars will be printed with consequent symbol indices
+// starting with `first_rt_var_symbol_index`. For example, if `rt_vars.size()
+// == 3` and `first_rt_var_symbol_index == 4`, then the symbol names "s4",
+// "s5" and "s6" will be used.
+//
+// TODO(b/334043862): Unexpose this function if possible.
+void PrintRTVars(const std::vector<RTVar>& rt_vars,
+                 int first_rt_var_symbol_index, std::ostream& out,
+                 const AffineMapPrinter& printer);
+
 template <typename H>
 H AbslHashValue(H h, const IndexingMap& indexing_map) {
   llvm::hash_code affine_map_hash =
@@ -361,14 +397,8 @@ H AbslHashValue(H h, const IndexingMap& indexing_map) {
                     indexing_map.GetConstraintsCount());
 }
 
-struct RTVarData {
-  std::string ToString() const;
-  void Print(std::ostream& out) const;
-
-  Interval feasible_values;
-  const HloInstruction* hlo;
-  IndexingMap indexing_map;
-};
+int64_t FloorDiv(int64_t dividend, int64_t divisor);
+int64_t CeilDiv(int64_t dividend, int64_t divisor);
 
 }  // namespace gpu
 }  // namespace xla
