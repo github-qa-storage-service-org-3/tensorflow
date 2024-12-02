@@ -93,6 +93,7 @@ cc_library(
         "//tensorflow/core:protos_all_cc",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:protobuf",
     ],
     alwayslink = 1,
 )
@@ -202,7 +203,7 @@ tf_cc_binary(
         "@local_tsl//tsl/platform:platform_port",
         "@local_tsl//tsl/platform:strcat",
         "@local_tsl//tsl/platform:types",
-        "@local_tsl//tsl/util:command_line_flags",
+        "@local_xla//xla/tsl/util:command_line_flags",
     ],
 )
 

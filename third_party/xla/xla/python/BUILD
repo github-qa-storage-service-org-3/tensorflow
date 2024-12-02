@@ -1,12 +1,5 @@
-load("//xla:pytype.default.bzl", "pytype_strict_library")
-load("//xla:strict.default.bzl", "py_strict_library", "py_strict_test")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
-load(
-    "//xla:xla.bzl",
-    "xla_cc_test",
-    "xla_py_test_deps",
-)
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
 load(
     "@local_tsl//tsl:tsl.bzl",
@@ -19,6 +12,13 @@ load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
+)
+load("//xla:pytype.default.bzl", "pytype_strict_library")
+load("//xla:strict.default.bzl", "py_strict_library", "py_strict_test")
+load(
+    "//xla:xla.bzl",
+    "xla_cc_test",
+    "xla_py_test_deps",
 )
 
 package(
@@ -40,6 +40,7 @@ package_group(
 pytype_strict_library(
     name = "xla_client",
     srcs = ["xla_client.py"],
+    pytype_srcs = ["xla_client.pyi"],
     srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
@@ -418,6 +419,7 @@ cc_library(
         "//third_party/nanobind",
         "//xla:comparison_util",
         "//xla:xla_data_proto_cc",
+        "//xla/pjrt:host_callback",
         "//xla/pjrt:transpose",
         "//xla/service:custom_call_status",
         "@com_google_absl//absl/base",
@@ -455,6 +457,7 @@ cc_library(
         "//third_party/nanobind",
         "//xla:comparison_util",
         "//xla/pjrt:exceptions",
+        "//xla/pjrt:host_callback",
         "//xla/service:custom_call_status",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings",
@@ -535,8 +538,6 @@ cc_library(
         "@local_config_python//:python_headers",  # build_cleaner: keep
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:status_casters",
-        "//xla/python/ifrt",
-        "@local_tsl//tsl/concurrency:ref_count",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/profiler/lib:traceme",
     ],
@@ -731,6 +732,7 @@ cc_library(
         ":types",
         # placeholder for index annotation deps
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -745,7 +747,6 @@ cc_library(
         "//xla:xla_data_proto_cc",
         "//xla/pjrt:exceptions",
         "//xla/pjrt:pjrt_client",
-        "//xla/pjrt:pjrt_future",
         "//xla/pjrt:status_casters",
         "//xla/python/ifrt",
         "@local_tsl//tsl/concurrency:ref_count",
@@ -947,6 +948,7 @@ cc_library(
         "//xla/pjrt/c:pjrt_c_api_hdrs",
         "//xla/pjrt/c:pjrt_c_api_profiler_extension_hdrs",
         "@local_tsl//tsl/platform:macros",
+        "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/profiler/lib:profiler_factory",
         "@local_tsl//tsl/profiler/lib:profiler_interface",
         "@local_tsl//tsl/profiler/lib:profiler_session",

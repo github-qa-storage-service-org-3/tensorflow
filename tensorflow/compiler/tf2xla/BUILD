@@ -1,24 +1,25 @@
+load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
+
 # copybara:uncomment_begin(google-only)
 # load("//devtools/deps/check:deps_check.bzl", "check_dependencies")
 # copybara:uncomment_end
 
+load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
+load(
+    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
+    "if_cuda_is_configured",
+)
+load("@local_xla//xla:xla.bzl", "xla_py_proto_library")
+load("@local_xla//xla/service/cpu:build_defs.bzl", "runtime_copts")
 load("//tensorflow:strict.default.bzl", "py_strict_library")
 load("//tensorflow:tensorflow.bzl", "if_google", "if_libtpu", "tf_cc_binary", "tf_cc_test", "tf_copts", "tf_cuda_cc_test", "tf_gen_op_wrapper_py", "tf_openmp_copts")
 load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test", "filegroup", "get_compatible_with_portable")
-load("@local_xla//xla:xla.bzl", "xla_py_proto_library")
-load("@local_xla//xla/service/cpu:build_defs.bzl", "runtime_copts")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_additional_tensor_coding_deps",
     "tf_proto_library",
 )
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
-load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
-load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
-    "if_cuda_is_configured",
-)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -302,6 +303,7 @@ cc_library(
         "@com_google_absl//absl/synchronization",
         "@ducc//:fft_wrapper",
         "@eigen_archive//:eigen3",
+        "@llvm-project//mlir:TransformUtils",
         "@local_xla//xla:empty",
         "//tensorflow/core/framework:numeric_types",
         "//tensorflow/core/platform:bfloat16",
@@ -418,6 +420,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/platform:errors",
+        "@com_google_absl//absl/types:span",
         "@local_xla//xla:cpu_function_runtime",
         "@local_xla//xla:shape_util",
         "@local_xla//xla:statusor",
